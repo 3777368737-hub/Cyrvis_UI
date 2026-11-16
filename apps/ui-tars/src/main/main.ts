@@ -31,6 +31,7 @@ import { sanitizeState } from './utils/sanitizeState';
 import { windowManager } from './services/windowManager';
 import { checkBrowserAvailability } from './services/browserCheck';
 import { startVoiceService } from './cyrvis/voice-service';
+import icon from '@resources/icon.png?asset';
 
 const { isProd } = env;
 
@@ -94,6 +95,8 @@ const loadDevDebugTools = async () => {
 };
 
 const initializeApp = async () => {
+  // Also use the Cyrvis icon in the Dock when running the development app.
+  if (env.isMacOS) app.dock?.setIcon(icon);
   const isAccessibilityEnabled = app.isAccessibilitySupportEnabled();
   logger.info('isAccessibilityEnabled', isAccessibilityEnabled);
   if (env.isMacOS) {

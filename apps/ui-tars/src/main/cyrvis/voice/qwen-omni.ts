@@ -339,7 +339,13 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
     if (!this.connected) {
       return;
     }
-    console.log('[cyrvis provider] cancel response');
+    const hadActiveResponse =
+      this.responseActive ||
+      this.awaitingResponse ||
+      this.activeResponseId !== null;
+    console.log('[cyrvis provider] cancel response', {
+      hadActiveResponse,
+    });
     this.cancelRequested = true;
     this.responseActive = false;
     this.awaitingResponse = false;
@@ -349,10 +355,15 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
     this.playbackBusy = false;
     this.clearToolResultFallback();
     this.clearPlaybackFallback();
-    this.send({
-      event_id: eventId('event_cancel'),
-      type: 'response.cancel',
-    });
+    // If nothing is in flight the server answers "Conversation has no active
+    // response". Keep cancelRequested set so a late response.created is still
+    // canceled, but only send response.cancel when there is something to stop.
+    if (hadActiveResponse) {
+      this.send({
+        event_id: eventId('event_cancel'),
+        type: 'response.cancel',
+      });
+    }
     // Only long enough to catch a response.created that was already in flight
     // when we canceled. Must stay well below the 800ms endpointing window, or
     // the user's interrupted utterance would trigger a new response that we
@@ -699,6 +710,16 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
       }
       case 'error': {
         const message = JSON.stringify(event.error || event).slice(0, 1000);
+        // A response.cancel can race with response.done/response.created. The
+        // server then reports "Conversation has no active response"; this is
+        // expected and must not surface as a user-visible voice error.
+        const cancelRace =
+          /response[._]cancel/i.test(message) &&
+          /no active response|response_cancel_not_active/i.test(message);
+        if (cancelRace) {
+          console.log('[cyrvis provider] expected cancel race ignored');
+          break;
+        }
         if (!this.cancelRequested) {
           this.callbacks.onError?.(new Error(message));
         }

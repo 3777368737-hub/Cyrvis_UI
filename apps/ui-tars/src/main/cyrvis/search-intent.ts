@@ -19,6 +19,7 @@ export interface SearchIntentDecision {
 export type VoiceIntentMode =
   | 'navigate'
   | 'search'
+  | 'answer'
   | 'compare'
   | 'task'
   | 'chat'
@@ -45,8 +46,20 @@ const EXPLICIT_SEARCH_PATTERNS: RegExp[] = [
 ];
 
 const INFO_PATTERNS: RegExp[] = [
-  /(多少钱|价格|报价|票价|机票|酒店|航班|火车票|高铁|门票|天气|新闻|最新|如何|是什么|谁是|在哪|哪里|附近|推荐|对比|比较|哪个好|值得|攻略|教程|步骤|方法|指南|怎么弄|怎么办|营业时间|评价|评分|汇率|路线|地铁|公交|签证|景点|政策|规定|区别|原因|结果|赛程|比分|股价|翻译|意思|电话|地址|简介|介绍|资料|生平|百科|背景|贡献|投币)/,
-  /\b(price|cost|weather|news|flight|hotel|ticket|how to|what is|who is|where is|recommend|compare|review|route|visa|policy)\b/i,
+  /(多少钱|价格|报价|票价|机票|酒店|航班|火车票|高铁|门票|天气|新闻|最新|在哪|哪里|附近|对比|比较|哪个好|值得|攻略|营业时间|评价|评分|汇率|路线|地铁|公交|签证|景点|政策|规定|赛程|比分|股价|电话|地址)/,
+  /\b(price|cost|weather|news|flight|hotel|ticket|where is|compare|review|route|visa|policy)\b/i,
+];
+
+/** Stable knowledge should be answered from the model, not searched. */
+const KNOWLEDGE_PATTERNS: RegExp[] = [
+  /(介绍|简介|生平|是谁|是什么|为什么|讲讲|说说|解释|含义|定义|原理|区别|历史|背景|贡献|事迹|怎么|如何|什么时候|哪一年|哪年|推荐|教程|步骤|方法|指南)/,
+  /\b(what is|who is|why|explain|history|meaning|definition|how to|recommend|tutorial)\b/i,
+];
+
+/** Freshness or local/real-world facts that require a web lookup. */
+const LIVE_PATTERNS: RegExp[] = [
+  /(今天|今日|现在|实时|最新|新闻|价格|多少钱|机票|酒店|航班|天气|比分|赛程|股价|汇率|营业时间|地址|电话|官网|政策|规定|活动|发布|上映|优惠|折扣|附近)/,
+  /\b(today|now|latest|news|price|flight|hotel|weather|score|stock|exchange rate|opening hours|address|phone|official site|policy)\b/i,
 ];
 
 const SHOPPING_PATTERNS: RegExp[] = [
@@ -409,8 +422,16 @@ export const classifyVoiceIntent = (text: string): VoiceIntentDecision => {
   const navVerb = NAV_VERB_PATTERN.test(raw);
   const compare = matches(COMPARE_PATTERNS, raw);
   const task = matches(TASK_PATTERNS, raw);
+  const desire = matches(DESIRE_PATTERNS, raw);
+  const question = matches(QUESTION_PATTERNS, raw);
+  const shopping = matches(SHOPPING_PATTERNS, raw);
+  const travel = matches(TRAVEL_PATTERNS, raw);
   const shoppingAction = SHOPPING_ACTION_PATTERN.test(raw);
   const pointer = matches(POINTER_PATTERNS, raw);
+  const knowledge = matches(KNOWLEDGE_PATTERNS, raw);
+  const live = matches(LIVE_PATTERNS, raw);
+  const howTo = /(怎么|如何|教程|步骤|方法|指南)/.test(raw);
+  const localContext = /local\/system lookup/i.test(searchIntent.reason);
   const query = extractSearchQuery(raw);
   const siteSearch =
     navVerb && !!site && (searchIntent.isSearch || shoppingAction);
@@ -434,6 +455,19 @@ export const classifyVoiceIntent = (text: string): VoiceIntentDecision => {
     };
   }
 
+  // "怎么安装 Node.js" is a how-to question, not a GUI install command.
+  if (howTo && !live && !searchIntent.isSearch && !localContext) {
+    return {
+      mode: 'answer',
+      confidence: desire || question ? 'high' : 'medium',
+      query,
+      target: null,
+      targetKind: null,
+      silent,
+      reason: 'stable how-to question',
+    };
+  }
+
   if (task) {
     return {
       mode: 'task',
@@ -446,7 +480,10 @@ export const classifyVoiceIntent = (text: string): VoiceIntentDecision => {
     };
   }
 
-  if (compare) {
+  if (
+    compare &&
+    !(knowledge && !live && !shopping && !travel && !localContext)
+  ) {
     return {
       mode: 'compare',
       confidence:
@@ -494,6 +531,21 @@ export const classifyVoiceIntent = (text: string): VoiceIntentDecision => {
       silent,
       siteSearch,
       reason: searchIntent.reason,
+    };
+  }
+
+  // Stable knowledge (person intro, history, definitions, generic how-to)
+  // should be answered from the model unless the user asks for freshness,
+  // sources, or an explicit search.
+  if (knowledge && !live && !localContext) {
+    return {
+      mode: 'answer',
+      confidence: desire || question ? 'high' : 'medium',
+      query,
+      target: null,
+      targetKind: null,
+      silent,
+      reason: 'stable knowledge question',
     };
   }
 

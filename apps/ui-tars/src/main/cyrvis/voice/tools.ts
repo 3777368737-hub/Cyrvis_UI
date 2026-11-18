@@ -115,7 +115,7 @@ export const CYRVIS_VOICE_TOOLS: QwenToolDefinition[] = [
     function: {
       name: 'search_web',
       description:
-        'Open a web search directly in the platform browser (Bing on Windows, Safari on macOS). Use this for ANY web information need — prices, flights/hotels, weather, news, places, reviews, recommendations, comparisons, tutorials, policies — even when the user does not say "search" (e.g. "我要去巴黎的机票", "这个耳机多少钱", "最近有什么新闻"). Do NOT use it for local desktop/file/app actions. For bare navigation like "打开B站/打开淘宝", use open_site instead. If the user also wants you to read, compare, or click the results, set task_instruction so the GUI agent continues after the page opens.',
+        'Open a web search in the platform browser (Bing on Windows, Safari on macOS). Use it only when the user explicitly asks to search/look something up, needs live or time-sensitive information (prices, flights/hotels, weather, news, scores, opening hours, policies), asks about a specific place/business/official site, or asks you to verify a source. Do NOT use it for stable knowledge you can answer from memory (e.g. "介绍邓小平", "邓小平是谁", "B站怎么投币", "怎么安装 Node.js") — answer those directly. For bare navigation like "打开B站/打开淘宝", use open_site instead. If the user also wants you to read, compare, or click the results, set task_instruction so the GUI agent continues after the page opens.',
       parameters: {
         type: 'object',
         properties: {

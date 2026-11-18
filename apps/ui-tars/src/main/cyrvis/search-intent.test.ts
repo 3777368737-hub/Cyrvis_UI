@@ -90,14 +90,34 @@ describe('classifyVoiceIntent', () => {
 
   it.each([
     ['打开B站搜一下猫', '猫', 'bilibili'],
-    ['B站怎么投币', '怎么投币', 'bilibili'],
-    ['给我邓小平的简介', '邓小平的简介', null],
     ['打开浏览器搜索巴黎机票', '巴黎机票', null],
+    ['搜一下邓小平简介', '邓小平简介', null],
+    ['今天有什么新闻', '今天有什么新闻', null],
   ])('routes "%s" to search with query "%s"', (text, query, target) => {
     const decision = classifyVoiceIntent(text);
     expect(decision.mode).toBe('search');
     expect(decision.query).toBe(query);
     expect(decision.target).toBe(target);
+  });
+
+  it.each([
+    ['给我介绍下邓小平', '介绍下邓小平'],
+    ['给我邓小平的简介', '邓小平的简介'],
+    ['B站怎么投币', '怎么投币'],
+    ['怎么安装Node.js', '怎么安装Node.js'],
+  ])('answers "%s" from internal knowledge with query "%s"', (text, query) => {
+    const decision = classifyVoiceIntent(text);
+    expect(decision.mode).toBe('answer');
+    expect(decision.query).toBe(query);
+  });
+
+  it('does not search for stable knowledge by default', () => {
+    expect(classifyVoiceIntent('给我介绍下邓小平').mode).toBe('answer');
+    expect(classifyVoiceIntent('邓小平是谁').mode).toBe('answer');
+    expect(classifyVoiceIntent('给我推荐一本邓小平传记').mode).toBe('answer');
+    expect(classifyVoiceIntent('搜一下邓小平简介').mode).toBe('search');
+    expect(classifyVoiceIntent('今天有什么新闻').mode).toBe('search');
+    expect(classifyVoiceIntent('巴黎机票').mode).toBe('search');
   });
 
   it('keeps the silent-browse flag', () => {

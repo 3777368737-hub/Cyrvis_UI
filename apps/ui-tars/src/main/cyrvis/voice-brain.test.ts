@@ -265,6 +265,21 @@ describe('VoiceBrain', () => {
     expect(provider.toolResults[0].output).toContain('去巴黎的机票');
   });
 
+  it('rejects a web search for a stable knowledge question', async () => {
+    const { brain, provider } = setup();
+    await brain.start();
+    provider.emitTranscript('给我介绍下邓小平', true);
+
+    provider.emitToolCall({
+      name: 'search_web',
+      args: { query: '邓小平 简介' },
+      callId: 'call-knowledge',
+    });
+    await flush();
+
+    expect(provider.toolResults[0].output).toContain('ANSWER_FROM_KNOWLEDGE');
+  });
+
   it('redirects site navigation from search_web to open_site', async () => {
     const { brain, provider } = setup();
     await brain.start();

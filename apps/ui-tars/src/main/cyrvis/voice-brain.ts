@@ -465,7 +465,9 @@ export class VoiceBrain {
         this.options.autoWakeOnTask !== false &&
         (decision.kind === 'task' ||
           decision.kind === 'control' ||
-          ((voiceIntent.mode === 'search' || voiceIntent.mode === 'compare') &&
+          ((voiceIntent.mode === 'search' ||
+            voiceIntent.mode === 'compare' ||
+            voiceIntent.mode === 'answer') &&
             voiceIntent.confidence === 'high'));
 
       if (this.isWakePhrase(text) || autoWake) {
@@ -662,6 +664,19 @@ export class VoiceBrain {
               message: isApp
                 ? `USE_OPEN_APP: "${this.lastUserText}" is app navigation. Call open_app with app "${intent.target}" instead of searching.`
                 : `USE_OPEN_SITE: "${this.lastUserText}" is site navigation. Call open_site with site "${intent.target ?? 'bing'}" instead of searching.`,
+            }),
+          );
+          return;
+        }
+        if (intent?.mode === 'answer') {
+          this.provider.sendToolResult(
+            call.callId,
+            JSON.stringify({
+              ok: false,
+              status: 'answer_from_knowledge',
+              message:
+                `ANSWER_FROM_KNOWLEDGE: "${this.lastUserText}" is stable knowledge, not a live web lookup. ` +
+                'Answer now from your internal knowledge. Do not search. If you are genuinely unsure, say so and ask the user for permission to search.',
             }),
           );
           return;

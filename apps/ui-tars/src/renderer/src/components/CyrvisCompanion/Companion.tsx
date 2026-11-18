@@ -85,7 +85,9 @@ export default function Companion() {
             />
             {snapshot.error
               ? 'Voice or history unavailable · Right-click for settings'
-              : `${current.label} · ${snapshot.micReady ? 'Mic on' : 'Mic off'}`}
+              : `${current.label} · ${snapshot.micReady ? 'Mic on' : 'Mic off'}${
+                  snapshot.audioMode === 'speaker' ? ' · Speakers' : ''
+                }`}
           </span>
         </button>
         <div className="companion-controls" aria-label="Voice controls">
@@ -103,6 +105,17 @@ export default function Companion() {
               : snapshot.micReady
                 ? 'Pause conversation'
                 : 'Start conversation'}
+          </button>
+          <button
+            type="button"
+            title={
+              snapshot.audioMode === 'speaker'
+                ? 'Switch to headset mode'
+                : 'Switch to speakers mode'
+            }
+            onClick={() => void window.electron.companion.command('audio-mode')}
+          >
+            {snapshot.audioMode === 'speaker' ? 'Use headset' : 'Use speakers'}
           </button>
           {(snapshot.state === 'speaking' || snapshot.state === 'thinking') && (
             <button

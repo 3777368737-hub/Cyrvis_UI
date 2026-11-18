@@ -1,0 +1,180 @@
+import { beforeEach, afterEach, expect, it, vi } from 'vitest';
+import type { CaptureServiceHandlers } from './capture-service';
+import type { VoiceProviderCallbacks } from './voice/provider';
+import type { QwenOmniConfig } from './voice/qwen-omni';
+
+type IpcCallback = (...args: unknown[]) => unknown;
+
+const mock = vi.hoisted(() => ({
+  handlers: new Map<string, IpcCallback>(),
+  events: new Map<string, IpcCallback>(),
+  capture: null as CaptureServiceHandlers | null,
+  callbacks: null as VoiceProviderCallbacks | null,
+  config: null as QwenOmniConfig | null,
+  skinId: undefined as string | undefined,
+  skinListeners: new Set<(value: string | undefined) => void>(),
+  send: vi.fn(),
+  wake: vi.fn(),
+  start: vi.fn(async () => undefined),
+  captureClose: vi.fn(),
+  provider: {
+    sendAudio: vi.fn(),
+    bargeIn: vi.fn(),
+    clearAudioBuffer: vi.fn(),
+    notifyPlaybackIdle: vi.fn(),
+    setVoice: vi.fn(() => true),
+  },
+}));
+vi.mock('electron', () => ({
+  app: { on: vi.fn() },
+  BrowserWindow: {
+    getAllWindows: () => [
+      { isDestroyed: () => false, webContents: { send: mock.send } },
+    ],
+  },
+  globalShortcut: { register: () => true },
+  ipcMain: {
+    handle: (name: string, fn: IpcCallback) => mock.handlers.set(name, fn),
+    on: (name: string, fn: IpcCallback) => mock.events.set(name, fn),
+  },
+}));
+vi.mock('electron-store', () => ({
+  default: class {
+    get() {
+      return mock.skinId;
+    }
+    set(_key: string, value: string) {
+      if (mock.skinId === value) return;
+      mock.skinId = value;
+      for (const listener of mock.skinListeners) listener(value);
+    }
+    onDidChange(_key: string, listener: (value: string | undefined) => void) {
+      mock.skinListeners.add(listener);
+      return () => mock.skinListeners.delete(listener);
+    }
+  },
+}));
+vi.mock('@main/env', () => ({ isDev: false }));
+vi.mock('@main/logger', () => ({
+  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
+}));
+vi.mock('./capture-service', () => ({
+  startCaptureService: async (callbacks: CaptureServiceHandlers) => {
+    mock.capture = callbacks;
+    callbacks.onReady('Built-in microphone');
+    return { close: mock.captureClose };
+  },
+}));
+vi.mock('./controller', () => ({ CyrvisController: class {} }));
+vi.mock('./gui-adapter', () => ({ ElectronGUIAdapter: class {} }));
+vi.mock('./voice/qwen-omni', () => ({
+  QwenOmniProvider: class {
+    constructor(config: QwenOmniConfig) {
+      mock.config = config;
+      mock.callbacks = config.callbacks;
+      return mock.provider;
+    }
+  },
+}));
+vi.mock('./voice-brain', () => ({
+  VoiceBrain: class {
+    constructor(
+      _controller: unknown,
+      _callbacks: unknown,
+      factory: (callbacks: VoiceProviderCallbacks) => unknown,
+    ) {
+      factory({});
+    }
+    forceAwake = mock.wake;
+    start = mock.start;
+    sleep = vi.fn();
+    getState() {
+      return {};
+    }
+  },
+}));
+
+beforeEach(() => {
+  vi.resetModules();
+  vi.clearAllMocks();
+  mock.skinId = undefined;
+  mock.skinListeners.clear();
+  vi.useFakeTimers();
+  vi.stubEnv('QWEN_API_KEY', 'test');
+});
+
+it('starts with the saved companion voice instead of the default', async () => {
+  mock.skinId = 'jarvis';
+  const { startVoiceService } = await import('./voice-service');
+  startVoiceService();
+  expect(mock.config!.voice).toBe('Raymond');
+});
+
+it('switches voice from the shared appearance selection and clears old playback without starting capture', async () => {
+  const { startVoiceService } = await import('./voice-service');
+  const { getCompanionStore } = await import('../store/companion');
+  startVoiceService();
+  mock.callbacks!.onResponseStarted!();
+  getCompanionStore().set('skinId', 'awesome-agumon--legeling');
+  expect(mock.provider.setVoice).toHaveBeenLastCalledWith('Evan');
+  expect(mock.send).toHaveBeenCalledWith(
+    'cyrvis:voice:response-stopped',
+    undefined,
+  );
+  expect(mock.send).not.toHaveBeenCalledWith(
+    'cyrvis:voice:capture-ready',
+    expect.anything(),
+  );
+  const count = mock.provider.setVoice.mock.calls.length;
+  getCompanionStore().set('skinId', 'awesome-agumon--legeling');
+  expect(mock.provider.setVoice).toHaveBeenCalledTimes(count);
+  getCompanionStore().set('skinId', 'starpie-stocking');
+  expect(mock.provider.setVoice).toHaveBeenLastCalledWith('Katerina');
+  getCompanionStore().set('skinId', 'removed');
+  expect(mock.provider.setVoice).toHaveBeenLastCalledWith('Tina');
+});
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllEnvs();
+});
+
+it('does not hear its own loud speaker output or reopen input when generation finishes before playback', async () => {
+  const { startVoiceService } = await import('./voice-service');
+  startVoiceService();
+  await mock.handlers.get('cyrvis:voice:start')!();
+  const loud = new Int16Array(320).fill(11000);
+  mock.capture!.onPcm(loud);
+  expect(mock.provider.sendAudio).toHaveBeenCalledTimes(1);
+  mock.provider.sendAudio.mockClear();
+  mock.callbacks!.onResponseStarted!();
+  for (let n = 0; n < 30; n++) mock.capture!.onPcm(loud);
+  mock.callbacks!.onResponseDone!();
+  mock.capture!.onPcm(loud);
+  expect(mock.provider.bargeIn).not.toHaveBeenCalled();
+  expect(mock.provider.sendAudio).not.toHaveBeenCalled();
+  mock.events.get('cyrvis:voice:playback-idle')!();
+  mock.capture!.onPcm(loud);
+  expect(mock.provider.sendAudio).not.toHaveBeenCalled();
+  vi.advanceTimersByTime(801);
+  mock.capture!.onPcm(loud);
+  expect(mock.provider.sendAudio).toHaveBeenCalledTimes(1);
+});
+
+it('keeps voice paused when the companion is changed', async () => {
+  const { startVoiceService } = await import('./voice-service');
+  const { getCompanionStore } = await import('../store/companion');
+  startVoiceService();
+  await mock.handlers.get('cyrvis:voice:start')!();
+  mock.handlers.get('cyrvis:voice:stop')!();
+  mock.start.mockClear();
+  mock.send.mockClear();
+  getCompanionStore().set('skinId', 'jarvis');
+  expect(mock.provider.setVoice).toHaveBeenCalledWith('Raymond');
+  expect(mock.start).not.toHaveBeenCalled();
+  expect(mock.wake).not.toHaveBeenCalled();
+  expect(mock.captureClose).toHaveBeenCalledTimes(1);
+  expect(mock.send).not.toHaveBeenCalledWith(
+    'cyrvis:voice:capture-ready',
+    expect.anything(),
+  );
+});

@@ -8,6 +8,8 @@ import { app, BrowserWindow, globalShortcut, ipcMain } from 'electron';
 
 import * as env from '@main/env';
 import { logger } from '@main/logger';
+import { getCompanionStore } from '@main/store/companion';
+import { resolveCompanionSkin } from '@shared/companion-skins';
 
 import { startCaptureService, type CaptureService } from './capture-service';
 import { CyrvisController } from './controller';
@@ -31,16 +33,17 @@ let capturePreroll: Int16Array[] = [];
 let lastCaptureLogAt = 0;
 // Two selectable audio modes:
 // - headset: capture without AEC + full voice barge-in (verified)
-// - speaker: external output + AEC capture; barge-in is attempted with a
-//   higher threshold, and a short post-playback guard absorbs reverb.
-let audioMode: 'headset' | 'speaker' = 'headset';
-let speakerOutputMode = false;
+// - speaker: take turns; discard playback echo and its reverb tail.
+// Default to speakers: energy-only barge-in cannot distinguish loud output
+// from a real user. Headset users can explicitly opt in to spoken interruption.
+let audioMode: 'headset' | 'speaker' = 'speaker';
+let speakerOutputMode = true;
 let speakerGuardUntil = 0;
 let ipcRegistered = false;
 let testAudioActive = false;
 let pttActive = false;
 // Hands-free by default. PTT remains available as a fallback mode.
-let pttMode = false;
+const pttMode = false;
 
 const CAPTURE_BARGE_THRESHOLD = 1000;
 const CAPTURE_BARGE_SUSTAIN_MS = 150;
@@ -203,7 +206,8 @@ const registerVoiceIpc = () => {
     }
     try {
       await service.brain.start();
-      return { ok: true, state: service.brain.getState() };
+      if (!captureService) await startCapture();
+      return { ok: true, state: service.brain.getState(), captureReady };
     } catch (error) {
       logger.error('[cyrvis voice] start failed', error);
       return {
@@ -211,6 +215,15 @@ const registerVoiceIpc = () => {
         error: error instanceof Error ? error.message : String(error),
       };
     }
+  });
+
+  ipcMain.handle('cyrvis:voice:stop', () => {
+    service?.provider.bargeIn();
+    service?.brain.sleep();
+    captureReady = false;
+    captureService?.close();
+    captureService = null;
+    broadcast('cyrvis:voice:response-stopped');
   });
 
   ipcMain.handle('cyrvis:voice:get-state', () => {
@@ -318,7 +331,7 @@ const registerVoiceIpc = () => {
       echoCancellation: speakerOutputMode,
     });
     broadcast('cyrvis:voice:audio-mode', { mode: audioMode });
-    if (changed) {
+    if (changed && captureService) {
       try {
         await startCapture();
       } catch (error) {
@@ -360,6 +373,8 @@ const registerVoiceIpc = () => {
   });
 
   ipcMain.handle('cyrvis:voice:restart-capture', async () => {
+    if (!service || !captureService)
+      return { ok: false, error: 'Voice is paused' };
     try {
       await startCapture();
       return { ok: true };
@@ -401,6 +416,7 @@ export const startVoiceService = (): VoiceService | null => {
     return service;
   }
 
+  registerVoiceIpc();
   const apiKey = process.env.QWEN_API_KEY;
   if (!apiKey) {
     logger.warn(
@@ -410,6 +426,7 @@ export const startVoiceService = (): VoiceService | null => {
   }
 
   const controller = new CyrvisController(new ElectronGUIAdapter());
+  const companionStore = getCompanionStore();
   let provider!: QwenOmniProvider;
 
   const brain = new VoiceBrain(
@@ -453,6 +470,8 @@ export const startVoiceService = (): VoiceService | null => {
         onReady: () => {
           logger.info('[cyrvis voice] qwen session ready');
           callbacks.onReady?.();
+          if (captureReady)
+            broadcast('cyrvis:voice:capture-ready', { label: 'Microphone' });
         },
         onTranscript: (text: string, final: boolean) => {
           logger.info('[cyrvis voice] transcript', { text, final });
@@ -495,6 +514,7 @@ export const startVoiceService = (): VoiceService | null => {
         },
         onError: (error: Error) => {
           logger.error('[cyrvis voice] provider error', error);
+          broadcast('cyrvis:voice:capture-error', { message: error.message });
           callbacks.onError?.(error);
         },
       };
@@ -502,6 +522,7 @@ export const startVoiceService = (): VoiceService | null => {
       provider = new QwenOmniProvider({
         apiKey,
         model: process.env.QWEN_MODEL || 'qwen3.8-omni-flash-realtime',
+        voice: resolveCompanionSkin(companionStore.get('skinId')).voice,
         callbacks: wrapped,
         vadType: 'semantic_vad_ec',
         // 1.2s felt like the assistant was deaf: users repeat "Hello" before
@@ -524,6 +545,22 @@ export const startVoiceService = (): VoiceService | null => {
   );
 
   service = { brain, provider, controller };
+  const unsubscribeSkin = companionStore.onDidChange('skinId', (skinId) => {
+    const skin = resolveCompanionSkin(skinId);
+    if (!provider.setVoice(skin.voice)) return;
+    // Flush the sole audio owner's queued PCM without waking a paused pet or
+    // restarting its microphone. Allow speaker echo to decay before listening.
+    if (assistantPlaybackActive && speakerOutputMode)
+      speakerGuardUntil = Date.now() + 800;
+    assistantPlaybackActive = false;
+    captureBargeMs = 0;
+    capturePreroll = [];
+    broadcast('cyrvis:voice:response-stopped');
+    logger.info('[cyrvis voice] companion voice changed', {
+      skinId: skin.id,
+      voice: skin.voice,
+    });
+  });
   registerVoiceIpc();
 
   if (pttMode) {
@@ -546,6 +583,7 @@ export const startVoiceService = (): VoiceService | null => {
   });
 
   app.on('before-quit', () => {
+    unsubscribeSkin();
     globalShortcut.unregisterAll();
     captureService?.close();
     captureService = null;
@@ -556,9 +594,9 @@ export const startVoiceService = (): VoiceService | null => {
   // Connect eagerly so the app is listening after launch.
   brain
     .start()
-    .then(async () => {
+    .then(() => {
+      // The single renderer audio owner starts capture through voice:start.
       logger.info('[cyrvis voice] qwen connected');
-      await startCapture();
     })
     .catch((error) => {
       logger.error('[cyrvis voice] connect/capture failed', error);

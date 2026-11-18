@@ -5,9 +5,9 @@
 import { app, BrowserWindow } from 'electron';
 
 import { logger } from '@main/logger';
-import * as env from '@main/env';
 
 import { createWindow } from './createWindow';
+import { hideCompanionWindow, showCompanionWindow } from './companionWindow';
 
 let mainWindow: BrowserWindow | null = null;
 let isQuitting = false;
@@ -30,11 +30,16 @@ export function show() {
 }
 
 export function createMainWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) return mainWindow;
   mainWindow = createWindow({
     routerPath: '/',
+    title: 'Cyrvis',
+    minWidth: 640,
+    minHeight: 480,
     width: 1200,
     height: 700,
     alwaysOnTop: false,
+    showInBackground: true,
   });
 
   mainWindow.on('close', (event) => {
@@ -44,32 +49,14 @@ export function createMainWindow() {
       return;
     }
 
-    if (env.isMacOS) {
-      event.preventDefault();
-
-      // Black screen on window close in fullscreen mode
-      // https://github.com/electron/electron/issues/20263#issuecomment-633179965
-      if (mainWindow?.isFullScreen()) {
-        mainWindow?.setFullScreen(false);
-
-        mainWindow?.once('leave-full-screen', () => {
-          mainWindow?.hide();
-        });
-      } else {
-        mainWindow?.hide();
-      }
-      return;
-    }
-
-    if (env.isWindows) {
-      // Keep the voice listener alive in the tray. Quit explicitly from the
-      // tray menu when the user really wants to stop CYRVIS.
-      event.preventDefault();
+    event.preventDefault();
+    if (mainWindow?.isFullScreen()) {
+      mainWindow.once('leave-full-screen', () => mainWindow?.hide());
+      mainWindow.setFullScreen(false);
+    } else {
       mainWindow?.hide();
-      return;
     }
-
-    mainWindow = null;
+    showCompanionWindow();
   });
 
   return mainWindow;
@@ -80,10 +67,23 @@ export function setContentProtection(enable: boolean) {
 }
 
 export async function showWindow() {
+  hideCompanionWindow();
   mainWindow?.setContentProtection(false);
   mainWindow?.setIgnoreMouseEvents(false);
+  mainWindow?.setFocusable(true);
+  mainWindow?.setAlwaysOnTop(false);
   mainWindow?.show();
   mainWindow?.restore();
+  mainWindow?.focus();
+}
+
+export function sendCompanionCommand(command: string) {
+  if (command === 'settings') void showWindow();
+  mainWindow?.webContents.send('cyrvis:companion:command', command);
+}
+
+export function showCompanion() {
+  showCompanionWindow();
 }
 
 export async function hideMainWindow() {
@@ -99,6 +99,7 @@ export async function hideMainWindow() {
 
 export async function showMainWindow() {
   try {
+    hideCompanionWindow();
     mainWindow?.setContentProtection(false);
     setTimeout(() => {
       mainWindow?.setAlwaysOnTop(false);

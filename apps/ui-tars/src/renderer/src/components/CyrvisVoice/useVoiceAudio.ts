@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { WavStreamPlayer } from './wav-player';
+import { PcmStreamPlayer } from './pcm-player';
 
 // Only one voice pipeline may own mic capture and playback. A stale HMR or
 // duplicate mount must not create a second audio path.
@@ -83,9 +84,11 @@ export function useVoiceAudio() {
   const [assistantText, setAssistantText] = useState('');
   const [micReady, setMicReady] = useState(false);
   const [thinking, setThinking] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const connectingRef = useRef(false);
   const [playbackActive, setPlaybackActive] = useState(false);
   const [audioMode, setAudioModeState] = useState<'headset' | 'speaker'>(
-    'headset',
+    'speaker',
   );
   const [error, setError] = useState<string | null>(null);
   const [ptt, setPtt] = useState<{ active: boolean; mode: boolean }>({
@@ -99,7 +102,7 @@ export function useVoiceAudio() {
   const workletNodeRef = useRef<AudioWorkletNode | null>(null);
   const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const pendingSamplesRef = useRef<number[]>([]);
-  const playerRef = useRef<WavStreamPlayer | null>(null);
+  const playerRef = useRef<WavStreamPlayer | PcmStreamPlayer | null>(null);
   const outputDeviceIdRef = useRef<string | null>(null);
   const playbackChunksRef = useRef(0);
   const assistantSpeakingRef = useRef(false);
@@ -141,20 +144,32 @@ export function useVoiceAudio() {
       }
 
       if (!playerRef.current) {
-        const player = new WavStreamPlayer(finishPlayback, (error) => {
-          const detail =
-            error instanceof Error
-              ? `${error.name}: ${error.message}`
-              : String(error);
-          console.warn('[cyrvis] wav player error', detail);
-        });
+        const Player =
+          window.platform === 'darwin' ? PcmStreamPlayer : WavStreamPlayer;
+        const player = new Player(
+          () => {
+            // A stopped/replaced player must never reopen the new reply's mic.
+            if (playerRef.current === player) finishPlayback();
+          },
+          (error) => {
+            const detail =
+              error instanceof Error
+                ? `${error.name}: ${error.message}`
+                : String(error);
+            console.warn('[cyrvis] audio player error', detail);
+            setError(`Audio playback failed: ${detail}`);
+          },
+        );
         playerRef.current = player;
         if (outputDeviceIdRef.current) {
           void player.setSinkId(outputDeviceIdRef.current).catch((error) => {
             console.warn('[cyrvis] set playback output failed', error);
           });
         }
-        console.log('[cyrvis] wav stream player created');
+        console.log(
+          '[cyrvis] stream player created',
+          window.platform === 'darwin' ? 'scheduled PCM' : 'WAV',
+        );
       }
 
       assistantSpeakingRef.current = true;
@@ -317,15 +332,12 @@ export function useVoiceAudio() {
     }
   }, []);
 
+  // Audio mode controls echo handling, not a hard-coded Windows output device.
   const applyAudioMode = useCallback(
-    (mode: 'headset' | 'speaker') => {
-      if (mode === 'speaker') {
-        void applyOutput('扬声器 (Realtek');
-      } else {
-        void resetOutput();
-      }
+    (_mode: 'headset' | 'speaker') => {
+      void resetOutput();
     },
-    [applyOutput, resetOutput],
+    [resetOutput],
   );
 
   const toggleAudioMode = useCallback(async () => {
@@ -577,14 +589,23 @@ export function useVoiceAudio() {
   }, [flushPending]);
 
   const start = useCallback(async () => {
+    if (connectingRef.current) return;
+    connectingRef.current = true;
+    setConnecting(true);
+    setError(null);
     try {
       if (window.electron.voice.externalCapture) {
         // Capture lives in a hidden renderer; the main window only plays TTS.
-        setMicReady(true);
+        setMicReady(false);
       } else {
         await ensureMic();
       }
-      await window.electron.voice.start();
+      const result = await window.electron.voice.start();
+      if (!result?.ok) throw new Error(result?.error || 'Voice is unavailable');
+      setError(null);
+      if (result.state) setState(result.state);
+      if (window.electron.voice.externalCapture)
+        setMicReady(Boolean(result.captureReady));
     } catch (err) {
       const name = err instanceof DOMException ? err.name : 'Error';
       const detail = err instanceof Error ? err.message : String(err);
@@ -593,6 +614,9 @@ export function useVoiceAudio() {
       setError(message);
       setMicReady(false);
       startedRef.current = false;
+    } finally {
+      connectingRef.current = false;
+      setConnecting(false);
     }
   }, [ensureMic]);
 
@@ -625,10 +649,12 @@ export function useVoiceAudio() {
   }, [ensureMic, stopCapture]);
 
   const stop = useCallback(async () => {
+    setThinking(false);
     stopPlayback();
+    finishPlayback();
     await stopCapture();
-    window.electron.voice.sleep();
-  }, [stopCapture, stopPlayback]);
+    await window.electron.voice.stop();
+  }, [finishPlayback, stopCapture, stopPlayback]);
 
   useEffect(() => {
     if (voiceOwner) {
@@ -648,11 +674,15 @@ export function useVoiceAudio() {
       window.electron.voice.onPttState((state) => setPtt(state)),
       window.electron.voice.onAudio(playPcm),
       window.electron.voice.onSpeechStarted(() => {
+        setTranscript('');
+        setAssistantText('');
         stopPlayback();
       }),
       window.electron.voice.onSpeechStopped(() => undefined),
       window.electron.voice.onThinking(() => setThinking(true)),
       window.electron.voice.onResponseStarted(() => {
+        stopPlayback();
+        setAssistantText('');
         setThinking(false);
         bargeInMsRef.current = 0;
         preSpeechBufferRef.current = [];
@@ -670,7 +700,6 @@ export function useVoiceAudio() {
           assistantSpeakingRef.current = false;
           window.electron.voice.notifyPlaybackIdle();
         }, 10_000);
-        stopPlayback();
       }),
       window.electron.voice.onResponseStopped(() => {
         setThinking(false);
@@ -683,6 +712,7 @@ export function useVoiceAudio() {
           assistantIdleTimerRef.current = null;
         }
         stopPlayback();
+        finishPlayback();
       }),
       window.electron.voice.onResponseDone(() => {
         // No audio chunks means this was a tool-call/text-only response; the
@@ -696,16 +726,12 @@ export function useVoiceAudio() {
           finishPlayback();
           return;
         }
-        // Flush the encoder and end the MP3 stream. The <audio> element then
-        // fires `ended` when the buffered audio has actually played, which
-        // reopens the microphone via finishPlayback().
+        // Generation can finish seconds before audio playback. Drain every
+        // queued sample before finishPlayback reopens the microphone.
         playerRef.current?.finish();
       }),
-      window.electron.voice.onTranscript(({ text, final }) => {
+      window.electron.voice.onTranscript(({ text }) => {
         setTranscript(text);
-        if (final) {
-          setAssistantText('');
-        }
       }),
       window.electron.voice.onAssistantText(({ text, final }) => {
         setThinking(false);
@@ -730,6 +756,8 @@ export function useVoiceAudio() {
         console.error('[cyrvis] external capture error', message);
         setError(message);
         setMicReady(false);
+        setThinking(false);
+        stopPlayback();
       }),
       window.electron.voice.onSetOutput((label) => {
         void applyOutput(label);
@@ -929,6 +957,7 @@ export function useVoiceAudio() {
     assistantText,
     micReady,
     thinking,
+    connecting,
     playbackActive,
     audioMode,
     error,

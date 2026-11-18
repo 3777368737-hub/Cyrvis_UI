@@ -18,7 +18,7 @@ import ElectronStore from 'electron-store';
 
 import * as env from '@main/env';
 import { logger } from '@main/logger';
-import { createMainWindow } from '@main/window/index';
+import { createMainWindow, showCompanion } from '@main/window/index';
 import { registerIpcMain } from '@ui-tars/electron-ipc/main';
 import { ipcRoutes } from './ipcRoutes';
 
@@ -41,11 +41,7 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    const win = BrowserWindow.getAllWindows().find(
-      (item) => item.getTitle() === 'UI-TARS Desktop',
-    );
-    win?.show();
-    win?.focus();
+    showCompanion();
   });
 }
 
@@ -161,6 +157,11 @@ const initializeApp = async () => {
   // Voice layer is optional; it no-ops when QWEN_API_KEY is absent.
   startVoiceService();
 
+  // The companion is the first visible surface. The main history window is
+  // preloaded in the background so voice playback remains alive while it is
+  // hidden.
+  showCompanion();
+
   app.on('window-all-closed', () => {
     logger.info('window-all-closed');
     if (!env.isMacOS) {
@@ -183,12 +184,8 @@ const initializeApp = async () => {
     logger.info('app activate');
     if (!mainWindow || mainWindow.isDestroyed()) {
       mainWindow = createMainWindow();
-    } else {
-      if (!mainWindow.isVisible()) {
-        mainWindow.show();
-      }
-      mainWindow.focus();
     }
+    showCompanion();
   });
 
   logger.info('initializeApp end');

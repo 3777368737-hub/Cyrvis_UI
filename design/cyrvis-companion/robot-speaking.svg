@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 480" role="img" aria-label="CYRVIS 回应" class="robot state-speaking"><defs>
+<linearGradient id="speaking-shell" x1=".15" x2=".9" y2="1"><stop stop-color="#FFFFFF"/><stop offset=".5" stop-color="#EAF0F6"/><stop offset="1" stop-color="#A9BACD"/></linearGradient>
+<linearGradient id="speaking-face" x2=".7" y2="1"><stop stop-color="#263E58"/><stop offset=".5" stop-color="#14263D"/><stop offset="1" stop-color="#0B1628"/></linearGradient>
+<linearGradient id="speaking-blue" x2=".9" y2="1"><stop stop-color="#75B6FF"/><stop offset="1" stop-color="#2A61B9"/></linearGradient>
+<radialGradient id="speaking-shadow"><stop stop-color="#25486D" stop-opacity=".22"/><stop offset="1" stop-color="#25486D" stop-opacity="0"/></radialGradient>
+</defs>
+<ellipse cx="200" cy="433" rx="130" ry="24" fill="url(#speaking-shadow)"/>
+<g class="whole">
+<g class="feet" fill="url(#speaking-shell)" stroke="#A8BACD" stroke-width="1.5"><path d="M141 370h46v42q-3 15-24 15h-30q-15-3-10-17z"/><path d="M213 370h46l18 40q5 14-10 17h-30q-21 0-24-15z"/></g>
+<path d="M145 262q55-20 110 0l16 79q2 42-38 48h-66q-40-6-38-48z" fill="url(#speaking-shell)" stroke="#B8C8D8" stroke-width="1.5"/>
+<path d="M145 346q55 19 110 0" fill="none" stroke="#A7B9CC" stroke-width="2"/>
+<g class="arm arm-left" transform="rotate(9 132 283)"><rect x="102" y="274" width="31" height="77" rx="15" fill="url(#speaking-shell)" stroke="#B4C5D5"/><path d="M109 335h16" stroke="#89A3BD" stroke-width="2"/></g>
+<g class="arm arm-right" transform="rotate(-23 269 285)"><rect x="267" y="274" width="31" height="77" rx="15" fill="url(#speaking-shell)" stroke="#B4C5D5"/><path d="M274 335h16" stroke="#89A3BD" stroke-width="2"/></g>
+<circle cx="200" cy="307" r="25" fill="#D2DEEB"/><g fill="none" stroke="url(#speaking-blue)" stroke-width="7" stroke-linecap="round"><path d="M211 294a17 17 0 0 0-20-3 M184 300a17 17 0 0 0 0 14 M191 323a17 17 0 0 0 20-3"/></g>
+<g class="head" transform="">
+<rect x="67" y="139" width="31" height="72" rx="15" fill="url(#speaking-blue)"/><rect x="302" y="139" width="31" height="72" rx="15" fill="url(#speaking-blue)"/>
+<path d="M85 126q1-43 49-50q66-11 132 0q48 7 49 50v88q-2 44-50 51q-65 9-130 0q-48-7-50-51z" fill="url(#speaking-shell)" stroke="#C5D2E0" stroke-width="2"/>
+<path d="M115 104q85-29 170 0" fill="none" stroke="white" stroke-width="5" stroke-linecap="round"/>
+<path d="M109 139q0-23 27-27q64-9 128 0q27 4 27 27v60q-1 31-32 35q-59 8-118 0q-31-4-32-35z" fill="url(#speaking-face)" stroke="#8297B0" stroke-width="2"/>
+<path d="M124 134q75-20 150 0" fill="none" stroke="#6789AA" stroke-opacity=".25" stroke-width="3" stroke-linecap="round"/>
+<g class="eyes" fill="#8DDCFF" stroke="#8DDCFF"><path d="M141 172q15-25 32 0 M227 172q15-25 32 0" fill="none" stroke-width="9" stroke-linecap="round"/></g><g stroke="#83D5FF" stroke-width="5" stroke-linecap="round"><path d="M181 207v6 M190 202v16 M200 198v24 M210 203v14 M219 207v6"/></g>
+<circle cx="200" cy="94" r="3.2" fill="#4D96E5"/>
+<path d="M159 251h82" stroke="#C2CDDA" stroke-width="2" stroke-linecap="round"/>
+</g>
+
+
+
+</g></svg>

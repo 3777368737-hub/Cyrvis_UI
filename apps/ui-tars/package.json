@@ -21,6 +21,8 @@
     "package": "electron-forge package",
     "clean": "rimraf dist out",
     "test": "vitest",
+    "test:companion:ui": "node scripts/check-companion.cjs",
+    "test:companion": "vitest run --config vitest.companion.config.mts",
     "test:bench": "vitest bench",
     "coverage": "vitest run --coverage",
     "build:e2e": "npm run build:dist && cross-env CI=e2e npm run package",

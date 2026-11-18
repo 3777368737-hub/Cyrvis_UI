@@ -134,14 +134,14 @@ export function CyrvisVoiceBar() {
                   ? 'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300'
                   : 'border-gray-200 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800'
               }`}
-              title="切换输出：耳机（可语音打断）/ 外放（AEC，打断需 Ctrl+Alt+X）"
+              title="Switch output: headset (voice interruption) / speakers (Ctrl+Alt+X to interrupt)"
             >
               {audioMode === 'speaker' ? (
                 <Volume2 className="h-3.5 w-3.5" />
               ) : (
                 <Headphones className="h-3.5 w-3.5" />
               )}
-              {audioMode === 'speaker' ? '外放' : '耳机'}
+              {audioMode === 'speaker' ? 'Speakers' : 'Headset'}
             </button>
             {ptt.mode && (
               <button

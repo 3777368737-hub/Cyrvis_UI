@@ -1,0 +1,163 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1280" viewBox="0 0 1600 1280"><rect width="1600" height="1280" fill="#F2F6FA"/><text x="72" y="65" font-family="Helvetica Neue,PingFang SC,Arial,sans-serif" font-size="15" fill="#2A4564" letter-spacing="2">CYRVIS / DESKTOP COMPANION</text><text x="1528" y="65" font-family="Helvetica Neue,PingFang SC,Arial,sans-serif" font-size="12" fill="#60758D" text-anchor="end" letter-spacing="2">CHARACTER CONCEPT 01</text><svg xmlns="http://www.w3.org/2000/svg" x="100" y="100" width="510" height="612" viewBox="0 0 400 480" role="img" aria-label="CYRVIS 陪伴" class="robot state-idle"><defs>
+<linearGradient id="board-idle-shell" x1=".15" x2=".9" y2="1"><stop stop-color="#FFFFFF"/><stop offset=".5" stop-color="#EAF0F6"/><stop offset="1" stop-color="#A9BACD"/></linearGradient>
+<linearGradient id="board-idle-face" x2=".7" y2="1"><stop stop-color="#263E58"/><stop offset=".5" stop-color="#14263D"/><stop offset="1" stop-color="#0B1628"/></linearGradient>
+<linearGradient id="board-idle-blue" x2=".9" y2="1"><stop stop-color="#75B6FF"/><stop offset="1" stop-color="#2A61B9"/></linearGradient>
+<radialGradient id="board-idle-shadow"><stop stop-color="#25486D" stop-opacity=".22"/><stop offset="1" stop-color="#25486D" stop-opacity="0"/></radialGradient>
+</defs>
+<ellipse cx="200" cy="433" rx="130" ry="24" fill="url(#board-idle-shadow)"/>
+<g class="whole">
+<g class="feet" fill="url(#board-idle-shell)" stroke="#A8BACD" stroke-width="1.5"><path d="M141 370h46v42q-3 15-24 15h-30q-15-3-10-17z"/><path d="M213 370h46l18 40q5 14-10 17h-30q-21 0-24-15z"/></g>
+<path d="M145 262q55-20 110 0l16 79q2 42-38 48h-66q-40-6-38-48z" fill="url(#board-idle-shell)" stroke="#B8C8D8" stroke-width="1.5"/>
+<path d="M145 346q55 19 110 0" fill="none" stroke="#A7B9CC" stroke-width="2"/>
+<g class="arm arm-left" transform="rotate(9 132 283)"><rect x="102" y="274" width="31" height="77" rx="15" fill="url(#board-idle-shell)" stroke="#B4C5D5"/><path d="M109 335h16" stroke="#89A3BD" stroke-width="2"/></g>
+<g class="arm arm-right" transform="rotate(-9 269 285)"><rect x="267" y="274" width="31" height="77" rx="15" fill="url(#board-idle-shell)" stroke="#B4C5D5"/><path d="M274 335h16" stroke="#89A3BD" stroke-width="2"/></g>
+<circle cx="200" cy="307" r="25" fill="#D2DEEB"/><g fill="none" stroke="url(#board-idle-blue)" stroke-width="7" stroke-linecap="round"><path d="M211 294a17 17 0 0 0-20-3 M184 300a17 17 0 0 0 0 14 M191 323a17 17 0 0 0 20-3"/></g>
+<g class="head" transform="">
+<rect x="67" y="139" width="31" height="72" rx="15" fill="url(#board-idle-blue)"/><rect x="302" y="139" width="31" height="72" rx="15" fill="url(#board-idle-blue)"/>
+<path d="M85 126q1-43 49-50q66-11 132 0q48 7 49 50v88q-2 44-50 51q-65 9-130 0q-48-7-50-51z" fill="url(#board-idle-shell)" stroke="#C5D2E0" stroke-width="2"/>
+<path d="M115 104q85-29 170 0" fill="none" stroke="white" stroke-width="5" stroke-linecap="round"/>
+<path d="M109 139q0-23 27-27q64-9 128 0q27 4 27 27v60q-1 31-32 35q-59 8-118 0q-31-4-32-35z" fill="url(#board-idle-face)" stroke="#8297B0" stroke-width="2"/>
+<path d="M124 134q75-20 150 0" fill="none" stroke="#6789AA" stroke-opacity=".25" stroke-width="3" stroke-linecap="round"/>
+<g class="eyes" fill="#8DDCFF" stroke="#8DDCFF"><rect x="145" y="149" width="25" height="40" rx="12.5"/><rect x="230" y="149" width="25" height="40" rx="12.5"/></g><path d="M189 207q11 7 22 0" fill="none" stroke="#71A9C8" stroke-width="4" stroke-linecap="round"/>
+<circle cx="200" cy="94" r="3.2" fill="#4D96E5"/>
+<path d="M159 251h82" stroke="#C2CDDA" stroke-width="2" stroke-linecap="round"/>
+</g>
+
+
+
+</g></svg><text x="740" y="240" font-family="Helvetica Neue,PingFang SC,Arial,sans-serif" font-size="53" fill="#1A304C" >你的桌面小伙伴。</text><text x="744" y="300" font-family="Helvetica Neue,PingFang SC,Arial,sans-serif" font-size="25" fill="#60758D" >叫一声，它就转向你。</text><text x="744" y="350" font-family="Helvetica Neue,PingFang SC,Arial,sans-serif" font-size="21" fill="#60758D" >听你说话，替你行动，安静地陪在身边。</text><rect x="744" y="405" width="404" height="76" rx="24" fill="white"/><text x="772" y="451" font-family="Helvetica Neue,PingFang SC,Arial,sans-serif" font-size="18" fill="#385675" >“Cyrvis，帮我整理一下今天的文件。”</text><text x="744" y="545" font-family="Helvetica Neue,PingFang SC,Arial,sans-serif" font-size="17" fill="#60758D" >陶瓷白机身 · 蓝色侧耳 · 分段 C 胸标</text><text x="744" y="578" font-family="Helvetica Neue,PingFang SC,Arial,sans-serif" font-size="17" fill="#60758D" >短手臂与小脚，让回应变成动作。</text><path d="M72 750H1528" stroke="#D6E1EB"/><text x="72" y="799" font-family="Helvetica Neue,PingFang SC,Arial,sans-serif" font-size="24" fill="#1A304C" >每一种状态，都看得懂。</text><svg xmlns="http://www.w3.org/2000/svg" x="58" y="821" width="270" height="324" viewBox="0 0 400 480" role="img" aria-label="CYRVIS 倾听" class="robot state-listening"><defs>
+<linearGradient id="board-listening-shell" x1=".15" x2=".9" y2="1"><stop stop-color="#FFFFFF"/><stop offset=".5" stop-color="#EAF0F6"/><stop offset="1" stop-color="#A9BACD"/></linearGradient>
+<linearGradient id="board-listening-face" x2=".7" y2="1"><stop stop-color="#263E58"/><stop offset=".5" stop-color="#14263D"/><stop offset="1" stop-color="#0B1628"/></linearGradient>
+<linearGradient id="board-listening-blue" x2=".9" y2="1"><stop stop-color="#75B6FF"/><stop offset="1" stop-color="#2A61B9"/></linearGradient>
+<radialGradient id="board-listening-shadow"><stop stop-color="#25486D" stop-opacity=".22"/><stop offset="1" stop-color="#25486D" stop-opacity="0"/></radialGradient>
+</defs>
+<ellipse cx="200" cy="433" rx="130" ry="24" fill="url(#board-listening-shadow)"/>
+<g class="whole">
+<g class="feet" fill="url(#board-listening-shell)" stroke="#A8BACD" stroke-width="1.5"><path d="M141 370h46v42q-3 15-24 15h-30q-15-3-10-17z"/><path d="M213 370h46l18 40q5 14-10 17h-30q-21 0-24-15z"/></g>
+<path d="M145 262q55-20 110 0l16 79q2 42-38 48h-66q-40-6-38-48z" fill="url(#board-listening-shell)" stroke="#B8C8D8" stroke-width="1.5"/>
+<path d="M145 346q55 19 110 0" fill="none" stroke="#A7B9CC" stroke-width="2"/>
+<g class="arm arm-left" transform="rotate(9 132 283)"><rect x="102" y="274" width="31" height="77" rx="15" fill="url(#board-listening-shell)" stroke="#B4C5D5"/><path d="M109 335h16" stroke="#89A3BD" stroke-width="2"/></g>
+<g class="arm arm-right" transform="rotate(-55 269 285)"><rect x="267" y="274" width="31" height="77" rx="15" fill="url(#board-listening-shell)" stroke="#B4C5D5"/><path d="M274 335h16" stroke="#89A3BD" stroke-width="2"/></g>
+<circle cx="200" cy="307" r="25" fill="#D2DEEB"/><g fill="none" stroke="url(#board-listening-blue)" stroke-width="7" stroke-linecap="round"><path d="M211 294a17 17 0 0 0-20-3 M184 300a17 17 0 0 0 0 14 M191 323a17 17 0 0 0 20-3"/></g>
+<g class="head" transform="rotate(-8 200 230)">
+<rect x="67" y="139" width="31" height="72" rx="15" fill="url(#board-listening-blue)"/><rect x="302" y="139" width="31" height="72" rx="15" fill="url(#board-listening-blue)"/>
+<path d="M85 126q1-43 49-50q66-11 132 0q48 7 49 50v88q-2 44-50 51q-65 9-130 0q-48-7-50-51z" fill="url(#board-listening-shell)" stroke="#C5D2E0" stroke-width="2"/>
+<path d="M115 104q85-29 170 0" fill="none" stroke="white" stroke-width="5" stroke-linecap="round"/>
+<path d="M109 139q0-23 27-27q64-9 128 0q27 4 27 27v60q-1 31-32 35q-59 8-118 0q-31-4-32-35z" fill="url(#board-listening-face)" stroke="#8297B0" stroke-width="2"/>
+<path d="M124 134q75-20 150 0" fill="none" stroke="#6789AA" stroke-opacity=".25" stroke-width="3" stroke-linecap="round"/>
+<g class="eyes" fill="#8DDCFF" stroke="#8DDCFF"><rect x="145" y="149" width="25" height="40" rx="12.5"/><rect x="230" y="149" width="25" height="40" rx="12.5"/></g><path d="M189 207q11 7 22 0" fill="none" stroke="#71A9C8" stroke-width="4" stroke-linecap="round"/>
+<circle cx="200" cy="94" r="3.2" fill="#4D96E5"/>
+<path d="M159 251h82" stroke="#C2CDDA" stroke-width="2" stroke-linecap="round"/>
+</g>
+
+<g fill="none" stroke="#79B4EE" stroke-width="4" stroke-linecap="round"><path d="M49 147q-14 25 0 50 M36 132q-25 41 0 80"/></g>
+
+</g></svg><text x="193" y="1173" font-family="Helvetica Neue,PingFang SC,Arial,sans-serif" font-size="21" fill="#1A304C" text-anchor="middle">倾听</text><text x="193" y="1207" font-family="Helvetica Neue,PingFang SC,Arial,sans-serif" font-size="15" fill="#60758D" text-anchor="middle">侧过头，认真听你说</text><svg xmlns="http://www.w3.org/2000/svg" x="358" y="821" width="270" height="324" viewBox="0 0 400 480" role="img" aria-label="CYRVIS 思考" class="robot state-thinking"><defs>
+<linearGradient id="board-thinking-shell" x1=".15" x2=".9" y2="1"><stop stop-color="#FFFFFF"/><stop offset=".5" stop-color="#EAF0F6"/><stop offset="1" stop-color="#A9BACD"/></linearGradient>
+<linearGradient id="board-thinking-face" x2=".7" y2="1"><stop stop-color="#263E58"/><stop offset=".5" stop-color="#14263D"/><stop offset="1" stop-color="#0B1628"/></linearGradient>
+<linearGradient id="board-thinking-blue" x2=".9" y2="1"><stop stop-color="#75B6FF"/><stop offset="1" stop-color="#2A61B9"/></linearGradient>
+<radialGradient id="board-thinking-shadow"><stop stop-color="#25486D" stop-opacity=".22"/><stop offset="1" stop-color="#25486D" stop-opacity="0"/></radialGradient>
+</defs>
+<ellipse cx="200" cy="433" rx="130" ry="24" fill="url(#board-thinking-shadow)"/>
+<g class="whole">
+<g class="feet" fill="url(#board-thinking-shell)" stroke="#A8BACD" stroke-width="1.5"><path d="M141 370h46v42q-3 15-24 15h-30q-15-3-10-17z"/><path d="M213 370h46l18 40q5 14-10 17h-30q-21 0-24-15z"/></g>
+<path d="M145 262q55-20 110 0l16 79q2 42-38 48h-66q-40-6-38-48z" fill="url(#board-thinking-shell)" stroke="#B8C8D8" stroke-width="1.5"/>
+<path d="M145 346q55 19 110 0" fill="none" stroke="#A7B9CC" stroke-width="2"/>
+<g class="arm arm-left" transform="rotate(9 132 283)"><rect x="102" y="274" width="31" height="77" rx="15" fill="url(#board-thinking-shell)" stroke="#B4C5D5"/><path d="M109 335h16" stroke="#89A3BD" stroke-width="2"/></g>
+<g class="arm arm-right" transform="rotate(-9 269 285)"><rect x="267" y="274" width="31" height="77" rx="15" fill="url(#board-thinking-shell)" stroke="#B4C5D5"/><path d="M274 335h16" stroke="#89A3BD" stroke-width="2"/></g>
+<circle cx="200" cy="307" r="25" fill="#D2DEEB"/><g fill="none" stroke="url(#board-thinking-blue)" stroke-width="7" stroke-linecap="round"><path d="M211 294a17 17 0 0 0-20-3 M184 300a17 17 0 0 0 0 14 M191 323a17 17 0 0 0 20-3"/></g>
+<g class="head" transform="rotate(3 200 230)">
+<rect x="67" y="139" width="31" height="72" rx="15" fill="url(#board-thinking-blue)"/><rect x="302" y="139" width="31" height="72" rx="15" fill="url(#board-thinking-blue)"/>
+<path d="M85 126q1-43 49-50q66-11 132 0q48 7 49 50v88q-2 44-50 51q-65 9-130 0q-48-7-50-51z" fill="url(#board-thinking-shell)" stroke="#C5D2E0" stroke-width="2"/>
+<path d="M115 104q85-29 170 0" fill="none" stroke="white" stroke-width="5" stroke-linecap="round"/>
+<path d="M109 139q0-23 27-27q64-9 128 0q27 4 27 27v60q-1 31-32 35q-59 8-118 0q-31-4-32-35z" fill="url(#board-thinking-face)" stroke="#8297B0" stroke-width="2"/>
+<path d="M124 134q75-20 150 0" fill="none" stroke="#6789AA" stroke-opacity=".25" stroke-width="3" stroke-linecap="round"/>
+<g class="eyes" fill="#8DDCFF" stroke="#8DDCFF"><rect x="148" y="142" width="16" height="27" rx="8"/><rect x="232" y="142" width="16" height="27" rx="8"/></g><path d="M189 207q11 7 22 0" fill="none" stroke="#71A9C8" stroke-width="4" stroke-linecap="round"/>
+<circle cx="200" cy="94" r="3.2" fill="#4D96E5"/>
+<path d="M159 251h82" stroke="#C2CDDA" stroke-width="2" stroke-linecap="round"/>
+</g>
+<g fill="#5088C9"><circle cx="316" cy="79" r="5"/><circle cx="335" cy="63" r="7"/><circle cx="359" cy="51" r="9"/></g>
+
+
+</g></svg><text x="493" y="1173" font-family="Helvetica Neue,PingFang SC,Arial,sans-serif" font-size="21" fill="#1A304C" text-anchor="middle">思考</text><text x="493" y="1207" font-family="Helvetica Neue,PingFang SC,Arial,sans-serif" font-size="15" fill="#60758D" text-anchor="middle">目光上移，整理思路</text><svg xmlns="http://www.w3.org/2000/svg" x="658" y="821" width="270" height="324" viewBox="0 0 400 480" role="img" aria-label="CYRVIS 回应" class="robot state-speaking"><defs>
+<linearGradient id="board-speaking-shell" x1=".15" x2=".9" y2="1"><stop stop-color="#FFFFFF"/><stop offset=".5" stop-color="#EAF0F6"/><stop offset="1" stop-color="#A9BACD"/></linearGradient>
+<linearGradient id="board-speaking-face" x2=".7" y2="1"><stop stop-color="#263E58"/><stop offset=".5" stop-color="#14263D"/><stop offset="1" stop-color="#0B1628"/></linearGradient>
+<linearGradient id="board-speaking-blue" x2=".9" y2="1"><stop stop-color="#75B6FF"/><stop offset="1" stop-color="#2A61B9"/></linearGradient>
+<radialGradient id="board-speaking-shadow"><stop stop-color="#25486D" stop-opacity=".22"/><stop offset="1" stop-color="#25486D" stop-opacity="0"/></radialGradient>
+</defs>
+<ellipse cx="200" cy="433" rx="130" ry="24" fill="url(#board-speaking-shadow)"/>
+<g class="whole">
+<g class="feet" fill="url(#board-speaking-shell)" stroke="#A8BACD" stroke-width="1.5"><path d="M141 370h46v42q-3 15-24 15h-30q-15-3-10-17z"/><path d="M213 370h46l18 40q5 14-10 17h-30q-21 0-24-15z"/></g>
+<path d="M145 262q55-20 110 0l16 79q2 42-38 48h-66q-40-6-38-48z" fill="url(#board-speaking-shell)" stroke="#B8C8D8" stroke-width="1.5"/>
+<path d="M145 346q55 19 110 0" fill="none" stroke="#A7B9CC" stroke-width="2"/>
+<g class="arm arm-left" transform="rotate(9 132 283)"><rect x="102" y="274" width="31" height="77" rx="15" fill="url(#board-speaking-shell)" stroke="#B4C5D5"/><path d="M109 335h16" stroke="#89A3BD" stroke-width="2"/></g>
+<g class="arm arm-right" transform="rotate(-23 269 285)"><rect x="267" y="274" width="31" height="77" rx="15" fill="url(#board-speaking-shell)" stroke="#B4C5D5"/><path d="M274 335h16" stroke="#89A3BD" stroke-width="2"/></g>
+<circle cx="200" cy="307" r="25" fill="#D2DEEB"/><g fill="none" stroke="url(#board-speaking-blue)" stroke-width="7" stroke-linecap="round"><path d="M211 294a17 17 0 0 0-20-3 M184 300a17 17 0 0 0 0 14 M191 323a17 17 0 0 0 20-3"/></g>
+<g class="head" transform="">
+<rect x="67" y="139" width="31" height="72" rx="15" fill="url(#board-speaking-blue)"/><rect x="302" y="139" width="31" height="72" rx="15" fill="url(#board-speaking-blue)"/>
+<path d="M85 126q1-43 49-50q66-11 132 0q48 7 49 50v88q-2 44-50 51q-65 9-130 0q-48-7-50-51z" fill="url(#board-speaking-shell)" stroke="#C5D2E0" stroke-width="2"/>
+<path d="M115 104q85-29 170 0" fill="none" stroke="white" stroke-width="5" stroke-linecap="round"/>
+<path d="M109 139q0-23 27-27q64-9 128 0q27 4 27 27v60q-1 31-32 35q-59 8-118 0q-31-4-32-35z" fill="url(#board-speaking-face)" stroke="#8297B0" stroke-width="2"/>
+<path d="M124 134q75-20 150 0" fill="none" stroke="#6789AA" stroke-opacity=".25" stroke-width="3" stroke-linecap="round"/>
+<g class="eyes" fill="#8DDCFF" stroke="#8DDCFF"><path d="M141 172q15-25 32 0 M227 172q15-25 32 0" fill="none" stroke-width="9" stroke-linecap="round"/></g><g stroke="#83D5FF" stroke-width="5" stroke-linecap="round"><path d="M181 207v6 M190 202v16 M200 198v24 M210 203v14 M219 207v6"/></g>
+<circle cx="200" cy="94" r="3.2" fill="#4D96E5"/>
+<path d="M159 251h82" stroke="#C2CDDA" stroke-width="2" stroke-linecap="round"/>
+</g>
+
+
+
+</g></svg><text x="793" y="1173" font-family="Helvetica Neue,PingFang SC,Arial,sans-serif" font-size="21" fill="#1A304C" text-anchor="middle">回应</text><text x="793" y="1207" font-family="Helvetica Neue,PingFang SC,Arial,sans-serif" font-size="15" fill="#60758D" text-anchor="middle">用眼神和声纹回应</text><svg xmlns="http://www.w3.org/2000/svg" x="958" y="821" width="270" height="324" viewBox="0 0 400 480" role="img" aria-label="CYRVIS 执行" class="robot state-working"><defs>
+<linearGradient id="board-working-shell" x1=".15" x2=".9" y2="1"><stop stop-color="#FFFFFF"/><stop offset=".5" stop-color="#EAF0F6"/><stop offset="1" stop-color="#A9BACD"/></linearGradient>
+<linearGradient id="board-working-face" x2=".7" y2="1"><stop stop-color="#263E58"/><stop offset=".5" stop-color="#14263D"/><stop offset="1" stop-color="#0B1628"/></linearGradient>
+<linearGradient id="board-working-blue" x2=".9" y2="1"><stop stop-color="#75B6FF"/><stop offset="1" stop-color="#2A61B9"/></linearGradient>
+<radialGradient id="board-working-shadow"><stop stop-color="#25486D" stop-opacity=".22"/><stop offset="1" stop-color="#25486D" stop-opacity="0"/></radialGradient>
+</defs>
+<ellipse cx="200" cy="433" rx="130" ry="24" fill="url(#board-working-shadow)"/>
+<g class="whole">
+<g class="feet" fill="url(#board-working-shell)" stroke="#A8BACD" stroke-width="1.5"><path d="M141 370h46v42q-3 15-24 15h-30q-15-3-10-17z"/><path d="M213 370h46l18 40q5 14-10 17h-30q-21 0-24-15z"/></g>
+<path d="M145 262q55-20 110 0l16 79q2 42-38 48h-66q-40-6-38-48z" fill="url(#board-working-shell)" stroke="#B8C8D8" stroke-width="1.5"/>
+<path d="M145 346q55 19 110 0" fill="none" stroke="#A7B9CC" stroke-width="2"/>
+<g class="arm arm-left" transform="rotate(-32 132 283)"><rect x="102" y="274" width="31" height="77" rx="15" fill="url(#board-working-shell)" stroke="#B4C5D5"/><path d="M109 335h16" stroke="#89A3BD" stroke-width="2"/></g>
+<g class="arm arm-right" transform="rotate(-9 269 285)"><rect x="267" y="274" width="31" height="77" rx="15" fill="url(#board-working-shell)" stroke="#B4C5D5"/><path d="M274 335h16" stroke="#89A3BD" stroke-width="2"/></g>
+<circle cx="200" cy="307" r="25" fill="#D2DEEB"/><g fill="none" stroke="url(#board-working-blue)" stroke-width="7" stroke-linecap="round"><path d="M211 294a17 17 0 0 0-20-3 M184 300a17 17 0 0 0 0 14 M191 323a17 17 0 0 0 20-3"/></g>
+<g class="head" transform="">
+<rect x="67" y="139" width="31" height="72" rx="15" fill="url(#board-working-blue)"/><rect x="302" y="139" width="31" height="72" rx="15" fill="url(#board-working-blue)"/>
+<path d="M85 126q1-43 49-50q66-11 132 0q48 7 49 50v88q-2 44-50 51q-65 9-130 0q-48-7-50-51z" fill="url(#board-working-shell)" stroke="#C5D2E0" stroke-width="2"/>
+<path d="M115 104q85-29 170 0" fill="none" stroke="white" stroke-width="5" stroke-linecap="round"/>
+<path d="M109 139q0-23 27-27q64-9 128 0q27 4 27 27v60q-1 31-32 35q-59 8-118 0q-31-4-32-35z" fill="url(#board-working-face)" stroke="#8297B0" stroke-width="2"/>
+<path d="M124 134q75-20 150 0" fill="none" stroke="#6789AA" stroke-opacity=".25" stroke-width="3" stroke-linecap="round"/>
+<g class="eyes" fill="#8DDCFF" stroke="#8DDCFF"><rect x="145" y="149" width="25" height="40" rx="12.5"/><rect x="230" y="149" width="25" height="40" rx="12.5"/></g><path d="M189 207q11 7 22 0" fill="none" stroke="#71A9C8" stroke-width="4" stroke-linecap="round"/>
+<circle cx="200" cy="94" r="3.2" fill="#4D96E5"/>
+<path d="M159 251h82" stroke="#C2CDDA" stroke-width="2" stroke-linecap="round"/>
+</g>
+
+
+<g transform="rotate(-9 98 333)"><rect x="55" y="303" width="84" height="55" rx="10" fill="#3169B5"/><path d="M72 322h49 M72 334h32" stroke="#A5D9FF" stroke-width="4" stroke-linecap="round"/></g>
+</g></svg><text x="1093" y="1173" font-family="Helvetica Neue,PingFang SC,Arial,sans-serif" font-size="21" fill="#1A304C" text-anchor="middle">执行</text><text x="1093" y="1207" font-family="Helvetica Neue,PingFang SC,Arial,sans-serif" font-size="15" fill="#60758D" text-anchor="middle">看向任务，动手处理</text><svg xmlns="http://www.w3.org/2000/svg" x="1258" y="821" width="270" height="324" viewBox="0 0 400 480" role="img" aria-label="CYRVIS 休息" class="robot state-sleeping"><defs>
+<linearGradient id="board-sleeping-shell" x1=".15" x2=".9" y2="1"><stop stop-color="#FFFFFF"/><stop offset=".5" stop-color="#EAF0F6"/><stop offset="1" stop-color="#A9BACD"/></linearGradient>
+<linearGradient id="board-sleeping-face" x2=".7" y2="1"><stop stop-color="#263E58"/><stop offset=".5" stop-color="#14263D"/><stop offset="1" stop-color="#0B1628"/></linearGradient>
+<linearGradient id="board-sleeping-blue" x2=".9" y2="1"><stop stop-color="#75B6FF"/><stop offset="1" stop-color="#2A61B9"/></linearGradient>
+<radialGradient id="board-sleeping-shadow"><stop stop-color="#25486D" stop-opacity=".22"/><stop offset="1" stop-color="#25486D" stop-opacity="0"/></radialGradient>
+</defs>
+<ellipse cx="200" cy="433" rx="130" ry="24" fill="url(#board-sleeping-shadow)"/>
+<g class="whole">
+<g class="feet" fill="url(#board-sleeping-shell)" stroke="#A8BACD" stroke-width="1.5"><path d="M141 370h46v42q-3 15-24 15h-30q-15-3-10-17z"/><path d="M213 370h46l18 40q5 14-10 17h-30q-21 0-24-15z"/></g>
+<path d="M145 262q55-20 110 0l16 79q2 42-38 48h-66q-40-6-38-48z" fill="url(#board-sleeping-shell)" stroke="#B8C8D8" stroke-width="1.5"/>
+<path d="M145 346q55 19 110 0" fill="none" stroke="#A7B9CC" stroke-width="2"/>
+<g class="arm arm-left" transform="rotate(9 132 283)"><rect x="102" y="274" width="31" height="77" rx="15" fill="url(#board-sleeping-shell)" stroke="#B4C5D5"/><path d="M109 335h16" stroke="#89A3BD" stroke-width="2"/></g>
+<g class="arm arm-right" transform="rotate(-9 269 285)"><rect x="267" y="274" width="31" height="77" rx="15" fill="url(#board-sleeping-shell)" stroke="#B4C5D5"/><path d="M274 335h16" stroke="#89A3BD" stroke-width="2"/></g>
+<circle cx="200" cy="307" r="25" fill="#D2DEEB"/><g fill="none" stroke="url(#board-sleeping-blue)" stroke-width="7" stroke-linecap="round"><path d="M211 294a17 17 0 0 0-20-3 M184 300a17 17 0 0 0 0 14 M191 323a17 17 0 0 0 20-3"/></g>
+<g class="head" transform="">
+<rect x="67" y="139" width="31" height="72" rx="15" fill="url(#board-sleeping-blue)"/><rect x="302" y="139" width="31" height="72" rx="15" fill="url(#board-sleeping-blue)"/>
+<path d="M85 126q1-43 49-50q66-11 132 0q48 7 49 50v88q-2 44-50 51q-65 9-130 0q-48-7-50-51z" fill="url(#board-sleeping-shell)" stroke="#C5D2E0" stroke-width="2"/>
+<path d="M115 104q85-29 170 0" fill="none" stroke="white" stroke-width="5" stroke-linecap="round"/>
+<path d="M109 139q0-23 27-27q64-9 128 0q27 4 27 27v60q-1 31-32 35q-59 8-118 0q-31-4-32-35z" fill="url(#board-sleeping-face)" stroke="#8297B0" stroke-width="2"/>
+<path d="M124 134q75-20 150 0" fill="none" stroke="#6789AA" stroke-opacity=".25" stroke-width="3" stroke-linecap="round"/>
+<g class="eyes" fill="#8DDCFF" stroke="#8DDCFF"><path d="M143 170q15 10 30 0 M227 170q15 10 30 0" fill="none" stroke-width="7" stroke-linecap="round"/></g>
+<circle cx="200" cy="94" r="3.2" fill="#8FA3B8"/>
+<path d="M159 251h82" stroke="#C2CDDA" stroke-width="2" stroke-linecap="round"/>
+</g>
+
+
+
+</g></svg><text x="1393" y="1173" font-family="Helvetica Neue,PingFang SC,Arial,sans-serif" font-size="21" fill="#1A304C" text-anchor="middle">休息</text><text x="1393" y="1207" font-family="Helvetica Neue,PingFang SC,Arial,sans-serif" font-size="15" fill="#60758D" text-anchor="middle">闭上眼，收起提示</text></svg>

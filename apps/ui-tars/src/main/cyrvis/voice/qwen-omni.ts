@@ -61,6 +61,7 @@ export class QwenOmniProvider implements VoiceProvider {
   private ws: WebSocket | null = null;
   private connected = false;
   private pendingConnect: PendingConnect | null = null;
+  private connectPromise: Promise<void> | null = null;
   private proactivePending = false;
   private cancelRequested = false;
   private localSpeechActive = false;
@@ -85,7 +86,8 @@ export class QwenOmniProvider implements VoiceProvider {
   private readonly apiKey: string;
   private readonly model: string;
   private readonly endpoint: string;
-  private readonly voice: string;
+  private voice: string;
+  private configuredVoice: string | null = null;
   private readonly baseInstructions: string;
   private readonly tools: QwenToolDefinition[];
   private readonly callbacks: VoiceProviderCallbacks;
@@ -115,6 +117,11 @@ export class QwenOmniProvider implements VoiceProvider {
       return Promise.resolve();
     }
 
+    // Main-process startup and renderer IPC may request the same session.
+    if (this.pendingConnect && this.connectPromise) {
+      return this.connectPromise;
+    }
+
     this.manualClose = false;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -123,16 +130,9 @@ export class QwenOmniProvider implements VoiceProvider {
 
     // Never keep an old socket alive: two live sessions would deliver the same
     // assistant audio twice (heard as two overlapping AI voices).
-    if (this.ws) {
-      try {
-        this.ws.removeAllListeners();
-        this.ws.close();
-      } catch {
-        // already closed
-      }
-      this.ws = null;
-    }
+    this.closeSocket();
     this.connected = false;
+    this.configuredVoice = null;
     this.localSpeechActive = false;
     this.responseActive = false;
     this.awaitingResponse = false;
@@ -141,7 +141,7 @@ export class QwenOmniProvider implements VoiceProvider {
     this.pendingSpeak = null;
     this.clearToolResultFallback();
 
-    return new Promise<void>((resolve, reject) => {
+    this.connectPromise = new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.failConnect(new Error('Qwen realtime connection timed out'));
         this.close();
@@ -149,24 +149,38 @@ export class QwenOmniProvider implements VoiceProvider {
 
       this.pendingConnect = { resolve, reject, timer };
 
-      const ws = new WebSocket(this.endpoint, {
-        headers: { Authorization: `Bearer ${this.apiKey}` },
-      });
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(this.endpoint, {
+          headers: { Authorization: `Bearer ${this.apiKey}` },
+        });
+      } catch (error) {
+        this.failConnect(
+          error instanceof Error ? error : new Error(String(error)),
+        );
+        return;
+      }
       this.ws = ws;
 
       ws.on('open', () => {
         // Wait for session.created before sending session.update.
       });
 
-      ws.on('message', (data) => this.handleMessage(data));
+      ws.on('message', (data) => {
+        if (this.ws === ws) {
+          this.handleMessage(data);
+        }
+      });
 
       ws.on('error', (error) => {
+        if (this.ws !== ws) return;
         this.callbacks.onError?.(error);
         this.failConnect(error);
         this.scheduleReconnect();
       });
 
       ws.on('close', (_code, reason) => {
+        if (this.ws !== ws) return;
         this.connected = false;
         this.ws = null;
         this.localSpeechActive = false;
@@ -177,6 +191,33 @@ export class QwenOmniProvider implements VoiceProvider {
         this.callbacks.onClose?.();
         this.scheduleReconnect();
       });
+    });
+    return this.connectPromise;
+  }
+
+  /** Update the existing conversation; reconnects also inherit the selection. */
+  setVoice(voice: string): boolean {
+    if (voice === this.voice) return false;
+    this.voice = voice;
+    if (this.connected) {
+      this.bargeIn();
+      this.restoreInstructionsIfNeeded();
+      this.sendVoiceUpdate();
+      this.callbacks.onSpeechStopped?.();
+      this.callbacks.onResponseDone?.();
+    }
+    // A selection made during startup is sent when session.updated arrives.
+    return true;
+  }
+
+  private sendVoiceUpdate(): void {
+    this.configuredVoice = this.voice;
+    this.send({
+      event_id: eventId('event_voice'),
+      type: 'session.update',
+      session: this.model.startsWith('qwen3.8-')
+        ? { audio: { output: { voice: this.voice } } }
+        : { voice: this.voice },
     });
   }
 
@@ -401,18 +442,22 @@ export class QwenOmniProvider implements VoiceProvider {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    if (this.pendingConnect) {
-      clearTimeout(this.pendingConnect.timer);
-      this.pendingConnect = null;
-    }
+    this.failConnect(new Error('Qwen realtime connection closed'));
     this.connected = false;
     this.awaitingResponse = false;
     this.activeResponseId = null;
     this.pendingToolResults = [];
     this.pendingSpeak = null;
     this.clearToolResultFallback();
-    this.ws?.close();
+    this.closeSocket();
+  }
+
+  private closeSocket(): void {
+    const ws = this.ws;
     this.ws = null;
+    // Keep the error listener: closing a CONNECTING socket emits an error on
+    // the next tick. Identity guards make all retired-socket events harmless.
+    ws?.close();
   }
 
   private scheduleReconnect(): void {
@@ -448,6 +493,7 @@ export class QwenOmniProvider implements VoiceProvider {
         this.sendSessionUpdate();
         break;
       case 'session.updated':
+        if (this.configuredVoice !== this.voice) this.sendVoiceUpdate();
         this.connected = true;
         if (this.pendingConnect) {
           clearTimeout(this.pendingConnect.timer);
@@ -593,7 +639,12 @@ export class QwenOmniProvider implements VoiceProvider {
         break;
       }
       case 'error':
-        if (!this.cancelRequested) {
+        if (
+          !this.cancelRequested ||
+          String(
+            (event.error as { event_id?: string } | undefined)?.event_id,
+          ).startsWith('event_voice_')
+        ) {
           this.callbacks.onError?.(
             new Error(
               JSON.stringify(event.error || event, null, 2).slice(0, 1000),
@@ -744,12 +795,13 @@ export class QwenOmniProvider implements VoiceProvider {
   }
 
   private sendSessionUpdate(): void {
+    this.configuredVoice = this.voice;
     this.send({
       event_id: eventId('event_session'),
       type: 'session.update',
       session: {
         modalities: ['text', 'audio'],
-        voice: this.voice,
+        ...(!this.model.startsWith('qwen3.8-') && { voice: this.voice }),
         instructions: this.baseInstructions,
         input_audio_transcription: {
           model: 'qwen3-asr-flash-realtime',
@@ -768,6 +820,7 @@ export class QwenOmniProvider implements VoiceProvider {
             format: { type: 'pcm', sample_rate: 16000 },
           },
           output: {
+            ...(this.model.startsWith('qwen3.8-') && { voice: this.voice }),
             format: { type: 'pcm', sample_rate: 24000 },
           },
         },

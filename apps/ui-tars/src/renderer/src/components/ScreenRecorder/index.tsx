@@ -31,12 +31,12 @@ export const ScreenRecorder: React.FC<ScreenRecorderProps> = (props) => {
             cursor: 'pointer',
           }}
         >
-          {isRecording ? '停止录制' : '开始录制'}
+          {isRecording ? 'Stop recording' : 'Start recording'}
         </button>
       </div>
       {canSaveRecording && (
         <div style={{ marginBottom: '20px' }}>
-          <button onClick={saveRecording}>保存视频</button>
+          <button onClick={saveRecording}>Save video</button>
         </div>
       )}
       <div>

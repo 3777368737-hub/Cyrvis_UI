@@ -1,6 +1,12 @@
 # CYRVIS 语音架构（最终实现）
 
-> 状态：2026-11-15 实测通过（含语音打断）。
+> 状态：Windows 旧链路于 2026-11-15 实测通过；2026-11-17 新增 macOS 连续 PCM 播放与默认外放保护，自动化验证通过，真实外放听感待复测。
+>
+> **macOS 更新（2026-11-17）**：下文 WAV 分段方案保留给 Windows/Linux；macOS 现在使用 `pcm-player.ts`，在同一个 AudioContext 时钟上连续调度 24 kHz PCM，首次缓冲约 120ms。保留所有待播样本，只有真正发生 underrun 才重新对齐时钟；不因队列超过几秒而丢弃/重叠播放。`response.done` 只表示生成结束，麦克风必须等最后一个音频源结束后再恢复。采集仍由独立隐藏窗口完成。
+>
+> **默认输出模式改为外放**：Mac 内置麦克风会收到扬声器声音，旧默认耳机模式在播放约 0.4 秒后误触发 barge-in，产生“没问题”→“没问”的自我转写循环。外放模式在播放及结束后 800ms 内丢弃麦克风输入；可用 Interrupt / Ctrl+Alt+X 中断。耳机用户可在右键菜单明确切换至耳机模式。输出设备跟随系统默认设备，不再尝试 Windows 专用的 Realtek 设备名。
+>
+> 验证：75 项单元测试（含外放回声不触发打断、完整播放尾部、长队列连续排程、取消、输出切换）；真实 Electron 静音 PCM 队列验证完整时长及旧播放器停止不会提前解锁新回复的麦克风。
 > 目标：端到端实时语音对话 + 语音打断 + 语音控制 GUI Agent。
 > 相关文档：[architecture.md](./architecture.md)（整体）、[roadmap.md](./roadmap.md)（后续）、
 > [findings.md](./findings.md)（排障记录）、[archive/voice-implementation-v1.md](./archive/voice-implementation-v1.md)（历史清单）。

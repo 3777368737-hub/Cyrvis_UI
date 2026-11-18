@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 480" role="img" aria-label="CYRVIS 思考" class="robot state-thinking"><defs>
+<linearGradient id="thinking-shell" x1=".15" x2=".9" y2="1"><stop stop-color="#FFFFFF"/><stop offset=".5" stop-color="#EAF0F6"/><stop offset="1" stop-color="#A9BACD"/></linearGradient>
+<linearGradient id="thinking-face" x2=".7" y2="1"><stop stop-color="#263E58"/><stop offset=".5" stop-color="#14263D"/><stop offset="1" stop-color="#0B1628"/></linearGradient>
+<linearGradient id="thinking-blue" x2=".9" y2="1"><stop stop-color="#75B6FF"/><stop offset="1" stop-color="#2A61B9"/></linearGradient>
+<radialGradient id="thinking-shadow"><stop stop-color="#25486D" stop-opacity=".22"/><stop offset="1" stop-color="#25486D" stop-opacity="0"/></radialGradient>
+</defs>
+<ellipse cx="200" cy="433" rx="130" ry="24" fill="url(#thinking-shadow)"/>
+<g class="whole">
+<g class="feet" fill="url(#thinking-shell)" stroke="#A8BACD" stroke-width="1.5"><path d="M141 370h46v42q-3 15-24 15h-30q-15-3-10-17z"/><path d="M213 370h46l18 40q5 14-10 17h-30q-21 0-24-15z"/></g>
+<path d="M145 262q55-20 110 0l16 79q2 42-38 48h-66q-40-6-38-48z" fill="url(#thinking-shell)" stroke="#B8C8D8" stroke-width="1.5"/>
+<path d="M145 346q55 19 110 0" fill="none" stroke="#A7B9CC" stroke-width="2"/>
+<g class="arm arm-left" transform="rotate(9 132 283)"><rect x="102" y="274" width="31" height="77" rx="15" fill="url(#thinking-shell)" stroke="#B4C5D5"/><path d="M109 335h16" stroke="#89A3BD" stroke-width="2"/></g>
+<g class="arm arm-right" transform="rotate(-9 269 285)"><rect x="267" y="274" width="31" height="77" rx="15" fill="url(#thinking-shell)" stroke="#B4C5D5"/><path d="M274 335h16" stroke="#89A3BD" stroke-width="2"/></g>
+<circle cx="200" cy="307" r="25" fill="#D2DEEB"/><g fill="none" stroke="url(#thinking-blue)" stroke-width="7" stroke-linecap="round"><path d="M211 294a17 17 0 0 0-20-3 M184 300a17 17 0 0 0 0 14 M191 323a17 17 0 0 0 20-3"/></g>
+<g class="head" transform="rotate(3 200 230)">
+<rect x="67" y="139" width="31" height="72" rx="15" fill="url(#thinking-blue)"/><rect x="302" y="139" width="31" height="72" rx="15" fill="url(#thinking-blue)"/>
+<path d="M85 126q1-43 49-50q66-11 132 0q48 7 49 50v88q-2 44-50 51q-65 9-130 0q-48-7-50-51z" fill="url(#thinking-shell)" stroke="#C5D2E0" stroke-width="2"/>
+<path d="M115 104q85-29 170 0" fill="none" stroke="white" stroke-width="5" stroke-linecap="round"/>
+<path d="M109 139q0-23 27-27q64-9 128 0q27 4 27 27v60q-1 31-32 35q-59 8-118 0q-31-4-32-35z" fill="url(#thinking-face)" stroke="#8297B0" stroke-width="2"/>
+<path d="M124 134q75-20 150 0" fill="none" stroke="#6789AA" stroke-opacity=".25" stroke-width="3" stroke-linecap="round"/>
+<g class="eyes" fill="#8DDCFF" stroke="#8DDCFF"><rect x="148" y="142" width="16" height="27" rx="8"/><rect x="232" y="142" width="16" height="27" rx="8"/></g><path d="M189 207q11 7 22 0" fill="none" stroke="#71A9C8" stroke-width="4" stroke-linecap="round"/>
+<circle cx="200" cy="94" r="3.2" fill="#4D96E5"/>
+<path d="M159 251h82" stroke="#C2CDDA" stroke-width="2" stroke-linecap="round"/>
+</g>
+<g fill="#5088C9"><circle cx="316" cy="79" r="5"/><circle cx="335" cy="63" r="7"/><circle cx="359" cy="51" r="9"/></g>
+
+
+</g></svg>

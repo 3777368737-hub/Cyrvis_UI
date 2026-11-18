@@ -9,7 +9,7 @@ import { GUIAgentManager } from '@main/ipcRoutes/agent';
 import { runAgent } from '@main/services/runAgent';
 import { store } from '@main/store/create';
 import type { AppState } from '@main/store/types';
-import { showMainWindow } from '@main/window';
+import { showCompanion } from '@main/window';
 import {
   closeScreenMarker,
   hideScreenWaterFlow,
@@ -327,6 +327,6 @@ export class ElectronGUIAdapter implements GUIAdapter {
     hideWidgetWindow();
     closeScreenMarker();
     hideScreenWaterFlow();
-    void showMainWindow();
+    showCompanion();
   }
 }

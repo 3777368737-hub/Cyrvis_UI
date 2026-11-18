@@ -1032,6 +1032,33 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
     });
   }
 
+  /**
+   * Context/tool refresh must be partial: Qwen rejects a second full
+   * session.update (especially turn_detection) once audio processing started.
+   */
+  private sendContextUpdate(): void {
+    const session: Record<string, unknown> = {};
+    if (this.contextDirty) {
+      session.instructions = this.instructions;
+    }
+    if (this.toolsDirty) {
+      session.tools = this.tools;
+    }
+    if (Object.keys(session).length === 0) {
+      return;
+    }
+    this.contextDirty = false;
+    this.toolsDirty = false;
+    if (session.tools) {
+      this.pendingSessionTools = this.tools.slice();
+    }
+    this.send({
+      event_id: eventId('event_context'),
+      type: 'session.update',
+      session,
+    });
+  }
+
   private restoreInstructionsIfNeeded(): void {
     if (!this.proactivePending) {
       return;
@@ -1055,7 +1082,7 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
     ) {
       return;
     }
-    this.sendSessionUpdate();
+    this.sendContextUpdate();
   }
 
   private get instructions(): string {

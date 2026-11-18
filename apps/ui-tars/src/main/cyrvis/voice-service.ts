@@ -1798,7 +1798,9 @@ export const startVoiceService = (): VoiceService | null => {
               apiKey,
               model: process.env.QWEN_MODEL || 'qwen3.8-omni-flash-realtime',
               endpoint: process.env.QWEN_REALTIME_URL || undefined,
-              voice: resolveCompanionSkin(companionStore.get('skinId')).voice,
+              voice:
+                process.env.QWEN_VOICE?.trim() ||
+                resolveCompanionSkin(companionStore.get('skinId')).voice,
               callbacks: wrapped,
               tools: voiceTools,
               vadType: 'semantic_vad_ec',
@@ -1834,6 +1836,16 @@ export const startVoiceService = (): VoiceService | null => {
   const unsubscribeSkin = companionStore.onDidChange('skinId', (skinId) => {
     // Companion voices apply to Omni; cascade retains its configured TTS voice.
     if (!(provider instanceof QwenOmniProvider)) return;
+    const configuredVoice = process.env.QWEN_VOICE?.trim();
+    if (configuredVoice) {
+      // Token Plan exposes a different voice set (longanqian etc.); a companion
+      // skin such as "Tina" would reject the whole session.
+      logger.info('[cyrvis voice] companion voice overridden by QWEN_VOICE', {
+        voice: configuredVoice,
+        skinId,
+      });
+      return;
+    }
     const skin = resolveCompanionSkin(skinId);
     if (!provider.setVoice(skin.voice)) return;
     if (assistantPlaybackActive && speakerOutputMode)

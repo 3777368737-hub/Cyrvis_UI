@@ -139,6 +139,17 @@ it('starts with the saved companion voice instead of the default', async () => {
   expect(mock.config!.voice).toBe('Raymond');
 });
 
+it('prefers QWEN_VOICE over companion skins when configured', async () => {
+  vi.stubEnv('QWEN_VOICE', 'longanqian');
+  mock.skinId = 'jarvis';
+  const { startVoiceService } = await import('./voice-service');
+  const { getCompanionStore } = await import('../store/companion');
+  startVoiceService();
+  expect(mock.config!.voice).toBe('longanqian');
+  getCompanionStore().set('skinId', 'awesome-agumon--legeling');
+  expect(mock.provider.setVoice).not.toHaveBeenCalled();
+});
+
 it('switches voice from the shared appearance selection and clears old playback without starting capture', async () => {
   const { startVoiceService } = await import('./voice-service');
   const { getCompanionStore } = await import('../store/companion');

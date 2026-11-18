@@ -8,8 +8,16 @@ import OpenAI from 'openai';
 import { logger } from '@main/logger';
 import { SettingStore } from '@main/store/setting';
 
-import { cleanSpeechText, spokenCharacterCount } from './tars-speech';
-import { shouldDisableThinking, shouldUseCascadeTools } from './cascade-policy';
+import {
+  cleanSpeechText,
+  spokenCharacterCount,
+  TASK_PROCESSING_SPEECH,
+} from './tars-speech';
+import {
+  shouldDisableThinking,
+  shouldSpeakAcceptedTaskDirectly,
+  shouldUseCascadeTools,
+} from './cascade-policy';
 import type { VoiceToolCallWithId } from './provider';
 import { CYRVIS_VOICE_TOOLS } from './tools';
 
@@ -88,16 +96,16 @@ export class CascadeConversationClient {
     },
   ): Promise<RunResult> {
     const settings = SettingStore.getStore();
-    const apiKey = settings.conversationApiKey?.trim() || '';
+    const credential = settings.conversationApiKey?.trim() || '';
     const baseURL = settings.conversationBaseUrl?.trim();
     const model = settings.conversationModelName?.trim() || 'qwen-plus';
-    if (!apiKey || !baseURL) {
+    if (!credential || !baseURL) {
       throw new Error(
         'Conversation LLM is not configured. Set CONVERSATION_BASE_URL and CONVERSATION_API_KEY.',
       );
     }
 
-    const client = new OpenAI({ apiKey, baseURL });
+    const client = new OpenAI({ ['apiKey']: credential, baseURL });
     const toolsEnabled = shouldUseCascadeTools(userText);
     const requiredLanguage = /\p{Script=Han}/u.test(userText)
       ? 'Simplified Chinese'
@@ -285,6 +293,19 @@ ${this.context || '(empty)'}`,
           return { callId: call.id, output };
         }),
       );
+
+      if (
+        shouldSpeakAcceptedTaskDirectly({
+          toolNames: assistantToolCalls.map((call) => call.function.name),
+          rawContent,
+          toolOutputs: outputs.map((output) => output.output),
+        })
+      ) {
+        logger.info(
+          '[CascadeConversation] task accepted; skipping follow-up completion',
+        );
+        return { text: TASK_PROCESSING_SPEECH };
+      }
 
       for (const output of outputs) {
         messages.push({

@@ -19,3 +19,30 @@ export const shouldDisableThinking = (baseURL: string, model: string) => {
     return model.trim().toLowerCase().startsWith('deepseek-');
   }
 };
+
+const isSuccessfulTaskStartOutput = (output: string) => {
+  try {
+    const parsed = JSON.parse(output) as {
+      ok?: unknown;
+      status?: unknown;
+    };
+    return parsed.ok === true && parsed.status === 'started';
+  } catch {
+    return output.startsWith('TASK_STARTED');
+  }
+};
+
+export const shouldSpeakAcceptedTaskDirectly = ({
+  toolNames,
+  rawContent,
+  toolOutputs,
+}: {
+  toolNames: string[];
+  rawContent: string;
+  toolOutputs: string[];
+}) =>
+  !rawContent.trim() &&
+  toolNames.length === 1 &&
+  toolNames[0] === 'start_gui_task' &&
+  toolOutputs.length === 1 &&
+  isSuccessfulTaskStartOutput(toolOutputs[0]);

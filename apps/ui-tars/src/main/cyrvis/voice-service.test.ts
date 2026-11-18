@@ -54,7 +54,34 @@ vi.mock('electron-store', () => ({
     }
   },
 }));
-vi.mock('@main/env', () => ({ isDev: false }));
+vi.mock('@main/env', () => ({
+  isDev: false,
+  voiceEngine: 'omni',
+  voiceSilenceTimeoutMs: 600,
+}));
+vi.mock('@main/store/setting', () => ({
+  SettingStore: { getStore: () => ({ voiceEngine: 'omni' }) },
+}));
+vi.mock('@main/services/breezeTts', () => ({
+  breezeTtsService: { stop: vi.fn() },
+}));
+vi.mock('@main/services/qwenTtsRealtime', () => ({
+  qwenTtsRealtimeService: { stopAll: vi.fn() },
+}));
+vi.mock('./voice/local-tts', () => ({ localTtsService: {} }));
+vi.mock('./voice/cascade-provider', () => ({ CascadeVoiceProvider: class {} }));
+vi.mock('./keyword-gate', () => ({
+  KeywordGate: class {
+    load() {}
+    reset() {}
+  },
+}));
+vi.mock('./memory', () => ({
+  voiceMemoryService: {
+    appendActivity: vi.fn(async () => undefined),
+    getSnapshot: () => ({ turns: [] }),
+  },
+}));
 vi.mock('@main/logger', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
 }));
@@ -72,7 +99,7 @@ vi.mock('./voice/qwen-omni', () => ({
     constructor(config: QwenOmniConfig) {
       mock.config = config;
       mock.callbacks = config.callbacks;
-      return mock.provider;
+      Object.assign(this, mock.provider);
     }
   },
 }));
@@ -88,6 +115,7 @@ vi.mock('./voice-brain', () => ({
     forceAwake = mock.wake;
     start = mock.start;
     sleep = vi.fn();
+    shouldSuppressReply = () => false;
     getState() {
       return {};
     }
@@ -98,6 +126,7 @@ beforeEach(() => {
   vi.resetModules();
   vi.clearAllMocks();
   mock.skinId = undefined;
+  mock.capture = null;
   mock.skinListeners.clear();
   vi.useFakeTimers();
   vi.stubEnv('QWEN_API_KEY', 'test');
@@ -138,26 +167,23 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-it('does not hear its own loud speaker output or reopen input when generation finishes before playback', async () => {
+it('uses renderer-owned capture without starting a second microphone', async () => {
   const { startVoiceService } = await import('./voice-service');
   startVoiceService();
-  await mock.handlers.get('cyrvis:voice:start')!();
-  const loud = new Int16Array(320).fill(11000);
-  mock.capture!.onPcm(loud);
-  expect(mock.provider.sendAudio).toHaveBeenCalledTimes(1);
-  mock.provider.sendAudio.mockClear();
-  mock.callbacks!.onResponseStarted!();
-  for (let n = 0; n < 30; n++) mock.capture!.onPcm(loud);
-  mock.callbacks!.onResponseDone!();
-  mock.capture!.onPcm(loud);
-  expect(mock.provider.bargeIn).not.toHaveBeenCalled();
-  expect(mock.provider.sendAudio).not.toHaveBeenCalled();
-  mock.events.get('cyrvis:voice:playback-idle')!();
-  mock.capture!.onPcm(loud);
-  expect(mock.provider.sendAudio).not.toHaveBeenCalled();
-  vi.advanceTimersByTime(801);
-  mock.capture!.onPcm(loud);
-  expect(mock.provider.sendAudio).toHaveBeenCalledTimes(1);
+  const result = await mock.handlers.get('cyrvis:voice:start')!();
+  expect(result).toMatchObject({ ok: true });
+  expect(mock.capture).toBeNull();
+  mock.events.get('cyrvis:voice:renderer-capture-ready')!(
+    undefined,
+    'Built-in microphone',
+  );
+  expect(mock.handlers.get('cyrvis:voice:get-capture-ready')!()).toEqual({
+    ready: true,
+  });
+  mock.handlers.get('cyrvis:voice:stop')!();
+  expect(mock.handlers.get('cyrvis:voice:get-capture-ready')!()).toEqual({
+    ready: false,
+  });
 });
 
 it('keeps voice paused when the companion is changed', async () => {
@@ -172,7 +198,7 @@ it('keeps voice paused when the companion is changed', async () => {
   expect(mock.provider.setVoice).toHaveBeenCalledWith('Raymond');
   expect(mock.start).not.toHaveBeenCalled();
   expect(mock.wake).not.toHaveBeenCalled();
-  expect(mock.captureClose).toHaveBeenCalledTimes(1);
+  expect(mock.captureClose).not.toHaveBeenCalled();
   expect(mock.send).not.toHaveBeenCalledWith(
     'cyrvis:voice:capture-ready',
     expect.anything(),

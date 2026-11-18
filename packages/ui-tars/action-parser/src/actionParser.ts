@@ -314,6 +314,18 @@ function parseAction(actionStr: string) {
           value = `(${value})`;
         }
 
+        // Some models emit space-separated boxes: '[88 378]' or
+        // '[88 378 120 400]'. The old comma-only split produced a single
+        // number, so start_coords became [] and the agent clicked nothing.
+        if (
+          value.startsWith('[') &&
+          value.endsWith(']') &&
+          !value.includes(',')
+        ) {
+          const inner = value.slice(1, -1).trim().replace(/\s+/g, ',');
+          value = `(${inner})`;
+        }
+
         //@ts-ignore
         kwargs[key.trim()] = value;
       }

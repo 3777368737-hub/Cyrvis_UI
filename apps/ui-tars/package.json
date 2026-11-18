@@ -61,7 +61,9 @@
   "dependencies": {
     "@computer-use/node-mac-permissions": "2.2.2",
     "jose": "^6.0.11",
-    "sharp": "0.33.3"
+    "openai": "4.93.0",
+    "sharp": "0.33.3",
+    "sherpa-onnx-node": "2.0.1"
   },
   "devDependencies": {
     "@common/electron-build": "workspace:*",

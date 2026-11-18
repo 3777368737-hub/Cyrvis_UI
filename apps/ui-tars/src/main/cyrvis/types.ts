@@ -3,41 +3,21 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export type TaskStatus =
-  | 'idle'
-  | 'starting'
-  | 'executing'
-  | 'paused'
-  | 'cancelling'
-  | 'done'
-  | 'failed'
-  | 'cancelled';
+import type { StepUpdate, TaskSource } from '@shared/cyrvis';
 
-export type TaskSource = 'voice' | 'text';
+export type {
+  ControllerEvent,
+  StepUpdate,
+  TaskSnapshot,
+  TaskSource,
+  TaskStatus,
+} from '@shared/cyrvis';
 
 export interface TaskRequest {
   taskId: string;
   instruction: string;
   source: TaskSource;
   createdAt: number;
-}
-
-export interface TaskSnapshot {
-  taskId: string | null;
-  status: TaskStatus;
-  instruction: string | null;
-  source: TaskSource | null;
-  step: number;
-  lastSummary: string | null;
-  error: string | null;
-  startedAt: number | null;
-  endedAt: number | null;
-}
-
-export interface StepUpdate {
-  index: number;
-  summary: string;
-  actionType: string;
 }
 
 export interface GUIAdapterCallbacks {
@@ -71,34 +51,36 @@ export type VoiceToolCall =
   | { name: 'pause_gui_task'; args: Record<string, never> }
   | { name: 'resume_gui_task'; args: Record<string, never> }
   | { name: 'get_gui_status'; args: Record<string, never> }
+  | { name: 'remember_fact'; args: { text: string } }
+  | {
+      name: 'search_web';
+      args: {
+        query: string;
+        engine?: 'bing' | 'baidu' | 'google';
+        site?: string;
+        task_instruction?: string;
+      };
+    }
+  | {
+      name: 'open_url';
+      args: { url: string; task_instruction?: string };
+    }
+  | {
+      name: 'open_app';
+      args: {
+        app: 'vscode' | 'chrome' | 'explorer' | 'notepad';
+        target?: string;
+        task_instruction?: string;
+      };
+    }
+  | {
+      name: 'open_site';
+      args: { site: string; query?: string; task_instruction?: string };
+    }
   | {
       name: 'confirm_action';
       args: { task_id: string; approved: boolean };
     };
-
-export type ControllerEvent =
-  | {
-      type: 'task_started';
-      taskId: string;
-      instruction: string;
-      source: TaskSource;
-    }
-  | { type: 'task_executing'; taskId: string }
-  | {
-      type: 'step_update';
-      taskId: string;
-      step: number;
-      summary: string;
-      actionType: string;
-    }
-  | { type: 'task_stalled'; taskId: string; step: number }
-  | { type: 'task_needs_user'; taskId: string; question: string }
-  | { type: 'task_paused'; taskId: string }
-  | { type: 'task_resumed'; taskId: string }
-  | { type: 'task_cancelling'; taskId: string }
-  | { type: 'task_done'; taskId: string; summary: string }
-  | { type: 'task_failed'; taskId: string; error: string }
-  | { type: 'task_cancelled'; taskId: string };
 
 export type ProactivityReason =
   | 'task_started'

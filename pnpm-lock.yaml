@@ -104,9 +104,15 @@ importers:
       jose:
         specifier: ^6.0.11
         version: 6.0.11
+      openai:
+        specifier: 4.93.0
+        version: 4.93.0(encoding@0.1.13)(ws@8.18.3(bufferutil@4.0.9)(utf-8-validate@6.0.5))(zod@3.25.76)
       sharp:
         specifier: 0.33.3
         version: 0.33.3
+      sherpa-onnx-node:
+        specifier: 2.0.1
+        version: 2.0.1
     devDependencies:
       '@common/electron-build':
         specifier: workspace:*
@@ -2373,8 +2379,8 @@ packages:
     resolution: {integrity: sha512-F+nKc0xW+kVbBRhFzaMgPy3KwmuNTYX1fx6+FxxoSnNgwYX6LD7AKBTWkU0MQ6IBoe7dz069CNkR673sPAgkCQ==}
     engines: {node: '>=14'}
 
-  '@electron/node-gyp@git+https://git@github.com:electron/node-gyp.git#06b29aafb7708acef8b3669835c8a7857ebc92d2':
-    resolution: {commit: 06b29aafb7708acef8b3669835c8a7857ebc92d2, repo: git@github.com:electron/node-gyp.git, type: git}
+  '@electron/node-gyp@https://codeload.github.com/electron/node-gyp/tar.gz/06b29aafb7708acef8b3669835c8a7857ebc92d2':
+    resolution: {tarball: https://codeload.github.com/electron/node-gyp/tar.gz/06b29aafb7708acef8b3669835c8a7857ebc92d2}
     version: 10.2.0-electron.1
     engines: {node: '>=12.13.0'}
     hasBin: true
@@ -10000,6 +10006,44 @@ packages:
   shellwords@0.1.1:
     resolution: {integrity: sha512-vFwSUfQvqybiICwZY5+DAWIPLKsWO31Q91JSKl3UYv+K5c2QRPzn0qzec6QPu1Qc9eHYItiP3NdJqNVqetYAww==}
 
+  sherpa-onnx-darwin-arm64@2.0.1:
+    resolution: {integrity: sha512-agXmbbwiVPUSMViMhWhYAt59iG21ui7x6HxQFU35XzHOfQe9x6Pg9V160Pzak/66x0ePMjixsLUtMaaUrLfCwQ==}
+    cpu: [arm64]
+    os: [darwin]
+
+  sherpa-onnx-darwin-x64@2.0.1:
+    resolution: {integrity: sha512-SBnHa3LDOSI/5/rpBHGxKQDFq+yIdxowYY0InLzfojTUx+yGgqu7cYBrRxjzvHOiOKi0O4rmlFVZboyhIqpDgA==}
+    cpu: [x64]
+    os: [darwin]
+
+  sherpa-onnx-linux-arm64@2.0.1:
+    resolution: {integrity: sha512-5CJvLjFYIg23oELCsT7l07fMLT3PdquZ3tqh7KZK3Pzi+c2YiPKRe1DDUxoNdtCaw3ZiS4aQSQPBblB9JStuDA==}
+    cpu: [arm64]
+    os: [linux]
+
+  sherpa-onnx-linux-x64@2.0.1:
+    resolution: {integrity: sha512-w5mRRrIvPvcNWac7rQ8AN/t/cwElPGoRpH+ceCRBV7XfjCIQ9Rcr3Ig/kXcJLNOxgK4bGmef+Y47lIWiesDODw==}
+    cpu: [x64]
+    os: [linux]
+
+  sherpa-onnx-node@2.0.1:
+    resolution: {integrity: sha512-1PSACfQgPXAD7ExwCv1QW09EXTjcNlpZKBqDY+jxSdIzlyOSq0M13SILBoUQUfeJqiTTXnqp6Ha9jjMUQ6efXg==}
+
+  sherpa-onnx-win-arm64@2.0.1:
+    resolution: {integrity: sha512-Mb9iqy2Zp7GC5a99dk5E8EQJsEBnapf+IcwHLVCgtIf5mxYHO9Q8YptnAoOHZOD0Zi+R+MblFyG9qv0Q6tin4Q==}
+    cpu: [arm64]
+    os: [win32]
+
+  sherpa-onnx-win-ia32@2.0.1:
+    resolution: {integrity: sha512-q7qFCA3FK+tYc8pexC9Kzu9WGGoZ9X//UkpxVp6iT4E4W5tPhOEirPyvawS6zgfEW6K/GOISMcYe996Yc7d6iw==}
+    cpu: [ia32]
+    os: [win32]
+
+  sherpa-onnx-win-x64@2.0.1:
+    resolution: {integrity: sha512-7vwdAw9PGEb0JLSpK7UFxAdp1vabBHK9Nhw2jFRBWSFgtslUPHIB0T6syJfRgiUGyCeNW9fJvcFAk2F2u7hBEw==}
+    cpu: [x64]
+    os: [win32]
+
   shx@0.3.4:
     resolution: {integrity: sha512-N6A9MLVqjxZYcVn8hLmtneQWIJtp8IKzMP4eMnx+nqkvXoqinUPCbUFLp2UcWTEIUONhlk0ewxr/jaVGlc+J+g==}
     engines: {node: '>=6'}
@@ -12881,7 +12925,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@electron/node-gyp@git+https://git@github.com:electron/node-gyp.git#06b29aafb7708acef8b3669835c8a7857ebc92d2':
+  '@electron/node-gyp@https://codeload.github.com/electron/node-gyp/tar.gz/06b29aafb7708acef8b3669835c8a7857ebc92d2':
     dependencies:
       env-paths: 2.2.1
       exponential-backoff: 3.1.2
@@ -12942,7 +12986,7 @@ snapshots:
 
   '@electron/rebuild@3.7.1':
     dependencies:
-      '@electron/node-gyp': git+https://git@github.com:electron/node-gyp.git#06b29aafb7708acef8b3669835c8a7857ebc92d2
+      '@electron/node-gyp': https://codeload.github.com/electron/node-gyp/tar.gz/06b29aafb7708acef8b3669835c8a7857ebc92d2
       '@malept/cross-spawn-promise': 2.0.0
       chalk: 4.1.2
       debug: 4.4.0
@@ -20625,6 +20669,21 @@ snapshots:
     transitivePeerDependencies:
       - encoding
 
+  openai@4.93.0(encoding@0.1.13)(ws@8.18.3(bufferutil@4.0.9)(utf-8-validate@6.0.5))(zod@3.25.76):
+    dependencies:
+      '@types/node': 18.19.75
+      '@types/node-fetch': 2.6.12
+      abort-controller: 3.0.0
+      agentkeepalive: 4.6.0
+      form-data-encoder: 1.7.2
+      formdata-node: 4.4.1
+      node-fetch: 2.7.0(encoding@0.1.13)
+    optionalDependencies:
+      ws: 8.18.3(bufferutil@4.0.9)(utf-8-validate@6.0.5)
+      zod: 3.25.76
+    transitivePeerDependencies:
+      - encoding
+
   openai@5.5.1(ws@8.18.3(bufferutil@4.0.9)(utf-8-validate@6.0.5))(zod@3.25.76):
     optionalDependencies:
       ws: 8.18.3(bufferutil@4.0.9)(utf-8-validate@6.0.5)
@@ -21844,6 +21903,37 @@ snapshots:
       rechoir: 0.6.2
 
   shellwords@0.1.1: {}
+
+  sherpa-onnx-darwin-arm64@2.0.1:
+    optional: true
+
+  sherpa-onnx-darwin-x64@2.0.1:
+    optional: true
+
+  sherpa-onnx-linux-arm64@2.0.1:
+    optional: true
+
+  sherpa-onnx-linux-x64@2.0.1:
+    optional: true
+
+  sherpa-onnx-node@2.0.1:
+    optionalDependencies:
+      sherpa-onnx-darwin-arm64: 2.0.1
+      sherpa-onnx-darwin-x64: 2.0.1
+      sherpa-onnx-linux-arm64: 2.0.1
+      sherpa-onnx-linux-x64: 2.0.1
+      sherpa-onnx-win-arm64: 2.0.1
+      sherpa-onnx-win-ia32: 2.0.1
+      sherpa-onnx-win-x64: 2.0.1
+
+  sherpa-onnx-win-arm64@2.0.1:
+    optional: true
+
+  sherpa-onnx-win-ia32@2.0.1:
+    optional: true
+
+  sherpa-onnx-win-x64@2.0.1:
+    optional: true
 
   shx@0.3.4:
     dependencies:

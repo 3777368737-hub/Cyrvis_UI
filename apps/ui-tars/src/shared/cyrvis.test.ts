@@ -1,0 +1,63 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  describeControllerEvent,
+  describeVoiceToolCall,
+  isActiveTaskStatus,
+  type ControllerEvent,
+} from './cyrvis';
+
+describe('Cyrvis shared UI model', () => {
+  it('treats only live task phases as active', () => {
+    expect(isActiveTaskStatus('starting')).toBe(true);
+    expect(isActiveTaskStatus('executing')).toBe(true);
+    expect(isActiveTaskStatus('paused')).toBe(true);
+    expect(isActiveTaskStatus('cancelling')).toBe(true);
+    expect(isActiveTaskStatus('idle')).toBe(false);
+    expect(isActiveTaskStatus('done')).toBe(false);
+    expect(isActiveTaskStatus('failed')).toBe(false);
+    expect(isActiveTaskStatus('cancelled')).toBe(false);
+  });
+
+  it('formats controller events for the floating activity feed', () => {
+    const events: ControllerEvent[] = [
+      {
+        type: 'task_started',
+        taskId: 'task-1',
+        instruction: 'Open settings',
+        source: 'voice',
+      },
+      {
+        type: 'step_update',
+        taskId: 'task-1',
+        step: 3,
+        summary: 'Click Appearance',
+        actionType: 'click',
+      },
+      {
+        type: 'task_done',
+        taskId: 'task-1',
+        summary: 'Settings opened',
+      },
+    ];
+
+    expect(events.map(describeControllerEvent)).toEqual([
+      '开始任务：Open settings',
+      '步骤 3：Click Appearance',
+      'Settings opened',
+    ]);
+  });
+
+  it('formats lifecycle-only phases', () => {
+    expect(
+      describeControllerEvent({ type: 'task_executing', taskId: 'x' }),
+    ).toBe('GUI Agent 已开始执行');
+  });
+
+  it('formats voice tool calls for activity history', () => {
+    expect(describeVoiceToolCall('start_gui_task', '打开记事本')).toBe(
+      '启动电脑任务：打开记事本',
+    );
+    expect(describeVoiceToolCall('remember_fact')).toBe('保存长期记忆');
+  });
+});

@@ -1,18 +1,58 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button } from '@renderer/components/ui/button';
 import { RefreshCcw } from 'lucide-react';
 import { api } from '@/renderer/src/api';
 import { toast } from 'sonner';
 
 import { REPO_OWNER, REPO_NAME } from '@main/shared/constants';
+import { WidgetOverlayMode } from '@main/store/types';
+import { Switch } from '@renderer/components/ui/switch';
+import { useSetting } from '@renderer/hooks/useSetting';
 
 export const GeneralSettings = () => {
+  const { settings, updateSetting } = useSetting();
   const [updateLoading, setUpdateLoading] = useState(false);
+  const [overlaySaving, setOverlaySaving] = useState(false);
+  const [keepWidgetOnTop, setKeepWidgetOnTop] = useState(true);
   const [updateDetail, setUpdateDetail] = useState<{
     currentVersion: string;
     version: string;
     link: string | null;
   } | null>();
+
+  useEffect(() => {
+    if (!Object.keys(settings).length) {
+      return;
+    }
+    setKeepWidgetOnTop(
+      settings.widgetOverlayMode !== WidgetOverlayMode.AllowCovered,
+    );
+  }, [settings]);
+
+  const handleWidgetOverlayChange = async (checked: boolean) => {
+    const previousValue = keepWidgetOnTop;
+    setKeepWidgetOnTop(checked);
+    setOverlaySaving(true);
+    try {
+      await updateSetting({
+        ...settings,
+        widgetOverlayMode: checked
+          ? WidgetOverlayMode.AlwaysOnTop
+          : WidgetOverlayMode.AllowCovered,
+      });
+      toast.success(
+        checked
+          ? 'Floating panel will stay on top when supported'
+          : 'Fullscreen apps can cover the floating panel',
+      );
+    } catch (error) {
+      setKeepWidgetOnTop(previousValue);
+      console.error('Failed to update floating panel behavior:', error);
+      toast.error('Failed to update floating panel behavior');
+    } finally {
+      setOverlaySaving(false);
+    }
+  };
 
   const handleCheckForUpdates = async () => {
     setUpdateLoading(true);
@@ -45,6 +85,21 @@ export const GeneralSettings = () => {
 
   return (
     <>
+      <div className="mb-6 flex items-center justify-between gap-6 rounded-lg border p-4">
+        <div>
+          <p className="font-medium">Keep floating panel on top</p>
+          <p className="text-sm text-muted-foreground">
+            Uses the highest topmost layer supported by Electron. Fully
+            exclusive fullscreen apps may still cover the panel.
+          </p>
+        </div>
+        <Switch
+          aria-label="Keep floating panel on top"
+          checked={keepWidgetOnTop}
+          disabled={overlaySaving}
+          onCheckedChange={handleWidgetOverlayChange}
+        />
+      </div>
       <Button
         variant="outline"
         type="button"

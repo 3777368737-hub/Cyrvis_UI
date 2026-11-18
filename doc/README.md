@@ -21,6 +21,7 @@ Voice Agent（Qwen Realtime）↔ VoiceBrain ↔ Controller ↔ ElectronGUIAdapt
 | [plan.md](./plan.md) | 项目计划与文档索引（含当前阶段） |
 | [progress.md](./progress.md) | 按时间推进的完成项与待办 |
 | [findings.md](./findings.md) | 排障结论、模型/接口/音频事实，避免重复踩坑 |
+| [travel-search.md](./travel-search.md) | 多站旅行比价骨架、站点适配器状态与下一步 |
 
 `progress.md` / `findings.md` 是**实时记录**：开发过程中直接追加，不要事后补录。
 
@@ -40,6 +41,10 @@ apps/ui-tars/src/main/cyrvis/          # CYRVIS 主进程
   controller.ts                        # 单任务状态机
   gui-adapter.ts                       # 包装 runAgent / GUIAgent
   voice-brain.ts                       # 意图路由、唤醒、确定性控制、主动播报
+  search-intent.ts                     # 统一意图分类（导航/搜索/比价/任务）
+  site-registry.ts                     # 常用站点别名与站内搜索 URL
+  travel-search.ts                     # 多站比价骨架（适配器 + 推荐）
+  desktop-actions.ts                   # 搜索/开 URL/开应用快速工具
   capture-service.ts                   # 隐藏采集窗口 + 本地 HTTP/WS
   voice-service.ts                     # 单例、IPC、打断检测、双模式
   voice/                               # Qwen Realtime Provider、工具定义

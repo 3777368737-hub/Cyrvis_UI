@@ -46,6 +46,7 @@ export enum VLMProviderV2 {
   ui_tars_1_5 = 'Hugging Face for UI-TARS-1.5',
   doubao_1_5 = 'VolcEngine Ark for Doubao-1.5-UI-TARS',
   doubao_1_5_vl = 'VolcEngine Ark for Doubao-1.5-thinking-vision-pro',
+  doubao_seed_2_1_turbo = 'VolcEngine Ark for Doubao-Seed-2.1-turbo',
 }
 
 export enum SearchEngineForSettings {
@@ -59,6 +60,11 @@ export enum Operator {
   RemoteBrowser = 'Remote Browser Operator',
   LocalComputer = 'Local Computer Operator',
   LocalBrowser = 'Local Browser Operator',
+}
+
+export enum WidgetOverlayMode {
+  AlwaysOnTop = 'always-on-top',
+  AllowCovered = 'allow-covered',
 }
 
 export type { PresetSource, LocalStore };

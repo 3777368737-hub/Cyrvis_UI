@@ -31,10 +31,12 @@ import {
   LocalSettingsDialog,
 } from '../../components/Settings/local';
 import { sleep } from '@ui-tars/shared/utils';
+import { Operator } from '@main/store/types';
 
 const LocalOperator = () => {
   const location = useLocation();
-  const state = location.state as RouterState;
+  const state = location.state as Partial<RouterState> | null;
+  const operator = state?.operator ?? Operator.LocalComputer;
   const navigate = useNavigate();
 
   const { status, messages = [], thinking, errorMsg } = useStore();
@@ -161,7 +163,7 @@ const LocalOperator = () => {
           <ChatInput
             key={location.key}
             disabled={false}
-            operator={state.operator}
+            operator={operator}
             sessionId={sessionId}
             onSessionCreated={setSessionId}
             checkBeforeRun={checkVLM}

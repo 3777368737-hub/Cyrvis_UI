@@ -1,0 +1,711 @@
+[
+  {
+    "file": "..\\models\\voiceprint\\doubletalk.wav",
+    "duration": 13.6,
+    "threshold": 0.05,
+    "score": 1,
+    "trailingBlanks": 0,
+    "hits": [
+      {
+        "at": 3.1,
+        "keyword": "别说了",
+        "voiceprint": 0.5268
+      },
+      {
+        "at": 5.3,
+        "keyword": "停",
+        "voiceprint": 0.3504
+      },
+      {
+        "at": 6.9,
+        "keyword": "别说了",
+        "voiceprint": 0.45
+      }
+    ]
+  },
+  {
+    "file": "..\\models\\voiceprint\\doubletalk.wav",
+    "duration": 13.6,
+    "threshold": 0.05,
+    "score": 1,
+    "trailingBlanks": 1,
+    "hits": [
+      {
+        "at": 3.1,
+        "keyword": "别说了",
+        "voiceprint": 0.5268
+      },
+      {
+        "at": 5.3,
+        "keyword": "停",
+        "voiceprint": 0.3504
+      },
+      {
+        "at": 6.9,
+        "keyword": "别说了",
+        "voiceprint": 0.45
+      }
+    ]
+  },
+  {
+    "file": "..\\models\\voiceprint\\doubletalk.wav",
+    "duration": 13.6,
+    "threshold": 0.05,
+    "score": 1,
+    "trailingBlanks": 2,
+    "hits": [
+      {
+        "at": 3.4,
+        "keyword": "别说了",
+        "voiceprint": 0.577
+      },
+      {
+        "at": 5.3,
+        "keyword": "停",
+        "voiceprint": 0.3504
+      },
+      {
+        "at": 6.9,
+        "keyword": "别说了",
+        "voiceprint": 0.45
+      }
+    ]
+  },
+  {
+    "file": "..\\models\\voiceprint\\doubletalk.wav",
+    "duration": 13.6,
+    "threshold": 0.1,
+    "score": 1,
+    "trailingBlanks": 0,
+    "hits": [
+      {
+        "at": 3.1,
+        "keyword": "别说了",
+        "voiceprint": 0.5268
+      },
+      {
+        "at": 5.3,
+        "keyword": "停",
+        "voiceprint": 0.3504
+      },
+      {
+        "at": 6.9,
+        "keyword": "别说了",
+        "voiceprint": 0.45
+      }
+    ]
+  },
+  {
+    "file": "..\\models\\voiceprint\\doubletalk.wav",
+    "duration": 13.6,
+    "threshold": 0.1,
+    "score": 1,
+    "trailingBlanks": 1,
+    "hits": [
+      {
+        "at": 3.1,
+        "keyword": "别说了",
+        "voiceprint": 0.5268
+      },
+      {
+        "at": 5.3,
+        "keyword": "停",
+        "voiceprint": 0.3504
+      },
+      {
+        "at": 6.9,
+        "keyword": "别说了",
+        "voiceprint": 0.45
+      }
+    ]
+  },
+  {
+    "file": "..\\models\\voiceprint\\doubletalk.wav",
+    "duration": 13.6,
+    "threshold": 0.1,
+    "score": 1,
+    "trailingBlanks": 2,
+    "hits": [
+      {
+        "at": 3.4,
+        "keyword": "别说了",
+        "voiceprint": 0.577
+      },
+      {
+        "at": 5.3,
+        "keyword": "停",
+        "voiceprint": 0.3504
+      },
+      {
+        "at": 6.9,
+        "keyword": "别说了",
+        "voiceprint": 0.45
+      }
+    ]
+  },
+  {
+    "file": "..\\models\\voiceprint\\doubletalk.wav",
+    "duration": 13.6,
+    "threshold": 0.15,
+    "score": 1,
+    "trailingBlanks": 0,
+    "hits": [
+      {
+        "at": 3.1,
+        "keyword": "别说了",
+        "voiceprint": 0.5268
+      },
+      {
+        "at": 5.6,
+        "keyword": "停下",
+        "voiceprint": 0.4345
+      },
+      {
+        "at": 6.9,
+        "keyword": "别说了",
+        "voiceprint": 0.45
+      }
+    ]
+  },
+  {
+    "file": "..\\models\\voiceprint\\doubletalk.wav",
+    "duration": 13.6,
+    "threshold": 0.15,
+    "score": 1,
+    "trailingBlanks": 1,
+    "hits": [
+      {
+        "at": 3.1,
+        "keyword": "别说了",
+        "voiceprint": 0.5268
+      },
+      {
+        "at": 5.6,
+        "keyword": "停下",
+        "voiceprint": 0.4345
+      },
+      {
+        "at": 6.9,
+        "keyword": "别说了",
+        "voiceprint": 0.45
+      }
+    ]
+  },
+  {
+    "file": "..\\models\\voiceprint\\doubletalk.wav",
+    "duration": 13.6,
+    "threshold": 0.15,
+    "score": 1,
+    "trailingBlanks": 2,
+    "hits": [
+      {
+        "at": 3.4,
+        "keyword": "别说了",
+        "voiceprint": 0.577
+      },
+      {
+        "at": 5.6,
+        "keyword": "停下",
+        "voiceprint": 0.4345
+      },
+      {
+        "at": 6.9,
+        "keyword": "别说了",
+        "voiceprint": 0.45
+      }
+    ]
+  },
+  {
+    "file": "..\\models\\voiceprint\\doubletalk.wav",
+    "duration": 13.6,
+    "threshold": 0.2,
+    "score": 1,
+    "trailingBlanks": 0,
+    "hits": [
+      {
+        "at": 3.1,
+        "keyword": "别说了",
+        "voiceprint": 0.5268
+      },
+      {
+        "at": 6.9,
+        "keyword": "别说了",
+        "voiceprint": 0.45
+      }
+    ]
+  },
+  {
+    "file": "..\\models\\voiceprint\\doubletalk.wav",
+    "duration": 13.6,
+    "threshold": 0.2,
+    "score": 1,
+    "trailingBlanks": 1,
+    "hits": [
+      {
+        "at": 3.1,
+        "keyword": "别说了",
+        "voiceprint": 0.5268
+      },
+      {
+        "at": 6.9,
+        "keyword": "别说了",
+        "voiceprint": 0.45
+      }
+    ]
+  },
+  {
+    "file": "..\\models\\voiceprint\\doubletalk.wav",
+    "duration": 13.6,
+    "threshold": 0.2,
+    "score": 1,
+    "trailingBlanks": 2,
+    "hits": [
+      {
+        "at": 3.4,
+        "keyword": "别说了",
+        "voiceprint": 0.577
+      },
+      {
+        "at": 6.9,
+        "keyword": "别说了",
+        "voiceprint": 0.45
+      }
+    ]
+  },
+  {
+    "file": "apps\\ui-tars\\src\\main\\cyrvis\\__fixtures__\\tts-pause-16k.wav",
+    "duration": 4.6,
+    "threshold": 0.05,
+    "score": 1,
+    "trailingBlanks": 0,
+    "hits": [
+      {
+        "at": 2.1,
+        "keyword": "停",
+        "voiceprint": 0.0946
+      },
+      {
+        "at": 3.7,
+        "keyword": "停",
+        "voiceprint": 0.1314
+      }
+    ]
+  },
+  {
+    "file": "apps\\ui-tars\\src\\main\\cyrvis\\__fixtures__\\tts-pause-16k.wav",
+    "duration": 4.6,
+    "threshold": 0.05,
+    "score": 1,
+    "trailingBlanks": 1,
+    "hits": [
+      {
+        "at": 2.1,
+        "keyword": "停",
+        "voiceprint": 0.0946
+      },
+      {
+        "at": 3.7,
+        "keyword": "停",
+        "voiceprint": 0.1314
+      }
+    ]
+  },
+  {
+    "file": "apps\\ui-tars\\src\\main\\cyrvis\\__fixtures__\\tts-pause-16k.wav",
+    "duration": 4.6,
+    "threshold": 0.05,
+    "score": 1,
+    "trailingBlanks": 2,
+    "hits": [
+      {
+        "at": 2.1,
+        "keyword": "停",
+        "voiceprint": 0.0946
+      },
+      {
+        "at": 3.7,
+        "keyword": "停",
+        "voiceprint": 0.1314
+      }
+    ]
+  },
+  {
+    "file": "apps\\ui-tars\\src\\main\\cyrvis\\__fixtures__\\tts-pause-16k.wav",
+    "duration": 4.6,
+    "threshold": 0.1,
+    "score": 1,
+    "trailingBlanks": 0,
+    "hits": [
+      {
+        "at": 2.1,
+        "keyword": "停",
+        "voiceprint": 0.0946
+      },
+      {
+        "at": 3.7,
+        "keyword": "停",
+        "voiceprint": 0.1314
+      }
+    ]
+  },
+  {
+    "file": "apps\\ui-tars\\src\\main\\cyrvis\\__fixtures__\\tts-pause-16k.wav",
+    "duration": 4.6,
+    "threshold": 0.1,
+    "score": 1,
+    "trailingBlanks": 1,
+    "hits": [
+      {
+        "at": 2.1,
+        "keyword": "停",
+        "voiceprint": 0.0946
+      },
+      {
+        "at": 3.7,
+        "keyword": "停",
+        "voiceprint": 0.1314
+      }
+    ]
+  },
+  {
+    "file": "apps\\ui-tars\\src\\main\\cyrvis\\__fixtures__\\tts-pause-16k.wav",
+    "duration": 4.6,
+    "threshold": 0.1,
+    "score": 1,
+    "trailingBlanks": 2,
+    "hits": [
+      {
+        "at": 2.1,
+        "keyword": "停",
+        "voiceprint": 0.0946
+      },
+      {
+        "at": 3.7,
+        "keyword": "停",
+        "voiceprint": 0.1314
+      }
+    ]
+  },
+  {
+    "file": "apps\\ui-tars\\src\\main\\cyrvis\\__fixtures__\\tts-pause-16k.wav",
+    "duration": 4.6,
+    "threshold": 0.15,
+    "score": 1,
+    "trailingBlanks": 0,
+    "hits": [
+      {
+        "at": 2.1,
+        "keyword": "停",
+        "voiceprint": 0.0946
+      },
+      {
+        "at": 3.7,
+        "keyword": "停",
+        "voiceprint": 0.1314
+      }
+    ]
+  },
+  {
+    "file": "apps\\ui-tars\\src\\main\\cyrvis\\__fixtures__\\tts-pause-16k.wav",
+    "duration": 4.6,
+    "threshold": 0.15,
+    "score": 1,
+    "trailingBlanks": 1,
+    "hits": [
+      {
+        "at": 2.1,
+        "keyword": "停",
+        "voiceprint": 0.0946
+      },
+      {
+        "at": 3.7,
+        "keyword": "停",
+        "voiceprint": 0.1314
+      }
+    ]
+  },
+  {
+    "file": "apps\\ui-tars\\src\\main\\cyrvis\\__fixtures__\\tts-pause-16k.wav",
+    "duration": 4.6,
+    "threshold": 0.15,
+    "score": 1,
+    "trailingBlanks": 2,
+    "hits": [
+      {
+        "at": 2.1,
+        "keyword": "停",
+        "voiceprint": 0.0946
+      },
+      {
+        "at": 3.7,
+        "keyword": "停",
+        "voiceprint": 0.1314
+      }
+    ]
+  },
+  {
+    "file": "apps\\ui-tars\\src\\main\\cyrvis\\__fixtures__\\tts-pause-16k.wav",
+    "duration": 4.6,
+    "threshold": 0.2,
+    "score": 1,
+    "trailingBlanks": 0,
+    "hits": [
+      {
+        "at": 2.1,
+        "keyword": "停",
+        "voiceprint": 0.0946
+      },
+      {
+        "at": 3.7,
+        "keyword": "停",
+        "voiceprint": 0.1314
+      }
+    ]
+  },
+  {
+    "file": "apps\\ui-tars\\src\\main\\cyrvis\\__fixtures__\\tts-pause-16k.wav",
+    "duration": 4.6,
+    "threshold": 0.2,
+    "score": 1,
+    "trailingBlanks": 1,
+    "hits": [
+      {
+        "at": 2.1,
+        "keyword": "停",
+        "voiceprint": 0.0946
+      },
+      {
+        "at": 3.7,
+        "keyword": "停",
+        "voiceprint": 0.1314
+      }
+    ]
+  },
+  {
+    "file": "apps\\ui-tars\\src\\main\\cyrvis\\__fixtures__\\tts-pause-16k.wav",
+    "duration": 4.6,
+    "threshold": 0.2,
+    "score": 1,
+    "trailingBlanks": 2,
+    "hits": [
+      {
+        "at": 2.1,
+        "keyword": "停",
+        "voiceprint": 0.0946
+      },
+      {
+        "at": 3.7,
+        "keyword": "停",
+        "voiceprint": 0.1314
+      }
+    ]
+  },
+  {
+    "file": "apps\\ui-tars\\src\\main\\cyrvis\\__fixtures__\\tts-bieshuole-16k.wav",
+    "duration": 4.54,
+    "threshold": 0.05,
+    "score": 1,
+    "trailingBlanks": 0,
+    "hits": [
+      {
+        "at": 2.1,
+        "keyword": "别说了",
+        "voiceprint": 0.0386
+      },
+      {
+        "at": 3.7,
+        "keyword": "停",
+        "voiceprint": 0.1171
+      }
+    ]
+  },
+  {
+    "file": "apps\\ui-tars\\src\\main\\cyrvis\\__fixtures__\\tts-bieshuole-16k.wav",
+    "duration": 4.54,
+    "threshold": 0.05,
+    "score": 1,
+    "trailingBlanks": 1,
+    "hits": [
+      {
+        "at": 2.1,
+        "keyword": "别说了",
+        "voiceprint": 0.0386
+      },
+      {
+        "at": 3.7,
+        "keyword": "停",
+        "voiceprint": 0.1171
+      }
+    ]
+  },
+  {
+    "file": "apps\\ui-tars\\src\\main\\cyrvis\\__fixtures__\\tts-bieshuole-16k.wav",
+    "duration": 4.54,
+    "threshold": 0.05,
+    "score": 1,
+    "trailingBlanks": 2,
+    "hits": [
+      {
+        "at": 2.1,
+        "keyword": "别说了",
+        "voiceprint": 0.0386
+      }
+    ]
+  },
+  {
+    "file": "apps\\ui-tars\\src\\main\\cyrvis\\__fixtures__\\tts-bieshuole-16k.wav",
+    "duration": 4.54,
+    "threshold": 0.1,
+    "score": 1,
+    "trailingBlanks": 0,
+    "hits": [
+      {
+        "at": 2.1,
+        "keyword": "别说了",
+        "voiceprint": 0.0386
+      },
+      {
+        "at": 3.7,
+        "keyword": "停",
+        "voiceprint": 0.1171
+      }
+    ]
+  },
+  {
+    "file": "apps\\ui-tars\\src\\main\\cyrvis\\__fixtures__\\tts-bieshuole-16k.wav",
+    "duration": 4.54,
+    "threshold": 0.1,
+    "score": 1,
+    "trailingBlanks": 1,
+    "hits": [
+      {
+        "at": 2.1,
+        "keyword": "别说了",
+        "voiceprint": 0.0386
+      },
+      {
+        "at": 3.7,
+        "keyword": "停",
+        "voiceprint": 0.1171
+      }
+    ]
+  },
+  {
+    "file": "apps\\ui-tars\\src\\main\\cyrvis\\__fixtures__\\tts-bieshuole-16k.wav",
+    "duration": 4.54,
+    "threshold": 0.1,
+    "score": 1,
+    "trailingBlanks": 2,
+    "hits": [
+      {
+        "at": 2.1,
+        "keyword": "别说了",
+        "voiceprint": 0.0386
+      }
+    ]
+  },
+  {
+    "file": "apps\\ui-tars\\src\\main\\cyrvis\\__fixtures__\\tts-bieshuole-16k.wav",
+    "duration": 4.54,
+    "threshold": 0.15,
+    "score": 1,
+    "trailingBlanks": 0,
+    "hits": [
+      {
+        "at": 2.1,
+        "keyword": "别说了",
+        "voiceprint": 0.0386
+      },
+      {
+        "at": 3.7,
+        "keyword": "停",
+        "voiceprint": 0.1171
+      }
+    ]
+  },
+  {
+    "file": "apps\\ui-tars\\src\\main\\cyrvis\\__fixtures__\\tts-bieshuole-16k.wav",
+    "duration": 4.54,
+    "threshold": 0.15,
+    "score": 1,
+    "trailingBlanks": 1,
+    "hits": [
+      {
+        "at": 2.1,
+        "keyword": "别说了",
+        "voiceprint": 0.0386
+      },
+      {
+        "at": 3.7,
+        "keyword": "停",
+        "voiceprint": 0.1171
+      }
+    ]
+  },
+  {
+    "file": "apps\\ui-tars\\src\\main\\cyrvis\\__fixtures__\\tts-bieshuole-16k.wav",
+    "duration": 4.54,
+    "threshold": 0.15,
+    "score": 1,
+    "trailingBlanks": 2,
+    "hits": [
+      {
+        "at": 2.1,
+        "keyword": "别说了",
+        "voiceprint": 0.0386
+      }
+    ]
+  },
+  {
+    "file": "apps\\ui-tars\\src\\main\\cyrvis\\__fixtures__\\tts-bieshuole-16k.wav",
+    "duration": 4.54,
+    "threshold": 0.2,
+    "score": 1,
+    "trailingBlanks": 0,
+    "hits": [
+      {
+        "at": 2.1,
+        "keyword": "别说了",
+        "voiceprint": 0.0386
+      },
+      {
+        "at": 3.7,
+        "keyword": "停",
+        "voiceprint": 0.1171
+      }
+    ]
+  },
+  {
+    "file": "apps\\ui-tars\\src\\main\\cyrvis\\__fixtures__\\tts-bieshuole-16k.wav",
+    "duration": 4.54,
+    "threshold": 0.2,
+    "score": 1,
+    "trailingBlanks": 1,
+    "hits": [
+      {
+        "at": 2.1,
+        "keyword": "别说了",
+        "voiceprint": 0.0386
+      },
+      {
+        "at": 3.7,
+        "keyword": "停",
+        "voiceprint": 0.1171
+      }
+    ]
+  },
+  {
+    "file": "apps\\ui-tars\\src\\main\\cyrvis\\__fixtures__\\tts-bieshuole-16k.wav",
+    "duration": 4.54,
+    "threshold": 0.2,
+    "score": 1,
+    "trailingBlanks": 2,
+    "hits": [
+      {
+        "at": 2.1,
+        "keyword": "别说了",
+        "voiceprint": 0.0386
+      }
+    ]
+  }
+]

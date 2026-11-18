@@ -44,6 +44,7 @@ class MockOperator extends Operator {
 describe('GUIAgent', () => {
   afterEach(() => {
     getContext.mockRestore();
+    vi.unstubAllEnvs();
   });
   it('normal run', async () => {
     mockOpenAIResponse([
@@ -152,6 +153,67 @@ describe('GUIAgent', () => {
     ]);
 
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('executes batched actions from one response without a new screenshot', async () => {
+    vi.stubEnv('CYRVIS_ACTION_BATCHING', '1');
+    mockOpenAIResponse([
+      "Thought: Type and submit in one batch\nAction: type(content='hello')\n\nhotkey(key='enter')",
+      'Thought: finished.\nAction: finished()',
+    ]);
+    const modelConfig = {
+      baseURL: 'http://localhost:3000/v1',
+      apiKey: 'test',
+      model: 'ui-tars',
+    };
+    const operator = new MockOperator();
+    const agent = new GUIAgent({
+      model: modelConfig,
+      operator,
+      loopIntervalInMs: 0,
+    });
+
+    await agent.run('type hello and press enter');
+
+    // One screenshot per loop: the two actions in the first response must not
+    // trigger an extra screenshot.
+    expect(operator.screenshot).toBeCalledTimes(2);
+    expect(operator.execute).toBeCalledTimes(3);
+    expect(
+      operator.execute.mock.calls.map(
+        ([params]) => params.parsedPrediction.action_type,
+      ),
+    ).toEqual(['type', 'hotkey', 'finished']);
+    expect(operator.execute.mock.calls[0][0].prediction).toBe(
+      operator.execute.mock.calls[1][0].prediction,
+    );
+  });
+
+  it('executes only the first action when batching is disabled', async () => {
+    mockOpenAIResponse([
+      "Thought: Type and submit\nAction: type(content='hello')\n\nhotkey(key='enter')",
+      'Thought: finished.\nAction: finished()',
+    ]);
+    const modelConfig = {
+      baseURL: 'http://localhost:3000/v1',
+      apiKey: 'test',
+      model: 'ui-tars',
+    };
+    const operator = new MockOperator();
+    const agent = new GUIAgent({
+      model: modelConfig,
+      operator,
+      loopIntervalInMs: 0,
+    });
+
+    await agent.run('type hello');
+
+    expect(operator.execute).toBeCalledTimes(2);
+    expect(
+      operator.execute.mock.calls.map(
+        ([params]) => params.parsedPrediction.action_type,
+      ),
+    ).toEqual(['type', 'finished']);
   });
 
   it('custom UITarsModel run', async () => {

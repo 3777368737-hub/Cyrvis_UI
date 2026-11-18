@@ -89,7 +89,10 @@ export function createWindow({
   // Load the remote URL for development or the local html file for production.
   console.log('renderer url', env.rendererUrl);
   if (!app.isPackaged && env.rendererUrl) {
-    browserWindow.loadURL(`${env.rendererUrl}#${routerPath}`);
+    const hashRouterPath = routerPath.startsWith('#')
+      ? routerPath
+      : `#${routerPath || '/'}`;
+    browserWindow.loadURL(env.rendererUrl + hashRouterPath);
   } else {
     browserWindow.loadFile(path.join(__dirname, '../renderer/index.html'), {
       hash: routerPath,

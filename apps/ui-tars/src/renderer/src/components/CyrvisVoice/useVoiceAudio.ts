@@ -1,11 +1,42 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { WavStreamPlayer } from './wav-player';
-import { PcmStreamPlayer } from './pcm-player';
+import {
+  BREEZE_TTS_DEFAULT_BASE_URL,
+  BREEZE_TTS_DEFAULT_INSTRUCTION,
+  BREEZE_TTS_DEFAULT_SEED,
+  toBreezeTtsWebSocketUrl,
+} from '@shared/voice';
+import { normalizeBreezeVoiceId } from '@shared/breezeTts';
+import { useSetting } from '@renderer/hooks/useSetting';
 
-// Only one voice pipeline may own mic capture and playback. A stale HMR or
-// duplicate mount must not create a second audio path.
+import { WebAudioStreamPlayer } from './webaudio-player';
+import {
+  appendAudioPreroll,
+  appendPcm16,
+  calculateRms,
+  downsamplePcm,
+  floatToPcm16,
+  takePcmChunks,
+} from '../../utils/audio';
+import {
+  BreezeStreamingPlayer,
+  type BreezeStreamConfig,
+  waitForAudioStart,
+} from '../../utils/breezeTtsStream';
+import { QwenTtsStreamingPlayer } from '../../utils/qwenTtsStream';
+import {
+  MIN_ENDPOINT_SILENCE_MS,
+  shouldFinishStreamingUtterance,
+} from '../../utils/voiceEndpoint';
+
 let voiceOwner: symbol | null = null;
+
+const BARGE_CONFIRMATION_FRAMES = 3;
+// AEC double-talk leaves the user's voice around 0.05-0.06 RMS on this
+// hardware. 0.055 sat right on the boundary and caused intermittent misses.
+const TTS_BARGE_THRESHOLD = 0.05;
+const MAX_BARGE_PREROLL_CHUNKS = 8;
+const BARGE_ENDPOINT_SILENCE_MS = MIN_ENDPOINT_SILENCE_MS;
 
 export interface VoiceTaskSnapshot {
   taskId: string | null;
@@ -24,6 +55,19 @@ export interface VoiceUiState {
   task: VoiceTaskSnapshot;
 }
 
+export interface OutputDeviceOption {
+  deviceId: string;
+  label: string;
+}
+
+type StreamingPlayer = {
+  readonly isActive: boolean;
+  start: () => Promise<void>;
+  appendText: (text: string) => void;
+  finish: () => Promise<void>;
+  cancel: () => void;
+};
+
 const EMPTY_STATE: VoiceUiState = {
   awake: false,
   userSpeaking: false,
@@ -39,46 +83,63 @@ const EMPTY_STATE: VoiceUiState = {
   },
 };
 
-const WORKLET_CODE = `
-class CyrvisPcmWorklet extends AudioWorkletProcessor {
-  process(inputs) {
-    const input = inputs[0] && inputs[0][0];
-    if (input && input.length) {
-      this.port.postMessage(input.slice(0));
+const VIRTUAL_MIC_PATTERN = /todesk|virtual|stereo mix|line in/i;
+const PREFERRED_MIC_PATTERN =
+  /cc ultimate|headset|airpods|bluetooth|耳机|耳麦/i;
+
+/**
+ * The Windows default input is often the ToDesk virtual cable, which produces
+ * silence. Prefer a real microphone instead of marking voice as ready.
+ */
+const openMicrophoneStream = async (): Promise<MediaStream> => {
+  const constraints: MediaTrackConstraints = {
+    echoCancellation: true,
+    noiseSuppression: false,
+    autoGainControl: true,
+    channelCount: 1,
+  };
+  let stream: MediaStream | null = null;
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: constraints });
+    const label = stream.getAudioTracks()[0]?.label || '';
+    if (!VIRTUAL_MIC_PATTERN.test(label)) {
+      return stream;
     }
-    return true;
-  }
-}
-registerProcessor('cyrvis-pcm', CyrvisPcmWorklet);
-`;
 
-const resampleTo16k = (input: Float32Array, fromRate: number) => {
-  if (fromRate === 16000) {
-    return input;
-  }
-  const ratio = fromRate / 16000;
-  const length = Math.floor(input.length / ratio);
-  const output = new Float32Array(length);
-  for (let i = 0; i < length; i += 1) {
-    const position = i * ratio;
-    const left = Math.floor(position);
-    const right = Math.min(left + 1, input.length - 1);
-    const fraction = position - left;
-    output[i] = input[left] * (1 - fraction) + input[right] * fraction;
-  }
-  return output;
-};
+    console.log('[cyrvis] default mic is virtual; switching', { label });
+    stream.getTracks().forEach((track) => track.stop());
+    stream = null;
 
-const floatToInt16 = (input: Float32Array) => {
-  const output = new Int16Array(input.length);
-  for (let i = 0; i < input.length; i += 1) {
-    const sample = Math.max(-1, Math.min(1, input[i]));
-    output[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const physical = devices.filter(
+      (device) =>
+        device.kind === 'audioinput' &&
+        device.deviceId &&
+        device.label &&
+        !VIRTUAL_MIC_PATTERN.test(device.label),
+    );
+    if (!physical.length) {
+      throw new Error('未找到物理麦克风，请连接耳机麦克风后重新开始语音。');
+    }
+    const preferred =
+      physical.find((device) => PREFERRED_MIC_PATTERN.test(device.label)) ??
+      physical[0];
+    console.log('[cyrvis] switching to physical mic', {
+      label: preferred.label,
+    });
+    return await navigator.mediaDevices.getUserMedia({
+      audio: { ...constraints, deviceId: { exact: preferred.deviceId } },
+    });
+  } catch (error) {
+    stream?.getTracks().forEach((track) => track.stop());
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`无法启动麦克风：${message}`);
   }
-  return output;
 };
 
 export function useVoiceAudio() {
+  const { settings } = useSetting();
   const [state, setState] = useState<VoiceUiState>(EMPTY_STATE);
   const [transcript, setTranscript] = useState('');
   const [assistantText, setAssistantText] = useState('');
@@ -88,505 +149,514 @@ export function useVoiceAudio() {
   const connectingRef = useRef(false);
   const [playbackActive, setPlaybackActive] = useState(false);
   const [audioMode, setAudioModeState] = useState<'headset' | 'speaker'>(
-    'speaker',
+    'headset',
   );
+  const [outputDevices, setOutputDevices] = useState<OutputDeviceOption[]>([]);
+  const [selectedOutputId, setSelectedOutputId] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [ptt, setPtt] = useState<{ active: boolean; mode: boolean }>({
     active: false,
     mode: true,
   });
-  const ownerRef = useRef(Symbol('cyrvis-voice-instance'));
 
+  const settingsRef = useRef(settings);
+  const ownerRef = useRef(Symbol('cyrvis-voice-instance'));
   const captureContextRef = useRef<AudioContext | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
-  const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
-  const pendingSamplesRef = useRef<number[]>([]);
-  const playerRef = useRef<WavStreamPlayer | PcmStreamPlayer | null>(null);
-  const outputDeviceIdRef = useRef<string | null>(null);
-  const playbackChunksRef = useRef(0);
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const silentGainRef = useRef<GainNode | null>(null);
+  const playerRef = useRef<StreamingPlayer | null>(null);
+  const legacyPlayerRef = useRef<WebAudioStreamPlayer | null>(null);
+  const playerStartRef = useRef<Promise<void> | null>(null);
+  const playerEpochRef = useRef(0);
+  const outputDeviceIdRef = useRef('');
+  const transcriptRef = useRef('');
+  const disposedRef = useRef(false);
+
+  const streamingUtteranceActiveRef = useRef(false);
+  const bargePendingRef = useRef(false);
+  const captureSampleRateRef = useRef(48_000);
+  const recordingStartedAtRef = useRef(0);
+  const lastSpeechAtRef = useRef(0);
+  const pendingPcmRef = useRef(new Uint8Array());
+  const keywordPcmRef = useRef(new Uint8Array());
+  const bargePrerollRef = useRef<Float32Array[]>([]);
   const assistantSpeakingRef = useRef(false);
+  const speechDeltaRef = useRef('');
+  const speechDeltaSeenRef = useRef(false);
+  const firstAudioPromiseRef = useRef<Promise<boolean> | null>(null);
+  const resolveFirstAudioRef = useRef<((started: boolean) => void) | null>(
+    null,
+  );
   const assistantIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
-  const bargeInMsRef = useRef(0);
-  const bargePeakRef = useRef(0);
-  const lastMicAverageRef = useRef(0);
+  const noiseFloorRef = useRef(0.006);
+  const speechFramesRef = useRef(0);
+  const bargeFramesRef = useRef(0);
   const lastBargeDiagRef = useRef(0);
-  const preSpeechBufferRef = useRef<number[]>([]);
-  const startedRef = useRef(false);
 
-  const finishPlayback = useCallback(() => {
-    assistantSpeakingRef.current = false;
-    bargeInMsRef.current = 0;
-    preSpeechBufferRef.current = [];
-    setPlaybackActive(false);
+  settingsRef.current = settings;
+
+  const clearIdleTimer = () => {
     if (assistantIdleTimerRef.current) {
       clearTimeout(assistantIdleTimerRef.current);
       assistantIdleTimerRef.current = null;
     }
+  };
+
+  const finishPlayback = useCallback(() => {
+    clearIdleTimer();
+    legacyPlayerRef.current = null;
+    assistantSpeakingRef.current = false;
+    bargeFramesRef.current = 0;
+    keywordPcmRef.current = new Uint8Array();
+    setPlaybackActive(false);
     window.electron.voice.notifyPlaybackIdle();
   }, []);
 
-  const stopPlayback = useCallback(() => {
+  const cancelPlayer = useCallback((notifyMain = false) => {
+    playerEpochRef.current += 1;
     const player = playerRef.current;
     playerRef.current = null;
-    if (player) {
-      player.stop();
-    }
+    playerStartRef.current = null;
+    player?.cancel();
+    const legacy = legacyPlayerRef.current;
+    legacyPlayerRef.current = null;
+    legacy?.stop(false);
+    assistantSpeakingRef.current = false;
+    speechDeltaRef.current = '';
+    speechDeltaSeenRef.current = false;
+    resolveFirstAudioRef.current?.(false);
+    resolveFirstAudioRef.current = null;
+    firstAudioPromiseRef.current = null;
+    clearIdleTimer();
     setPlaybackActive(false);
-  }, []);
-
-  const playPcm = useCallback(
-    (pcm16: Int16Array) => {
-      if (!pcm16.length) {
-        return;
-      }
-
-      if (!playerRef.current) {
-        const Player =
-          window.platform === 'darwin' ? PcmStreamPlayer : WavStreamPlayer;
-        const player = new Player(
-          () => {
-            // A stopped/replaced player must never reopen the new reply's mic.
-            if (playerRef.current === player) finishPlayback();
-          },
-          (error) => {
-            const detail =
-              error instanceof Error
-                ? `${error.name}: ${error.message}`
-                : String(error);
-            console.warn('[cyrvis] audio player error', detail);
-            setError(`Audio playback failed: ${detail}`);
-          },
-        );
-        playerRef.current = player;
-        if (outputDeviceIdRef.current) {
-          void player.setSinkId(outputDeviceIdRef.current).catch((error) => {
-            console.warn('[cyrvis] set playback output failed', error);
-          });
-        }
-        console.log(
-          '[cyrvis] stream player created',
-          window.platform === 'darwin' ? 'scheduled PCM' : 'WAV',
-        );
-      }
-
-      assistantSpeakingRef.current = true;
-      setPlaybackActive(true);
-      if (assistantIdleTimerRef.current) {
-        clearTimeout(assistantIdleTimerRef.current);
-        assistantIdleTimerRef.current = null;
-      }
-
-      playbackChunksRef.current += 1;
-      if (
-        playbackChunksRef.current <= 2 ||
-        playbackChunksRef.current % 50 === 0
-      ) {
-        console.log('[cyrvis] playback chunk', {
-          samples: pcm16.length,
-          chunk: playbackChunksRef.current,
-        });
-      }
-      playerRef.current.play(pcm16);
-    },
-    [finishPlayback],
-  );
-
-  const flushPending = useCallback((samples: Float32Array) => {
-    let micSum = 0;
-    for (let i = 0; i < samples.length; i += 1) {
-      micSum += Math.abs(samples[i]);
-    }
-    lastMicAverageRef.current = samples.length ? micSum / samples.length : 0;
-    (window as unknown as { __cyrvisMicAvg?: number }).__cyrvisMicAvg =
-      lastMicAverageRef.current;
-
-    // Renderer-side half-duplex gate. While the assistant is speaking we do
-    // not send samples, but we still watch the local microphone for a
-    // sustained user voice. If detected, stop playback and hand the buffered
-    // speech to the provider as a barge-in.
-    if (assistantSpeakingRef.current) {
-      let sum = 0;
-      for (let i = 0; i < samples.length; i += 1) {
-        sum += Math.abs(samples[i]);
-      }
-      const average = samples.length ? sum / samples.length : 0;
-      const chunkMs = (samples.length / 16000) * 1000;
-
-      bargePeakRef.current = Math.max(bargePeakRef.current, average);
-      const nowMs = Date.now();
-      if (nowMs - lastBargeDiagRef.current >= 1000) {
-        lastBargeDiagRef.current = nowMs;
-        const track = mediaStreamRef.current?.getAudioTracks()[0];
-        const settings = track?.getSettings();
-        console.log(
-          `[cyrvis] barge monitor avg=${Math.round(average)} peak=${Math.round(
-            bargePeakRef.current,
-          )} ms=${Math.round(bargeInMsRef.current)} sources=${
-            playerRef.current?.isActive ? 1 : 0
-          } trackMuted=${track?.muted ?? 'none'} track=${
-            track?.readyState ?? 'none'
-          } ec=${settings?.echoCancellation} ns=${
-            settings?.noiseSuppression
-          } agc=${settings?.autoGainControl} capture=${
-            captureContextRef.current?.state ?? 'none'
-          } playback=${playerRef.current ? 'wav' : 'none'}`,
-        );
-        bargePeakRef.current = 0;
-      }
-
-      const preSpeech = preSpeechBufferRef.current;
-      for (let i = 0; i < samples.length; i += 1) {
-        preSpeech.push(samples[i]);
-      }
-      if (preSpeech.length > 9600) {
-        preSpeech.splice(0, preSpeech.length - 9600);
-      }
-
-      // The user's real "停" was measured at ~359 average in the main VAD,
-      // and a single syllable lasts ~200 ms. Match the main VAD (250) and use
-      // a short 100 ms sustain; echo cancellation keeps TTS out of this path.
-      if (average > 800) {
-        bargeInMsRef.current += chunkMs;
-      } else {
-        bargeInMsRef.current = Math.max(0, bargeInMsRef.current - chunkMs);
-      }
-
-      if (bargeInMsRef.current >= 150) {
-        console.log(
-          `[cyrvis] barge-in detected avg=${Math.round(
-            average,
-          )} peak=${Math.round(bargePeakRef.current)}`,
-        );
-        bargeInMsRef.current = 0;
-        bargePeakRef.current = 0;
-        assistantSpeakingRef.current = false;
-        if (assistantIdleTimerRef.current) {
-          clearTimeout(assistantIdleTimerRef.current);
-          assistantIdleTimerRef.current = null;
-        }
-        stopPlayback();
-        window.electron.voice.bargeIn();
-
-        const buffered = preSpeechBufferRef.current.splice(0);
-        for (let i = 0; i < buffered.length; i += 320) {
-          const pcm = floatToInt16(
-            Float32Array.from(buffered.slice(i, i + 320)),
-          );
-          window.electron.voice.sendAudio(pcm.buffer as ArrayBuffer);
-        }
-        return;
-      }
-
-      pendingSamplesRef.current = [];
-      return;
-    }
-
-    const pending = pendingSamplesRef.current;
-    for (let i = 0; i < samples.length; i += 1) {
-      pending.push(samples[i]);
-    }
-    while (pending.length >= 320) {
-      const chunk = pending.splice(0, 320);
-      const pcm = floatToInt16(Float32Array.from(chunk));
-      window.electron.voice.sendAudio(pcm.buffer as ArrayBuffer);
+    if (notifyMain) {
+      window.electron.voice.notifyPlaybackStopped({ queuedMs: 0 });
     }
   }, []);
 
-  const applyOutput = useCallback(async (needle: string) => {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const output = devices.find(
-      (device) =>
-        device.kind === 'audiooutput' &&
-        device.label.toLowerCase().includes(needle.toLowerCase()),
-    );
-    if (!output) {
-      console.warn('[cyrvis] output not found', needle);
-      return null;
-    }
-    outputDeviceIdRef.current = output.deviceId;
-    const player = playerRef.current;
-    if (player) {
-      await player.setSinkId(output.deviceId);
-    }
-    console.log(
-      '[cyrvis] output applied',
-      output.label,
-      output.deviceId.slice(0, 8),
-      player ? 'player' : 'stored',
-    );
-    return `${output.label} (${output.deviceId.slice(0, 8)})`;
-  }, []);
-
-  const resetOutput = useCallback(async () => {
-    outputDeviceIdRef.current = null;
-    const player = playerRef.current;
-    if (player) {
-      try {
-        await player.setSinkId('default');
-      } catch (error) {
-        console.warn('[cyrvis] reset output failed', error);
-      }
-    }
-  }, []);
-
-  // Audio mode controls echo handling, not a hard-coded Windows output device.
-  const applyAudioMode = useCallback(
-    (_mode: 'headset' | 'speaker') => {
-      void resetOutput();
-    },
-    [resetOutput],
-  );
-
-  const toggleAudioMode = useCallback(async () => {
-    const next = audioMode === 'speaker' ? 'headset' : 'speaker';
-    setAudioModeState(next);
-    await window.electron.voice.setAudioMode(next);
-  }, [audioMode]);
-
-  const ensureMic = useCallback(async () => {
-    if (startedRef.current && mediaStreamRef.current) {
-      return;
-    }
-
-    setError(null);
-    console.log('[cyrvis] requesting microphone');
-    // Echo cancellation suppresses near-end speech while the assistant is
-    // playing ("double-talk" suppression), which made the local barge-in
-    // detector see almost silence. The user is on a headset, so leakage is
-    // low; keep AGC but disable AEC/NS so "停" is measurable during playback.
-    const baseAudio: MediaTrackConstraints = {
-      channelCount: 1,
-      echoCancellation: false,
-      // Noise suppression keeps the Bluetooth mic's 260-486 room-noise floor
-      // below the VAD threshold; without it every reply was self-cancelled.
-      noiseSuppression: true,
-      autoGainControl: true,
-    };
-    let stream = await navigator.mediaDevices.getUserMedia({
-      audio: baseAudio,
-    });
-    let label = stream.getAudioTracks()[0]?.label || 'default';
-
-    // The default/communications endpoints are Windows aliases, not the real
-    // USB endpoint. On this headset the alias delivers pure silence while
-    // playback is active, so always switch to an explicit physical device.
-    try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const inputs = devices.filter((device) => device.kind === 'audioinput');
-      console.log(
-        '[cyrvis] audio inputs',
-        JSON.stringify(
-          inputs.map((device) => ({
-            label: device.label,
-            deviceId: device.deviceId,
-          })),
-        ),
-      );
-      const currentDeviceId = stream
-        .getAudioTracks()[0]
-        ?.getSettings().deviceId;
-      const physical = inputs.find(
-        (device) =>
-          device.deviceId &&
-          device.deviceId !== 'default' &&
-          device.deviceId !== 'communications' &&
-          device.label &&
-          !/todesk|virtual|stereo mix|line in/i.test(device.label),
-      );
-      if (physical && physical.deviceId !== currentDeviceId) {
-        stream.getTracks().forEach((track) => track.stop());
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            ...baseAudio,
-            deviceId: { exact: physical.deviceId },
-          },
-        });
-        label = stream.getAudioTracks()[0]?.label || physical.label;
-        console.log('[cyrvis] using physical microphone', label);
-      } else if (/todesk|virtual|stereo mix|line in/i.test(label)) {
-        // Never fall back to a virtual/loopback device: it carries the
-        // assistant's own TTS and produces empty or self-triggered commands.
-        stream.getTracks().forEach((track) => track.stop());
-        throw new Error(
-          'No physical microphone found. Connect the headset microphone and restart voice.',
-        );
-      }
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message.includes('No physical microphone')
-      ) {
-        throw error;
-      }
-      console.warn('[cyrvis] preferred microphone failed', error);
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: baseAudio,
+  const createPlayer = useCallback(async (epoch: number) => {
+    const current = settingsRef.current;
+    const provider =
+      current.voiceTtsProvider === 'qwen-tts-realtime'
+        ? 'qwen-tts-realtime'
+        : 'breeze-local';
+    console.info('[cyrvis] creating streaming TTS player', { provider });
+    let player: StreamingPlayer;
+    if (provider === 'qwen-tts-realtime') {
+      player = new QwenTtsStreamingPlayer({
+        requestId: `cyrvis-${Date.now()}`,
+        mode: current.voiceQwenTtsMode || 'commit',
+        language: current.voiceQwenTtsLanguage || 'Chinese',
+        onFirstAudio: () => {
+          resolveFirstAudioRef.current?.(true);
+          resolveFirstAudioRef.current = null;
+        },
       });
-      label = stream.getAudioTracks()[0]?.label || 'default';
+    } else {
+      const readiness = await window.electron.voice.ensureBreezeReady();
+      if (!readiness.ok) {
+        throw new Error(readiness.error || 'Breeze TTS is unavailable');
+      }
+      const voiceId = normalizeBreezeVoiceId(current.voiceTtsVoice);
+      if (voiceId) {
+        const voices = await window.electron.voice.listBreezeVoices();
+        if (!voices.some((voice) => voice.id === voiceId)) {
+          throw new Error(`Selected Breeze voice is unavailable: ${voiceId}`);
+        }
+      }
+      player = new BreezeStreamingPlayer({
+        wsUrl: toBreezeTtsWebSocketUrl(
+          current.voiceTtsBaseUrl || BREEZE_TTS_DEFAULT_BASE_URL,
+        ),
+        instruction:
+          current.voiceTtsInstruction || BREEZE_TTS_DEFAULT_INSTRUCTION,
+        voiceId,
+        cfgScale: current.voiceTtsCfgScale ?? 1,
+        seed: current.voiceTtsSeed ?? BREEZE_TTS_DEFAULT_SEED,
+        onFirstAudio: () => {
+          resolveFirstAudioRef.current?.(true);
+          resolveFirstAudioRef.current = null;
+        },
+      } satisfies BreezeStreamConfig);
     }
+    if (epoch !== playerEpochRef.current || !assistantSpeakingRef.current) {
+      player.cancel();
+      return;
+    }
+    await player.start();
+    if (epoch !== playerEpochRef.current || !assistantSpeakingRef.current) {
+      player.cancel();
+      return;
+    }
+    playerRef.current = player;
+    clearIdleTimer();
+    if (speechDeltaRef.current) {
+      player.appendText(speechDeltaRef.current);
+      speechDeltaRef.current = '';
+    }
+  }, []);
 
-    console.log('[cyrvis] microphone stream', label);
-    mediaStreamRef.current = stream;
+  const startPlayer = useCallback(() => {
+    if (settingsRef.current.voiceTtsEnabled === false) {
+      assistantSpeakingRef.current = false;
+      setPlaybackActive(false);
+      return;
+    }
+    if (playerRef.current || playerStartRef.current) {
+      return;
+    }
+    console.info('[cyrvis] starting streaming TTS player');
+    const epoch = playerEpochRef.current;
+    const promise = createPlayer(epoch)
+      .catch((playerError: unknown) => {
+        if (epoch !== playerEpochRef.current) {
+          return;
+        }
+        const message =
+          playerError instanceof Error
+            ? playerError.message
+            : String(playerError);
+        console.error('[cyrvis] streaming TTS failed', message);
+        setError(message);
+        assistantSpeakingRef.current = false;
+        setPlaybackActive(false);
+        window.electron.voice.notifyPlaybackIdle();
+      })
+      .finally(() => {
+        if (playerStartRef.current === promise) {
+          playerStartRef.current = null;
+        }
+      });
+    playerStartRef.current = promise;
+  }, [createPlayer]);
 
-    // Use the device's native rate for both capture and playback. Creating a
-    // 16 kHz capture context and a 24 kHz playback context on the same USB
-    // headset makes Windows reconfigure the device when playback starts; the
-    // capture stream then delivers pure silence for the whole reply, which is
-    // exactly what the barge monitor showed (avg=0 peak=0).
-    const captureContext = new AudioContext();
-    captureContextRef.current = captureContext;
-    await captureContext.resume();
-
-    const source = captureContext.createMediaStreamSource(stream);
-    let captureNode: AudioNode;
-
-    try {
-      const workletUrl = URL.createObjectURL(
-        new Blob([WORKLET_CODE], { type: 'application/javascript' }),
+  const finishStreamingUtterance = useCallback(() => {
+    if (!streamingUtteranceActiveRef.current) {
+      return;
+    }
+    streamingUtteranceActiveRef.current = false;
+    if (pendingPcmRef.current.length) {
+      window.electron.voice.sendAudio(
+        pendingPcmRef.current.slice().buffer as ArrayBuffer,
       );
-      try {
-        await captureContext.audioWorklet.addModule(workletUrl);
-      } finally {
-        URL.revokeObjectURL(workletUrl);
+      pendingPcmRef.current = new Uint8Array();
+    }
+    window.electron.voice.finishUtterance();
+    bargePendingRef.current = false;
+  }, []);
+
+  const beginStreamingUtterance = useCallback(
+    (preRoll: Float32Array[] = []) => {
+      if (streamingUtteranceActiveRef.current || disposedRef.current) {
+        return;
+      }
+      streamingUtteranceActiveRef.current = true;
+      recordingStartedAtRef.current = Date.now();
+      lastSpeechAtRef.current = recordingStartedAtRef.current;
+      transcriptRef.current = '';
+      pendingPcmRef.current = new Uint8Array();
+      window.electron.voice.beginUtterance();
+
+      const merged: Uint8Array[] = [];
+      for (const frame of preRoll) {
+        merged.push(
+          floatToPcm16(downsamplePcm(frame, captureSampleRateRef.current)),
+        );
+      }
+      if (merged.length) {
+        pendingPcmRef.current = merged.reduce<Uint8Array<ArrayBuffer>>(
+          (pending, chunk) => appendPcm16(pending, chunk),
+          new Uint8Array() as Uint8Array<ArrayBuffer>,
+        );
+        flushPcmChunks();
+      }
+    },
+    [],
+  );
+
+  const flushPcmChunks = useCallback(() => {
+    const { chunks, remainder } = takePcmChunks(pendingPcmRef.current);
+    pendingPcmRef.current = remainder;
+    for (const chunk of chunks) {
+      window.electron.voice.sendAudio(chunk.buffer as ArrayBuffer);
+    }
+  }, []);
+
+  const processSamples = useCallback(
+    (input: Float32Array, inputSampleRate: number) => {
+      if (disposedRef.current) {
+        return;
+      }
+      const samples = downsamplePcm(input, inputSampleRate);
+      const rms = calculateRms(input);
+
+      if (assistantSpeakingRef.current) {
+        bargePrerollRef.current = appendAudioPreroll(
+          bargePrerollRef.current,
+          input,
+          MAX_BARGE_PREROLL_CHUNKS,
+        );
+        // Keep the local stop-word detector fed during assistant playback.
+        // The provider drops microphone audio in this window, so this is a
+        // separate KWS-only path.
+        keywordPcmRef.current = appendPcm16(
+          keywordPcmRef.current,
+          floatToPcm16(samples),
+        );
+        const keywordChunks = takePcmChunks(keywordPcmRef.current, 320 * 2);
+        keywordPcmRef.current = keywordChunks.remainder;
+        for (const chunk of keywordChunks.chunks) {
+          window.electron.voice.sendKeywordAudio(chunk.buffer as ArrayBuffer);
+        }
+        const threshold = Math.max(
+          TTS_BARGE_THRESHOLD,
+          noiseFloorRef.current * 2.5,
+        );
+        const nowDiag = Date.now();
+        if (nowDiag - lastBargeDiagRef.current >= 500) {
+          lastBargeDiagRef.current = nowDiag;
+          console.log(
+            '[cyrvis] barge diag',
+            JSON.stringify({
+              rms: Number(rms.toFixed(4)),
+              threshold: Number(threshold.toFixed(4)),
+              frames: bargeFramesRef.current,
+              floor: Number(noiseFloorRef.current.toFixed(4)),
+            }),
+          );
+        }
+        bargeFramesRef.current =
+          rms >= threshold ? bargeFramesRef.current + 1 : 0;
+        if (bargeFramesRef.current >= BARGE_CONFIRMATION_FRAMES) {
+          bargeFramesRef.current = 0;
+          bargePendingRef.current = true;
+          const preRoll = bargePrerollRef.current;
+          bargePrerollRef.current = [];
+          keywordPcmRef.current = new Uint8Array();
+          cancelPlayer();
+          window.electron.voice.cancelSpeechOnly();
+          beginStreamingUtterance(preRoll);
+        }
+        return;
       }
 
-      const worklet = new AudioWorkletNode(captureContext, 'cyrvis-pcm');
-      workletNodeRef.current = worklet;
-      worklet.port.onmessage = (event: MessageEvent<Float32Array>) => {
-        const resampled = resampleTo16k(event.data, captureContext.sampleRate);
-        flushPending(resampled);
-      };
-      captureNode = worklet;
-      console.log('[cyrvis] audio worklet ready');
-    } catch (error) {
-      console.warn(
-        '[cyrvis] audio worklet failed, falling back to ScriptProcessor',
-        error,
+      // Omni uses the model's server-side VAD. Send every microphone chunk
+      // while the assistant is silent; gating by the renderer's cascade VAD
+      // truncated utterances before the server could endpoint them.
+      if (settingsRef.current.voiceEngine === 'omni') {
+        pendingPcmRef.current = appendPcm16(
+          pendingPcmRef.current,
+          floatToPcm16(samples),
+        );
+        const { chunks, remainder } = takePcmChunks(pendingPcmRef.current);
+        pendingPcmRef.current = remainder;
+        for (const chunk of chunks) {
+          window.electron.voice.sendAudio(chunk.buffer as ArrayBuffer);
+        }
+        return;
+      }
+
+      bargeFramesRef.current = 0;
+      const threshold = Math.max(0.025, noiseFloorRef.current * 3);
+      if (!streamingUtteranceActiveRef.current) {
+        if (rms < threshold) {
+          noiseFloorRef.current = noiseFloorRef.current * 0.97 + rms * 0.03;
+          speechFramesRef.current = 0;
+          return;
+        }
+        speechFramesRef.current += 1;
+        if (speechFramesRef.current >= 1) {
+          speechFramesRef.current = 0;
+          beginStreamingUtterance();
+        }
+      }
+
+      if (!streamingUtteranceActiveRef.current) {
+        return;
+      }
+      pendingPcmRef.current = appendPcm16(
+        pendingPcmRef.current,
+        floatToPcm16(samples),
       );
-      const processor = captureContext.createScriptProcessor(1024, 1, 1);
-      scriptProcessorRef.current = processor;
-      processor.onaudioprocess = (event) => {
-        const input = event.inputBuffer.getChannelData(0);
-        flushPending(resampleTo16k(input, captureContext.sampleRate));
-      };
-      captureNode = processor;
-      console.log('[cyrvis] script processor ready');
+      if (rms >= threshold * 0.7) {
+        lastSpeechAtRef.current = Date.now();
+      }
+      flushPcmChunks();
+
+      const durationMs = Date.now() - recordingStartedAtRef.current;
+      const silenceMs = Date.now() - lastSpeechAtRef.current;
+      if (
+        shouldFinishStreamingUtterance({
+          durationMs,
+          silenceMs,
+          configuredSilenceMs: bargePendingRef.current
+            ? BARGE_ENDPOINT_SILENCE_MS
+            : settingsRef.current.voiceSilenceTimeoutMs ||
+              MIN_ENDPOINT_SILENCE_MS,
+          transcript: transcriptRef.current,
+        })
+      ) {
+        finishStreamingUtterance();
+      }
+    },
+    [
+      beginStreamingUtterance,
+      cancelPlayer,
+      finishStreamingUtterance,
+      flushPcmChunks,
+    ],
+  );
+
+  const refreshOutputDevices = useCallback(async () => {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const outputs = devices
+      .filter((device) => device.kind === 'audiooutput' && device.deviceId)
+      .map((device) => ({
+        deviceId: device.deviceId,
+        label: device.label || 'Audio output',
+      }));
+    setOutputDevices(outputs);
+    return outputs;
+  }, []);
+
+  const setOutputDevice = useCallback(
+    async (deviceId: string) => {
+      outputDeviceIdRef.current = deviceId;
+      setSelectedOutputId(deviceId);
+      localStorage.setItem('cyrvis.outputDeviceId', deviceId);
+      const output = outputDevices.find((item) => item.deviceId === deviceId);
+      if (output) {
+        await window.electron.voice.setOutput(output.label);
+      }
+    },
+    [outputDevices],
+  );
+
+  const testOutputDevice = useCallback(async (deviceId: string) => {
+    const sampleRate = 24_000;
+    const frames = sampleRate;
+    const buffer = new ArrayBuffer(44 + frames * 2);
+    const view = new DataView(buffer);
+    const write = (offset: number, text: string) => {
+      for (let index = 0; index < text.length; index += 1) {
+        view.setUint8(offset + index, text.charCodeAt(index));
+      }
+    };
+    write(0, 'RIFF');
+    view.setUint32(4, 36 + frames * 2, true);
+    write(8, 'WAVE');
+    write(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    write(36, 'data');
+    view.setUint32(40, frames * 2, true);
+    for (let index = 0; index < frames; index += 1) {
+      const sample = Math.sin((2 * Math.PI * 440 * index) / sampleRate) * 0.2;
+      view.setInt16(44 + index * 2, sample * 0x7fff, true);
     }
-
-    const mute = captureContext.createGain();
-    mute.gain.value = 0;
-    source.connect(captureNode);
-    captureNode.connect(mute);
-    mute.connect(captureContext.destination);
-
-    // Assistant playback is created lazily on the first audio chunk by
-    // WavStreamPlayer: PCM -> MP3 -> MediaSource -> plain <audio>. Web Audio
-    // playback silences the Windows microphone; a media element does not.
-
-    if ((import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV) {
-      // Dev-only probe: route assistant playback to another output device.
-      (
-        window as unknown as {
-          __cyrvisSetOutput?: (needle: string) => Promise<string>;
-        }
-      ).__cyrvisSetOutput = async (needle: string) => {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const output = devices.find(
-          (device) =>
-            device.kind === 'audiooutput' &&
-            device.label.toLowerCase().includes(needle.toLowerCase()),
-        );
-        if (!output) {
-          return `output not found: ${needle}`;
-        }
-        outputDeviceIdRef.current = output.deviceId;
-        const player = playerRef.current;
-        if (player) {
-          await player.setSinkId(output.deviceId);
-          return `${output.label} (${output.deviceId.slice(0, 8)})`;
-        }
-        return `stored ${output.label} (${output.deviceId.slice(0, 8)})`;
-      };
-
-      // Dev-only isolation probe: play a plain WAV file (no Web Audio) and
-      // read the microphone level, to see whether ANY playback silences the
-      // capture path or only AudioContext-based playback.
-      (
-        window as unknown as {
-          __cyrvisMicLevel?: () => number;
-          __cyrvisPlayTone?: (
-            needle: string,
-            seconds?: number,
-          ) => Promise<string>;
-        }
-      ).__cyrvisMicLevel = () => lastMicAverageRef.current;
-      (
-        window as unknown as {
-          __cyrvisPlayTone?: (
-            needle: string,
-            seconds?: number,
-          ) => Promise<string>;
-        }
-      ).__cyrvisPlayTone = async (needle: string, seconds = 4) => {
-        const sampleRate = 48000;
-        const frames = sampleRate * seconds;
-        const buffer = new ArrayBuffer(44 + frames * 2);
-        const view = new DataView(buffer);
-        const write = (offset: number, text: string) => {
-          for (let i = 0; i < text.length; i += 1) {
-            view.setUint8(offset + i, text.charCodeAt(i));
-          }
-        };
-        write(0, 'RIFF');
-        view.setUint32(4, 36 + frames * 2, true);
-        write(8, 'WAVE');
-        write(12, 'fmt ');
-        view.setUint32(16, 16, true);
-        view.setUint16(20, 1, true);
-        view.setUint16(22, 1, true);
-        view.setUint32(24, sampleRate, true);
-        view.setUint32(28, sampleRate * 2, true);
-        view.setUint16(32, 2, true);
-        view.setUint16(34, 16, true);
-        write(36, 'data');
-        view.setUint32(40, frames * 2, true);
-        for (let i = 0; i < frames; i += 1) {
-          const sample = Math.sin((2 * Math.PI * 440 * i) / sampleRate) * 0.3;
-          view.setInt16(44 + i * 2, sample * 0x7fff, true);
-        }
-        const url = URL.createObjectURL(
-          new Blob([buffer], { type: 'audio/wav' }),
-        );
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const output = devices.find(
-          (device) =>
-            device.kind === 'audiooutput' &&
-            device.label.toLowerCase().includes(needle.toLowerCase()),
-        );
-        const audio = new Audio(url);
-        const sinkable = audio as HTMLAudioElement & {
-          setSinkId?: (deviceId: string) => Promise<void>;
-        };
-        if (output && sinkable.setSinkId) {
-          await sinkable.setSinkId(output.deviceId);
-        }
-        (
-          window as unknown as { __cyrvisTestAudio?: HTMLAudioElement }
-        ).__cyrvisTestAudio = audio;
-        await audio.play();
-        return output?.label ?? 'default output';
-      };
+    const url = URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
+    const audio = new Audio(url);
+    const sinkable = audio as HTMLAudioElement & {
+      setSinkId?: (id: string) => Promise<void>;
+    };
+    try {
+      if (deviceId && sinkable.setSinkId) {
+        await sinkable.setSinkId(deviceId);
+      }
+      await audio.play();
+    } finally {
+      setTimeout(() => {
+        audio.pause();
+        URL.revokeObjectURL(url);
+      }, 1_200);
     }
+  }, []);
 
-    startedRef.current = true;
-    setMicReady(true);
-    console.log('[cyrvis] microphone ready', {
-      sampleRate: captureContext.sampleRate,
+  const selectAudioMode = useCallback(
+    async (mode: 'headset' | 'speaker') => {
+      setAudioModeState(mode);
+      localStorage.setItem('cyrvis.audioMode', mode);
+      await window.electron.voice.setAudioMode(mode);
+      await refreshOutputDevices();
+    },
+    [refreshOutputDevices],
+  );
+
+  const toggleAudioMode = useCallback(
+    () => selectAudioMode(audioMode === 'speaker' ? 'headset' : 'speaker'),
+    [audioMode, selectAudioMode],
+  );
+
+  const stopCapture = useCallback(async () => {
+    processorRef.current?.disconnect();
+    processorRef.current = null;
+    sourceRef.current?.disconnect();
+    sourceRef.current = null;
+    silentGainRef.current?.disconnect();
+    silentGainRef.current = null;
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    mediaStreamRef.current = null;
+    await captureContextRef.current?.close();
+    captureContextRef.current = null;
+    streamingUtteranceActiveRef.current = false;
+    bargePendingRef.current = false;
+    pendingPcmRef.current = new Uint8Array();
+    setMicReady(false);
+  }, []);
+
+  const startCapture = useCallback(async () => {
+    if (mediaStreamRef.current) {
+      return;
+    }
+    const stream = await openMicrophoneStream();
+    mediaStreamRef.current = stream;
+    const audioContext = new AudioContext();
+    captureContextRef.current = audioContext;
+    captureSampleRateRef.current = audioContext.sampleRate;
+    const captureTrack = stream.getAudioTracks()[0];
+    console.log('[cyrvis] mic capture ready', {
+      label: captureTrack?.label || '',
+      deviceId: captureTrack?.getSettings().deviceId || '',
+      sampleRate: audioContext.sampleRate,
     });
-  }, [flushPending]);
+    await audioContext.resume();
+    const source = audioContext.createMediaStreamSource(stream);
+    sourceRef.current = source;
+    const processor = audioContext.createScriptProcessor(4096, 1, 1);
+    processorRef.current = processor;
+    processor.onaudioprocess = (event) => {
+      processSamples(
+        event.inputBuffer.getChannelData(0),
+        audioContext.sampleRate,
+      );
+    };
+    const silentGain = audioContext.createGain();
+    silentGain.gain.value = 0;
+    silentGainRef.current = silentGain;
+    source.connect(processor);
+    processor.connect(silentGain);
+    silentGain.connect(audioContext.destination);
+    captureTrack?.addEventListener('ended', () => {
+      setMicReady(false);
+      setError('Microphone disconnected');
+      window.electron.voice.notifyCaptureError('Microphone disconnected');
+    });
+    setMicReady(true);
+    setError(null);
+    window.electron.voice.notifyCaptureReady(
+      captureTrack?.label || 'renderer microphone',
+    );
+    await refreshOutputDevices();
+  }, [processSamples, refreshOutputDevices]);
 
   const start = useCallback(async () => {
     if (connectingRef.current) return;
@@ -594,67 +664,40 @@ export function useVoiceAudio() {
     setConnecting(true);
     setError(null);
     try {
-      if (window.electron.voice.externalCapture) {
-        // Capture lives in a hidden renderer; the main window only plays TTS.
-        setMicReady(false);
-      } else {
-        await ensureMic();
-      }
       const result = await window.electron.voice.start();
       if (!result?.ok) throw new Error(result?.error || 'Voice is unavailable');
-      setError(null);
-      if (result.state) setState(result.state);
-      if (window.electron.voice.externalCapture)
-        setMicReady(Boolean(result.captureReady));
-    } catch (err) {
-      const name = err instanceof DOMException ? err.name : 'Error';
-      const detail = err instanceof Error ? err.message : String(err);
-      const message = `${name}: ${detail}`;
+      await startCapture();
+    } catch (captureError) {
+      const message =
+        captureError instanceof Error
+          ? captureError.message
+          : String(captureError);
       console.error('[cyrvis] voice start failed', message);
       setError(message);
       setMicReady(false);
-      startedRef.current = false;
     } finally {
       connectingRef.current = false;
       setConnecting(false);
     }
-  }, [ensureMic]);
-
-  const stopCapture = useCallback(async () => {
-    workletNodeRef.current?.disconnect();
-    workletNodeRef.current = null;
-    scriptProcessorRef.current?.disconnect();
-    scriptProcessorRef.current = null;
-    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
-    mediaStreamRef.current = null;
-    const player = playerRef.current;
-    playerRef.current = null;
-    player?.stop();
-    await captureContextRef.current?.close();
-    captureContextRef.current = null;
-    pendingSamplesRef.current = [];
-    startedRef.current = false;
-    setMicReady(false);
-  }, []);
-
-  const restartMic = useCallback(async () => {
-    await stopCapture();
-    try {
-      await ensureMic();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error('[cyrvis] microphone restart failed', message);
-      setError(message);
-    }
-  }, [ensureMic, stopCapture]);
+  }, [startCapture]);
 
   const stop = useCallback(async () => {
-    setThinking(false);
-    stopPlayback();
-    finishPlayback();
+    finishStreamingUtterance();
+    cancelPlayer();
     await stopCapture();
+    setThinking(false);
     await window.electron.voice.stop();
-  }, [finishPlayback, stopCapture, stopPlayback]);
+  }, [cancelPlayer, finishStreamingUtterance, stopCapture]);
+
+  const restartCapture = useCallback(async () => {
+    await stopCapture();
+    await startCapture();
+  }, [startCapture, stopCapture]);
+
+  const interrupt = useCallback(() => {
+    cancelPlayer();
+    window.electron.voice.bargeIn();
+  }, [cancelPlayer]);
 
   useEffect(() => {
     if (voiceOwner) {
@@ -663,79 +706,165 @@ export function useVoiceAudio() {
     }
     voiceOwner = ownerRef.current;
     const owner = ownerRef.current;
+    disposedRef.current = false;
 
-    void window.electron.voice.getPtt().then((state) => setPtt(state));
-    void window.electron.voice.getAudioMode().then(({ mode }) => {
-      setAudioModeState(mode);
-      applyAudioMode(mode);
+    void window.electron.voice.getPtt().then((next) => setPtt(next));
+    void window.electron.voice.getAudioMode().then(async ({ mode }) => {
+      const saved = localStorage.getItem('cyrvis.audioMode');
+      const nextMode =
+        saved === 'speaker' || saved === 'headset' ? saved : mode;
+      setAudioModeState(nextMode);
+      await window.electron.voice.setAudioMode(nextMode);
+      const outputs = await refreshOutputDevices();
+      const savedOutputId = localStorage.getItem('cyrvis.outputDeviceId');
+      const output = outputs.find((item) => item.deviceId === savedOutputId);
+      if (output) {
+        setSelectedOutputId(output.deviceId);
+        outputDeviceIdRef.current = output.deviceId;
+      }
     });
 
     const cleanups = [
-      window.electron.voice.onPttState((state) => setPtt(state)),
-      window.electron.voice.onAudio(playPcm),
+      window.electron.voice.onPttState((next) => setPtt(next)),
+      window.electron.voice.onError(({ message }) => {
+        setThinking(false);
+        setError(message);
+        cancelPlayer(true);
+      }),
       window.electron.voice.onSpeechStarted(() => {
         setTranscript('');
         setAssistantText('');
-        stopPlayback();
+        if (!assistantSpeakingRef.current) {
+          setThinking(false);
+        }
       }),
       window.electron.voice.onSpeechStopped(() => undefined),
       window.electron.voice.onThinking(() => setThinking(true)),
-      window.electron.voice.onResponseStarted(() => {
-        stopPlayback();
-        setAssistantText('');
-        setThinking(false);
-        bargeInMsRef.current = 0;
-        preSpeechBufferRef.current = [];
-        playbackChunksRef.current = 0;
-        assistantSpeakingRef.current = true;
-        // A capture AudioContext can be auto-suspended when another context
-        // starts; make sure it is running before we listen for barge-in.
-        void captureContextRef.current?.resume();
-        if (assistantIdleTimerRef.current) {
-          clearTimeout(assistantIdleTimerRef.current);
+      window.electron.voice.onAudio((pcm16) => {
+        if (settingsRef.current.voiceEngine !== 'omni' || !pcm16.length) {
+          return;
         }
-        // Watchdog for a text-only response that produces no audio chunks.
+        // Only treat the assistant as speaking once real audio arrives. The
+        // response.created event fires before the model has processed the
+        // user's own utterance, so arming the barge there cancelled responses
+        // while the user was still finishing their sentence.
+        assistantSpeakingRef.current = true;
+        setPlaybackActive(true);
+        if (!legacyPlayerRef.current) {
+          legacyPlayerRef.current = new WebAudioStreamPlayer(
+            finishPlayback,
+            (audioError) =>
+              console.warn('[cyrvis] omni audio error', audioError),
+          );
+        }
+        legacyPlayerRef.current.play(pcm16);
+      }),
+      window.electron.voice.onResponseStarted(() => {
+        setAssistantText('');
+        console.info('[cyrvis] response started', {
+          engine: settingsRef.current.voiceEngine,
+          ttsProvider: settingsRef.current.voiceTtsProvider,
+        });
+        cancelPlayer();
+        playerEpochRef.current += 1;
+        if (settingsRef.current.voiceEngine !== 'omni') {
+          assistantSpeakingRef.current = true;
+        }
+        speechDeltaRef.current = '';
+        speechDeltaSeenRef.current = false;
+        firstAudioPromiseRef.current = new Promise<boolean>((resolve) => {
+          resolveFirstAudioRef.current = resolve;
+        });
+        setThinking(false);
+        if (settingsRef.current.voiceEngine !== 'omni') {
+          setPlaybackActive(true);
+        }
+        if (settingsRef.current.voiceEngine === 'omni') {
+          return;
+        }
+        startPlayer();
+        clearIdleTimer();
         assistantIdleTimerRef.current = setTimeout(() => {
-          assistantIdleTimerRef.current = null;
-          assistantSpeakingRef.current = false;
-          window.electron.voice.notifyPlaybackIdle();
-        }, 10_000);
+          if (assistantSpeakingRef.current && !playerRef.current) {
+            finishPlayback();
+          }
+        }, 120_000);
       }),
       window.electron.voice.onResponseStopped(() => {
         setThinking(false);
-        setPlaybackActive(false);
-        assistantSpeakingRef.current = false;
-        bargeInMsRef.current = 0;
-        preSpeechBufferRef.current = [];
-        if (assistantIdleTimerRef.current) {
-          clearTimeout(assistantIdleTimerRef.current);
-          assistantIdleTimerRef.current = null;
-        }
-        stopPlayback();
-        finishPlayback();
+        cancelPlayer(true);
       }),
       window.electron.voice.onResponseDone(() => {
-        // No audio chunks means this was a tool-call/text-only response; the
-        // mic can reopen now instead of waiting for the 10s watchdog.
-        console.log(
-          `[cyrvis] response done (renderer) chunks=${
-            playbackChunksRef.current
-          } speaking=${assistantSpeakingRef.current}`,
-        );
-        if (playbackChunksRef.current === 0) {
-          finishPlayback();
-          return;
-        }
-        // Generation can finish seconds before audio playback. Drain every
-        // queued sample before finishPlayback reopens the microphone.
-        playerRef.current?.finish();
+        void (async () => {
+          if (settingsRef.current.voiceEngine === 'omni') {
+            if (legacyPlayerRef.current) {
+              legacyPlayerRef.current.finish();
+            } else {
+              finishPlayback();
+            }
+            return;
+          }
+          if (playerStartRef.current) {
+            await playerStartRef.current;
+          }
+          const player = playerRef.current;
+          if (!player) {
+            finishPlayback();
+            return;
+          }
+          const firstAudio = await waitForAudioStart(
+            firstAudioPromiseRef.current ?? Promise.resolve(false),
+            settingsRef.current.voiceTtsProvider === 'qwen-tts-realtime'
+              ? 15_000
+              : 4_000,
+          );
+          if (!firstAudio) {
+            player.cancel();
+            playerRef.current = null;
+            setError('语音首包超时，请检查 TTS API 或本地服务。');
+            finishPlayback();
+            return;
+          }
+          try {
+            await player.finish();
+          } catch (finishError) {
+            console.warn('[cyrvis] streaming TTS finish failed', finishError);
+          } finally {
+            playerRef.current = null;
+            finishPlayback();
+          }
+        })();
       }),
-      window.electron.voice.onTranscript(({ text }) => {
+      window.electron.voice.onTranscript(({ text, final }) => {
+        transcriptRef.current = text;
         setTranscript(text);
+        if (final) {
+          if (!text.trim()) {
+            setThinking(false);
+          }
+        }
       }),
       window.electron.voice.onAssistantText(({ text, final }) => {
         setThinking(false);
-        setAssistantText((prev) => (final ? text : prev + text));
+        setAssistantText((current) => (final ? text : current + text));
+      }),
+      window.electron.voice.onSpeechText(({ text, final }) => {
+        if (settingsRef.current.voiceEngine === 'omni') {
+          return;
+        }
+        if (final) {
+          if (!speechDeltaSeenRef.current && text.trim()) {
+            speechDeltaRef.current += text;
+            startPlayer();
+          }
+          return;
+        }
+        speechDeltaSeenRef.current = true;
+        speechDeltaRef.current += text;
+        if (playerRef.current) {
+          playerRef.current.appendText(text);
+          speechDeltaRef.current = '';
+        }
       }),
       window.electron.voice.onState((next) => {
         setState(next as VoiceUiState);
@@ -744,212 +873,56 @@ export function useVoiceAudio() {
         setTranscript('');
         setAssistantText('');
       }),
-      window.electron.voice.onSleep(() => {
-        setThinking(false);
+      window.electron.voice.onSleep(() => setThinking(false)),
+      window.electron.voice.onAudioMode(({ mode }) => {
+        setAudioModeState(mode);
       }),
-      window.electron.voice.onCaptureReady(({ label }) => {
-        console.log('[cyrvis] external capture ready', label);
+      window.electron.voice.onCaptureReady(() => {
         setError(null);
         setMicReady(true);
       }),
       window.electron.voice.onCaptureError(({ message }) => {
-        console.error('[cyrvis] external capture error', message);
         setError(message);
         setMicReady(false);
-        setThinking(false);
-        stopPlayback();
-      }),
-      window.electron.voice.onSetOutput((label) => {
-        void applyOutput(label);
-      }),
-      window.electron.voice.onAudioMode(({ mode }) => {
-        setAudioModeState(mode);
-        applyAudioMode(mode);
       }),
     ];
 
-    console.log(
-      '[cyrvis] voice bar mounted; audio subscribers:',
-      JSON.stringify(window.electron.voice.debugAudioSubscribers()),
-    );
-    if (window.electron.voice.isTestMode) {
-      console.log('[cyrvis] test mode: microphone auto-start disabled');
-    } else {
-      // Best-effort auto-start. If Chromium requires a gesture, the UI exposes
-      // a Start button and the error is shown to the user.
+    if (!window.electron.voice.isTestMode) {
       void start();
     }
 
+    const deviceChange = () => {
+      if (!mediaStreamRef.current) return;
+      console.log('[cyrvis] audio device changed; restarting capture');
+      void restartCapture().catch((restartError) => {
+        console.warn('[cyrvis] mic restart failed', restartError);
+      });
+    };
+    navigator.mediaDevices?.addEventListener?.('devicechange', deviceChange);
+
     return () => {
+      disposedRef.current = true;
       if (voiceOwner === owner) {
         voiceOwner = null;
       }
-      if (assistantIdleTimerRef.current) {
-        clearTimeout(assistantIdleTimerRef.current);
-        assistantIdleTimerRef.current = null;
-      }
+      navigator.mediaDevices?.removeEventListener?.(
+        'devicechange',
+        deviceChange,
+      );
+      clearIdleTimer();
       cleanups.forEach((cleanup) => cleanup());
-      void stop();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    if (!(import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV) {
-      return;
-    }
-    const debugWindow = window as unknown as {
-      __cyrvisStopMic?: () => void;
-      __cyrvisStartMic?: () => void;
-    };
-    debugWindow.__cyrvisStopMic = () => {
+      cancelPlayer();
       void stopCapture();
     };
-    debugWindow.__cyrvisStartMic = () => {
-      void ensureMic().catch((error) => {
-        console.warn('[cyrvis] debug mic restart failed', error);
-      });
-    };
-  }, [ensureMic, stopCapture]);
-
-  useEffect(() => {
-    if (!(import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV) {
-      return;
-    }
-    const debugWindow = window as unknown as {
-      __cyrvisSetOutput?: (needle: string) => Promise<string>;
-      __cyrvisResetOutput?: () => Promise<string>;
-    };
-    debugWindow.__cyrvisSetOutput = async (needle: string) => {
-      return (await applyOutput(needle)) ?? `output not found: ${needle}`;
-    };
-    debugWindow.__cyrvisResetOutput = async () => {
-      outputDeviceIdRef.current = null;
-      const player = playerRef.current;
-      if (player) {
-        try {
-          await player.setSinkId('default');
-        } catch (error) {
-          console.warn('[cyrvis] reset output failed', error);
-        }
-      }
-      return 'default';
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!window.electron.voice.externalCapture) {
-      return;
-    }
-    if (!navigator.mediaDevices?.addEventListener) {
-      return;
-    }
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const onDeviceChange = () => {
-      if (timer) {
-        clearTimeout(timer);
-      }
-      timer = setTimeout(() => {
-        void window.electron.voice.restartCapture().catch((error) => {
-          console.warn('[cyrvis] restart capture failed', error);
-        });
-      }, 800);
-    };
-    navigator.mediaDevices.addEventListener('devicechange', onDeviceChange);
-    return () => {
-      navigator.mediaDevices.removeEventListener(
-        'devicechange',
-        onDeviceChange,
-      );
-      if (timer) {
-        clearTimeout(timer);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (window.electron.voice.externalCapture) {
-      return;
-    }
-    if (window.electron.voice.isTestMode) {
-      return;
-    }
-    if (!navigator.mediaDevices?.addEventListener) {
-      return;
-    }
-
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const onDeviceChange = () => {
-      if (timer) {
-        clearTimeout(timer);
-      }
-      timer = setTimeout(async () => {
-        try {
-          const devices = await navigator.mediaDevices.enumerateDevices();
-          const inputs = devices.filter(
-            (device) => device.kind === 'audioinput',
-          );
-          const realMic = inputs.find(
-            (device) =>
-              device.deviceId &&
-              device.label &&
-              !/todesk|virtual|stereo mix|line in/i.test(device.label),
-          );
-          const currentTrack =
-            mediaStreamRef.current?.getAudioTracks()[0] || null;
-          const currentLabel = currentTrack?.label || '';
-          const currentIsVirtual =
-            !currentLabel ||
-            /todesk|virtual|stereo mix|line in/i.test(currentLabel);
-          const currentEnded =
-            !currentTrack || currentTrack.readyState === 'ended';
-
-          console.log(
-            '[cyrvis] devicechange',
-            JSON.stringify({
-              inputs: inputs.map((device) => device.label),
-              realMic: realMic?.label || null,
-              currentLabel,
-            }),
-          );
-
-          if (currentEnded || !mediaStreamRef.current) {
-            if (realMic) {
-              await restartMic();
-            } else {
-              await stopCapture();
-              setError(
-                'No physical microphone found. Connect the headset microphone and restart voice.',
-              );
-            }
-            return;
-          }
-
-          if (realMic && currentIsVirtual) {
-            await restartMic();
-          } else if (!realMic && currentIsVirtual) {
-            await stopCapture();
-            setError(
-              'No physical microphone found. Connect the headset microphone and restart voice.',
-            );
-          }
-        } catch (error) {
-          console.warn('[cyrvis] devicechange handling failed', error);
-        }
-      }, 500);
-    };
-
-    navigator.mediaDevices.addEventListener('devicechange', onDeviceChange);
-    return () => {
-      navigator.mediaDevices.removeEventListener(
-        'devicechange',
-        onDeviceChange,
-      );
-      if (timer) {
-        clearTimeout(timer);
-      }
-    };
-  }, [restartMic, start, stopCapture]);
+  }, [
+    cancelPlayer,
+    finishPlayback,
+    refreshOutputDevices,
+    restartCapture,
+    start,
+    startPlayer,
+    stopCapture,
+  ]);
 
   return {
     state,
@@ -960,13 +933,18 @@ export function useVoiceAudio() {
     connecting,
     playbackActive,
     audioMode,
+    outputDevices,
+    selectedOutputId,
+    setOutputDevice,
+    testOutputDevice,
     error,
     ptt,
     start,
     stop,
     togglePtt: window.electron.voice.togglePtt,
-    interrupt: () => window.electron.voice.bargeIn(),
+    interrupt,
     toggleAudioMode,
+    selectAudioMode,
     forceAwake: window.electron.voice.forceAwake,
     sleep: window.electron.voice.sleep,
     cancelTask: window.electron.voice.cancelTask,

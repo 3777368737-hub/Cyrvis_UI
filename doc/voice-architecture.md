@@ -1,12 +1,6 @@
 # CYRVIS 语音架构（最终实现）
 
-> 状态：Windows 旧链路于 2026-11-15 实测通过；2026-11-17 新增 macOS 连续 PCM 播放与默认外放保护，自动化验证通过，真实外放听感待复测。
->
-> **macOS 更新（2026-11-17）**：下文 WAV 分段方案保留给 Windows/Linux；macOS 现在使用 `pcm-player.ts`，在同一个 AudioContext 时钟上连续调度 24 kHz PCM，首次缓冲约 120ms。保留所有待播样本，只有真正发生 underrun 才重新对齐时钟；不因队列超过几秒而丢弃/重叠播放。`response.done` 只表示生成结束，麦克风必须等最后一个音频源结束后再恢复。采集仍由独立隐藏窗口完成。
->
-> **默认输出模式改为外放**：Mac 内置麦克风会收到扬声器声音，旧默认耳机模式在播放约 0.4 秒后误触发 barge-in，产生“没问题”→“没问”的自我转写循环。外放模式在播放及结束后 800ms 内丢弃麦克风输入；可用 Interrupt / Ctrl+Alt+X 中断。耳机用户可在右键菜单明确切换至耳机模式。输出设备跟随系统默认设备，不再尝试 Windows 专用的 Realtek 设备名。
->
-> 验证：75 项单元测试（含外放回声不触发打断、完整播放尾部、长队列连续排程、取消、输出切换）；真实 Electron 静音 PCM 队列验证完整时长及旧播放器停止不会提前解锁新回复的麦克风。
+> 状态：2026-11-16 实现参考信号回声检测与双模式语音打断。
 > 目标：端到端实时语音对话 + 语音打断 + 语音控制 GUI Agent。
 > 相关文档：[architecture.md](./architecture.md)（整体）、[roadmap.md](./roadmap.md)（后续）、
 > [findings.md](./findings.md)（排障记录）、[archive/voice-implementation-v1.md](./archive/voice-implementation-v1.md)（历史清单）。
@@ -18,7 +12,7 @@
 
 - **隐藏采集窗口**：只 `getUserMedia`，不播放任何声音；
 - **主窗口**：只负责 TTS 播放（WAV 分段）；
-- **主进程**：接收采集 PCM，负责正常 ASR 转发 + 播报期间的打断检测。
+- **主进程**：接收采集 PCM，负责正常 ASR 转发、播放参考回声检测和播报期间的打断检测。
 
 拆分后播放期间采集电平正常（用户人声 3000–16726），打断日志实测 `barge-in avg=4110/4910`。
 
@@ -46,27 +40,27 @@
 
 ## 3. 采集链路
 
-| 项 | 实现 |
-|---|---|
-| 容器 | `BrowserWindow({show:false, backgroundThrottling:false})` |
-| 页面 | 主进程内置 HTTP 服务 `http://127.0.0.1:<随机端口>/capture` |
+| 项       | 实现                                                                                                            |
+| -------- | --------------------------------------------------------------------------------------------------------------- |
+| 容器     | `BrowserWindow({show:false, backgroundThrottling:false})`                                                       |
+| 页面     | 主进程内置 HTTP 服务 `http://127.0.0.1:<随机端口>/capture`                                                      |
 | 设备选择 | 先 `getUserMedia({audio:true})` 触发权限 → 枚举 → 选显式物理设备；**禁止** default/communications/ToDesk 虚拟麦 |
-| 约束 | `echoCancellation:false`、`noiseSuppression:true`、`autoGainControl:true`、单声道 |
-| 重采样 | 设备原生采样率 → 16 kHz（线性插值） |
-| 分块 | 320 samples（20ms）Int16 → WebSocket 二进制 |
-| 热插拔 | 主窗口监听 `devicechange`，800ms 防抖后调用 `cyrvis:voice:restart-capture` |
-| 断连 | 采集 track `ended` → 上报 `capture-error`，语音条显示错误 |
+| 约束     | `echoCancellation:false`、`noiseSuppression:true`、`autoGainControl:true`、单声道                               |
+| 重采样   | 设备原生采样率 → 16 kHz（线性插值）                                                                             |
+| 分块     | 320 samples（20ms）Int16 → WebSocket 二进制                                                                     |
+| 热插拔   | 主窗口监听 `devicechange`，800ms 防抖后调用 `cyrvis:voice:restart-capture`                                      |
+| 断连     | 采集 track `ended` → 上报 `capture-error`，语音条显示错误                                                       |
 
 关键文件：`apps/ui-tars/src/main/cyrvis/capture-service.ts`
 
 ## 4. 播放链路
 
-| 项 | 实现 |
-|---|---|
-| 输入 | Qwen `response.audio.delta`（PCM16 / 24 kHz / 单声道） |
-| 分段 | 每 0.75s（18000 samples）一个独立 **WAV Blob** |
-| 播放 | 隐藏 `<audio>` 元素顺序播放，`ended` 后播下一段 |
-| 输出 | 默认设备；可临时切到 Realtek 扬声器（见第 9 节） |
+| 项   | 实现                                                                |
+| ---- | ------------------------------------------------------------------- |
+| 输入 | Qwen `response.audio.delta`（PCM16 / 24 kHz / 单声道）              |
+| 分段 | 每 0.75s（18000 samples）一个独立 **WAV Blob**                      |
+| 播放 | 隐藏 `<audio>` 元素顺序播放，`ended` 后播下一段                     |
+| 输出 | 默认设备；可临时切到 Realtek 扬声器（见第 9 节）                    |
 | 空闲 | 最后一段 `ended` → `notifyPlaybackIdle()` → 主进程开麦/结束打断窗口 |
 
 为什么不用 Web Audio / MediaSource：两者都会触发 Chrome AEC 把采集归零；普通 WAV 文件（blob URL）不会。
@@ -79,7 +73,11 @@
 2. 采集 PCM 持续进入 `handleCapturePcm`：
    - 计算每 20ms 块的平均能量；
    - 维护最近 30 块（约 600ms）预录缓冲；
-   - 播报中：能量 > **1000** 且持续 **150ms** → 触发；
+   - 始终用主窗口实际播放的 WAV PCM 作为参考信号，在最长 500ms 延迟内做互相关；
+   - 强相关片段判定为自身回声，直接丢弃；
+   - 弱相关且能量持续超过阈值的片段判定为用户声音，触发打断；
+   - 介于两者之间的混合信号短暂暂停 TTS，等待 220ms 尾音衰减后继续确认；
+   - 播报中：能量 > **1000** 且持续 **150ms** 才进入打断判断；
    - 非播报：PCM 正常送 Provider（本地 VAD/ASR）。
 3. 触发后：
    - `provider.bargeIn()`：`response.cancel` + 丢弃旧响应残留音频 + 清空输入缓冲 + 开麦；
@@ -90,16 +88,23 @@
 
 关键阈值：
 
-| 参数 | 值 | 说明 |
-|---|---|---|
-| 主 VAD 阈值 | 900 | AirPods 噪声底 700–900，人声 1700–4500 |
-| 主 VAD 最短语音 | 300 ms | 过滤 20–160ms 噪声尖峰 |
-| 端点静音 | 800 ms | 兼顾自然停顿与响应速度 |
-| 打断阈值 | 1000 | 播报期间耳机漏音仅 0–10 |
-| 打断持续 | 150 ms | 短促“停”也能触发 |
-| 预录缓冲 | 600 ms | 保留句首 |
-| 取消标志窗口 | 400 ms | 防止误杀打断后的新响应 |
-| TTS 分段 | 750 ms | 听感已验证无明显卡顿 |
+| 参数             | 值     | 说明                                   |
+| ---------------- | ------ | -------------------------------------- |
+| 主 VAD 阈值      | 900    | AirPods 噪声底 700–900，人声 1700–4500 |
+| 主 VAD 最短语音  | 300 ms | 过滤 20–160ms 噪声尖峰                 |
+| 端点静音         | 800 ms | 兼顾自然停顿与响应速度                 |
+| 打断能量阈值     | 1000   | 播报期间进入打断判断的最低能量         |
+| 打断持续         | 150 ms | 短促“停”也能触发                       |
+| 回声参考最大延迟 | 500 ms | 覆盖设备、系统和房间直达到达差         |
+| 回声强相关阈值   | 0.72   | 达到后按自身回声丢弃                   |
+| 回声混合信号阈值 | 0.18   | 以上且低于强相关阈值时进入暂停确认     |
+| 暂停确认尾音衰减 | 220 ms | 暂停 TTS 后等待扬声器尾音下降          |
+| 暂停确认持续语音 | 140 ms | 尾音衰减后继续检测到用户语音则确认     |
+| 暂停确认总超时   | 700 ms | 未检测到持续语音则恢复播放             |
+| 确认后恢复抑制   | 550 ms | 避免恢复播放后立即重复触发             |
+| 预录缓冲         | 600 ms | 保留句首                               |
+| 取消标志窗口     | 400 ms | 防止误杀打断后的新响应                 |
+| TTS 分段         | 750 ms | 听感已验证无明显卡顿                   |
 
 ## 6. 对话与任务链路
 
@@ -122,46 +127,65 @@
 
 ## 7. 关键文件
 
-| 文件 | 职责 |
-|---|---|
-| `main/cyrvis/capture-service.ts` | 隐藏采集窗口 + 本地 HTTP/WS + PCM 桥 |
-| `main/cyrvis/voice-service.ts` | 单例服务、IPC、采集启动/热插拔、打断检测、快捷键 |
-| `main/cyrvis/voice/qwen-omni.ts` | Qwen Realtime WebSocket、ASR/TTS/工具调用、本地 VAD、取消 |
-| `main/cyrvis/voice-brain.ts` | 意图路由、唤醒、确定性控制、主动播报、完成声明拦截 |
-| `main/cyrvis/controller.ts` | 单任务状态机、暂停/恢复/取消、事件总线 |
-| `main/cyrvis/gui-adapter.ts` | 包装现有 `runAgent`/`GUIAgent`，映射任务状态 |
-| `renderer/.../CyrvisVoice/useVoiceAudio.ts` | 语音条状态、播放器、外部采集状态 |
-| `renderer/.../CyrvisVoice/wav-player.ts` | WAV 分段播放器 |
+| 文件                                           | 职责                                                      |
+| ---------------------------------------------- | --------------------------------------------------------- |
+| `main/cyrvis/capture-service.ts`               | 隐藏采集窗口 + 本地 HTTP/WS + PCM 桥                      |
+| `main/cyrvis/voice-service.ts`                 | 单例服务、IPC、采集启动/热插拔、打断检测、快捷键          |
+| `main/cyrvis/voice/qwen-omni.ts`               | Qwen Realtime WebSocket、ASR/TTS/工具调用、本地 VAD、取消 |
+| `main/cyrvis/voice-brain.ts`                   | 意图路由、唤醒、确定性控制、主动播报、完成声明拦截        |
+| `main/cyrvis/controller.ts`                    | 单任务状态机、暂停/恢复/取消、事件总线                    |
+| `main/cyrvis/gui-adapter.ts`                   | 包装现有 `runAgent`/`GUIAgent`，映射任务状态              |
+| `main/cyrvis/speaker-barge.ts`                 | 播放参考 PCM 与麦克风 PCM 的回声相关性检测                |
+| `renderer/.../CyrvisVoice/useVoiceAudio.ts`    | 语音条状态、播放器、外部采集状态                          |
+| `renderer/.../CyrvisVoice/useFloatingVoice.ts` | 悬浮窗纯 UI 订阅：转写、回复、任务事件，不接管采集与播放  |
+| `renderer/.../pages/widget/`                   | 右侧常驻语音面板：聊天、活动、打断、唤醒、暂停与取消      |
+| `renderer/.../CyrvisVoice/wav-player.ts`       | WAV 分段播放器                                            |
 
 ## 8. 排查入口
 
-| 现象 | 看什么 |
-|---|---|
-| 没有语音输入 | `[cyrvis capture] ready/error`；设备是否被选为物理麦 |
-| 播报中不能打断 | `[cyrvis capture] level` 播报时是否非 0；`barge-in` 是否出现 |
-| 打断后没有新回复 | `transcript` 是否为空；`forceNextCommit` 是否生效 |
-| TTS 无声 | `wav stream player created`、`wav player error`、`playback idle` |
-| 任务停得慢 | `transcript` → `Request was aborted` / `user_stopped` 的时间差 |
-| AirPods 断开 | `devicechange` → 自动 `restart-capture`；重新连上即可 |
+| 现象             | 看什么                                                           |
+| ---------------- | ---------------------------------------------------------------- |
+| 没有语音输入     | `[cyrvis capture] ready/error`；设备是否被选为物理麦             |
+| 播报中不能打断   | `[cyrvis speaker] echo analysis`、`interrupt confirmed` 是否出现 |
+| 打断后没有新回复 | `transcript` 是否为空；`forceNextCommit` 是否生效                |
+| TTS 无声         | `wav stream player created`、`wav player error`、`playback idle` |
+| 任务停得慢       | `transcript` → `Request was aborted` / `user_stopped` 的时间差   |
+| AirPods 断开     | `devicechange` → 自动 `restart-capture`；重新连上即可            |
 
-## 9. 输出模式切换（耳机 / 外放）
+## 9. 两种模式：耳机 / 外放
 
-语音条右侧有 **耳机 / 外放** 按钮，点击即可切换；外放模式自动半双工。
+语音条右侧有 **耳机 / 外放** 两个并列按钮，点击即选中。两种模式都启用播放参考回声检测，不依赖浏览器 AEC 防止自听。
 
-| 模式 | 输出 | 采集 | 语音打断 |
+| 模式 | 麦克风 | 扬声器输出 | 语音打断 |
 |---|---|---|---|
-| 耳机 | AirPods / 默认耳机 | 无 AEC | **可用**（阈值 1000 / 150ms） |
-| 外放 | 扬声器 / Realtek | AEC（尝试） | **不可用**，用 `Ctrl+Alt+X` / Interrupt |
+| 耳机 | 蓝牙耳机麦克风 | 蓝牙耳机本身 | **可用**，主要依赖能量阈值 |
+| 外放 | 蓝牙耳机麦克风 | 主机 Realtek/所选扬声器 | **可用**，依赖播放参考回声检测与暂停确认 |
 
-外放模式是半双工：
+切换模式时 App 自动做三件事：
 
-- 播放期间**丢弃**采集 PCM；
-- 播放结束后再丢弃 **800ms**，吸收房间混响；
+1. 用 `scripts/cyrvis/audio/set-default-output.ps1` 切换 **Windows 默认播放端点**（耳机 → Bluetooth A2DP；外放 → Realtek 模拟扬声器）；
+2. 把主窗口 `<audio>` 的 `setSinkId` 切到同一设备；
+3. 重启隐藏采集窗口，但**不改变麦克风**，始终优先物理耳机麦克风。
+
+之所以要同时改 Windows 默认端点：实测 Windows 会把 Electron 的整条音频会话留在蓝牙耳机上，单靠 `HTMLMediaElement.setSinkId(Realtek)` 有时不生效；默认端点切到 Realtek 后，试听/播报稳定走主机扬声器。
+
+外放模式采用“普通 ASR 半双工、打断检测全双工”：
+
+- 播报期间不把普通采集 PCM 直接送入 ASR；
+- 但麦克风持续参与参考信号相关性检测，用户随时可以开始打断；
+- 明确用户声音直接取消当前回复；
+- 回声与用户声音混合时短暂暂停播放，用户继续说话则确认打断，否则恢复播放；
+- 播放结束后保留 **1400ms** 尾音窗口，同时继续用参考相关性过滤残余回声；
+- 对最终转写与助手刚说文本做相似度检查，命中时取消潜在响应并记为回声；
 - 避免“它听到自己的外放 → 一直你好”的反馈循环。
 
-AEC 实测结论：隐藏采集窗口开启 `echoCancellation:true` 后，播放期间仍收到自己的外放（`barge-in avg=8640`）——因为该渲染进程没有主窗口播放的参考信号。因此外放模式保留 AEC 但**不启用语音打断**；要同时外放+语音打断，需要系统级回声参考/软件 AEC，或换带杆麦克风（见 roadmap/待验证方案）。
+高级控件：
 
-切回耳机模式后，语音打断立即恢复；两种模式可自由切换。
+- **输出设备下拉框**：手动覆盖模式预设；日常用模式按钮即可；
+- **试听**：在当前选中的设备上播放 1 秒 440Hz 测试音，用于确认物理接口；
+- 模式和设备分别持久化到 `localStorage`，重启后恢复。
+
+AEC 实测结论：隐藏采集窗口开启 `echoCancellation:true` 后，播放期间仍收到自己的外放（`barge-in avg=8640`），因为该渲染进程没有主窗口播放的参考信号。因此浏览器 AEC 不能作为主要防线；当前实现由主进程持有实际播放参考 PCM，并配合能量门控、相关性判断、暂停确认探针和最终转写相似度兜底。若外放串音仍导致误判，`Ctrl+Alt+X` / Interrupt 始终可用。
 
 ### 任意输出设备（调试）
 
@@ -179,15 +203,15 @@ await window.__cyrvisResetOutput();
 
 ## 10. 实测记录
 
-| 时间 | 事件 | 值/结果 |
-|---|---|---|
-| 19:54:09 | 隐藏采集窗口就绪 | `label: 耳机 (cc ultimate) (Bluetooth)` |
-| 19:54:22 | 播报中喊停 | `barge-in avg=4110`，立即 `playback idle` |
-| 19:54:34 | 第二次打断 | `barge-in avg=4910`，转写“停呀。” |
-| 19:56:54 | 取消任务语音 | 转写后 `cancel_gui_task`，任务在 19:58:32 以 `user_stopped` 结束 |
-| 19:58:29 | 取消任务语音 | 转写“取消这个任务…”，GUI 请求在 19:58:32 被 abort |
-| 播放期间 | 耳机漏音 | 采集电平 0–10，不误触发 |
-| 用户说话 | 采集电平 | 3000–16726 |
+| 时间     | 事件             | 值/结果                                                          |
+| -------- | ---------------- | ---------------------------------------------------------------- |
+| 19:54:09 | 隐藏采集窗口就绪 | `label: 耳机 (cc ultimate) (Bluetooth)`                          |
+| 19:54:22 | 播报中喊停       | `barge-in avg=4110`，立即 `playback idle`                        |
+| 19:54:34 | 第二次打断       | `barge-in avg=4910`，转写“停呀。”                                |
+| 19:56:54 | 取消任务语音     | 转写后 `cancel_gui_task`，任务在 19:58:32 以 `user_stopped` 结束 |
+| 19:58:29 | 取消任务语音     | 转写“取消这个任务…”，GUI 请求在 19:58:32 被 abort                |
+| 播放期间 | 耳机漏音         | 采集电平 0–10，不误触发                                          |
+| 用户说话 | 采集电平         | 3000–16726                                                       |
 
 ## 11. 已知限制与后续
 
@@ -196,30 +220,42 @@ await window.__cyrvisResetOutput();
 3. **本地 WS 端口**：随机 127.0.0.1 端口；打包时需确认防火墙/端口策略。
 4. **TTS 分段听感**：0.75s 已验证无明显卡顿；若换设备出现间隙，可增大到 1.5s。
 5. **输出设备 UI**：已有“耳机/外放”按钮；更细的设备选择（显示器音箱等）仍可用调试函数。
-6. **原生采集 sidecar**：若后续需要完全绕开 Chromium，可用 Python/PortAudio 或 Node 原生模块替换隐藏窗口采集。
+6. **跨会话记忆**：`memory.ts` 持久化最近对话、显式长期事实和 Activity，并在启动时注入 Qwen Realtime `session.update.instructions`。
+7. **原生采集 sidecar**：若后续需要完全绕开 Chromium，可用 Python/PortAudio 或 Node 原生模块替换隐藏窗口采集。
 
-### 待验证：外放 + 语音打断（游戏耳机 boom mic）
+### 现场声学验证
 
-> 状态：2026-11-15 用户决定先搁置，记录方案，后续继续。
+当前代码已经支持外放模式语音打断，但真实效果仍依赖扬声器音量、麦克风位置和房间混响。需要在目标设备上验证：
 
-目标：用户戴耳机麦克风、声音从音箱外放给观众，同时保留“随时说停”的语音打断。
+1. **播放期间不说话**：日志应持续显示高相关性，不能暂停或取消回复。
+2. **播放期间说完整问题**：应尽快暂停播放，并在确认后转写用户问题。
+3. **播放期间只说“停”**：低相关用户声音应直接触发；混合信号允许短暂暂停确认。
+4. **暂停后不说话**：应在 700ms 内恢复播放，不能把回复永久卡住。
+5. **播放刚结束立即追问**：尾音过滤不能吞掉新的用户问题。
 
-推荐路径（优先级从高到低）：
-
-1. **换带杆游戏耳机麦克风**（boom mic，杆子伸到嘴边）：
-   - 断开 AirPods，插 USB/3.5mm 游戏耳机；
-   - 输出保持 Realtek 扬声器；
-   - 测播放期间串音电平 vs 正常说“停”的电平；
-   - 若人声明显高于串音，在外放模式重新启用语音打断，阈值取两者之间；
-   - 需要给采集加“麦克风设备选择”（当前自动选第一个物理麦）。
-2. **软件 AEC（用 TTS 做参考）**：主进程持有播放 PCM，与麦克风 PCM 做延迟对齐 + 自适应滤波；工程量大，不保证明天。
-3. **兜底**：外放时用 `Ctrl+Alt+X` / Interrupt。
+如果某些扬声器环境持续产生低相关混响，下一步应加入自适应 FIR/AEC，而不是继续提高能量阈值。`Ctrl+Alt+X` / Interrupt 始终保留为兜底。
 
 测试记录模板：
 
-| 项 | 目标值 |
-|---|---|
-| 播放期间串音电平 | 越低越好 |
-| 用户说“停”时的电平 | 明显高于串音 |
-| 建议阈值 | 串音与人声之间，持续 150ms |
-| 失败回退 | 外放半双工 + Ctrl+Alt+X |
+| 项                 | 目标值                     |
+| ------------------ | -------------------------- |
+| 播放期间串音电平   | 越低越好                   |
+| 用户说“停”时的电平 | 明显高于串音               |
+| 建议阈值           | 串音与人声之间，持续 150ms |
+| 失败回退           | 短时半双工 + Ctrl+Alt+X    |
+
+## 12. 语音模型配置（2026-11-16）
+
+Token Plan 的 `sk-sp-…` Key 不能走公共 DashScope，必须使用独立 host：
+
+```env
+QWEN_MODEL=qwen-audio-3.0-realtime-plus
+QWEN_VOICE=longanqian
+QWEN_REALTIME_URL=wss://token-plan.maas.qianwenaiapi.com/api-ws/v1/realtime?model=qwen-audio-3.0-realtime-plus
+```
+
+- 模型列表：`GET https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1/models`。
+- Token Plan 当前只提供 `qwen-audio-3.0-realtime-plus`，没有 flash。
+- 实测 App 兼容会话（`turn_detection:null`、16k 输入/24k 输出 PCM、tools）返回 `session.updated`；文本转语音返回 5 个 `response.audio.delta`、96000 字节 PCM（约 2 秒）。
+- 同 host 的 `/v1/realtime`、`/ws/v1/realtime`、`/realtime` 为 404；`/compatible-mode/v1/realtime` 可握手，但 App 使用 DashScope 协议，配置 `/api-ws/v1/realtime`。
+- 日志出现 `qwen session ready` → `qwen connected` → `wake` 即表示语音链路已连上；采集仍要求 Windows 存在物理麦克风，`ToDesk Virtual Audio` 会被拒绝。

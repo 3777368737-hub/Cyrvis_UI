@@ -26,6 +26,23 @@ Action: click(start_box='(100,200)')`;
       ]);
     });
 
+    it('parses a space-separated box without commas', () => {
+      const input = `Action: left_double(start_box='[88 378]')`;
+
+      const result = parseActionVlm(input);
+
+      expect(result).toEqual([
+        {
+          reflection: null,
+          thought: '',
+          action_type: 'left_double',
+          action_inputs: {
+            start_box: '[0.088,0.378,0.088,0.378]',
+          },
+        },
+      ]);
+    });
+
     it('should correctly parse input with Thought custom factors', () => {
       const input = `Thought: I need to click this button
 Action: click(start_box='(100,200)')`;

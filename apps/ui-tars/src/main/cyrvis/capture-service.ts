@@ -38,41 +38,106 @@ const CAPTURE_HTML = `<!doctype html>
           ws.send(JSON.stringify({ type: 'ready', label }));
         const sendError = (message) =>
           ws.send(JSON.stringify({ type: 'error', message }));
+        navigator.mediaDevices?.addEventListener?.('devicechange', () => {
+          setTimeout(async () => {
+            try {
+              const devices = await navigator.mediaDevices.enumerateDevices();
+              const hasPhysical = devices.some(
+                (device) =>
+                  device.kind === 'audioinput' &&
+                  device.label &&
+                  !/todesk|virtual|stereo mix|line in/i.test(device.label),
+              );
+              if (hasPhysical && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'devicechange' }));
+              }
+            } catch {
+              // Ignore transient enumeration failures.
+            }
+          }, 600);
+        });
         ws.onopen = async () => {
           try {
-            const warm = await navigator.mediaDevices.getUserMedia({ audio: true });
-            warm.getTracks().forEach((track) => track.stop());
-            const devices = await navigator.mediaDevices.enumerateDevices();
-            const inputs = devices.filter((device) => device.kind === 'audioinput');
-            const physical = inputs.find(
-              (device) =>
-                device.deviceId &&
-                device.deviceId !== 'default' &&
-                device.deviceId !== 'communications' &&
-                device.label &&
-                !/todesk|virtual|stereo mix|line in/i.test(device.label),
-            );
-            if (!physical) {
-              sendError('No physical microphone found. Connect the headset microphone and restart voice.');
-              return;
-            }
             const ec =
               new URLSearchParams(location.search).get('ec') === '1';
-            const stream = await navigator.mediaDevices.getUserMedia({
-              audio: {
-                deviceId: { exact: physical.deviceId },
-                channelCount: 1,
-                echoCancellation: ec,
-                noiseSuppression: true,
-                autoGainControl: true,
-              },
+            const baseAudio = {
+              channelCount: 1,
+              echoCancellation: ec,
+              // Keep noise suppression off so the voiceprint channel stays
+              // close to enrollment, but keep AGC on: the in-ear mic's normal
+              // speech level was too low and users had to shout for KWS.
+              noiseSuppression: false,
+              autoGainControl: true,
+            };
+            const isVirtualLabel = (value) =>
+              /todesk|virtual|stereo mix|line in/i.test(value || '');
+            const sendDevices = async () => {
+              const devices = await navigator.mediaDevices.enumerateDevices();
+              const inputs = devices.filter(
+                (device) => device.kind === 'audioinput',
+              );
+              ws.send(
+                JSON.stringify({
+                  type: 'devices',
+                  devices: inputs.map((device) => ({
+                    id: device.deviceId,
+                    label: device.label,
+                  })),
+                }),
+              );
+              return inputs;
+            };
+
+            // Open exactly ONE capture stream. The old warm-up stream was
+            // stopped and then reopened with a deviceId; on Bluetooth HFP that
+            // profile churn correlated with disconnects every 15-30 seconds.
+            let stream = await navigator.mediaDevices.getUserMedia({
+              audio: baseAudio,
             });
-            const track = stream.getAudioTracks()[0];
-            const label = track && track.label;
+            let track = stream.getAudioTracks()[0];
+            let label = track?.label || '';
+            if (isVirtualLabel(label)) {
+              // System default is a virtual cable. This is the only case where
+              // we stop and reopen, and only if a physical mic is visible.
+              track?.stop();
+              const inputs = await sendDevices();
+              const physical =
+                inputs.find(
+                  (device) =>
+                    device.deviceId &&
+                    device.deviceId !== 'default' &&
+                    device.deviceId !== 'communications' &&
+                    device.label &&
+                    !isVirtualLabel(device.label),
+                ) ||
+                inputs.find(
+                  (device) =>
+                    (device.deviceId === 'communications' ||
+                      device.deviceId === 'default') &&
+                    device.label &&
+                    !isVirtualLabel(device.label),
+                );
+              if (!physical) {
+                sendError(
+                  'No physical microphone found. Connect the headset microphone and restart voice.',
+                );
+                return;
+              }
+              stream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                  ...baseAudio,
+                  deviceId: { exact: physical.deviceId },
+                },
+              });
+              track = stream.getAudioTracks()[0];
+              label = track?.label || physical.label || '';
+            } else {
+              await sendDevices();
+            }
             track?.addEventListener('ended', () => {
               sendError('Microphone disconnected');
             });
-            sendReady(label || physical.label);
+            sendReady(label || 'external microphone');
             const context = new AudioContext();
             await context.resume();
             const source = context.createMediaStreamSource(stream);
@@ -107,6 +172,7 @@ export interface CaptureServiceHandlers {
   onPcm: (pcm16: Int16Array) => void;
   onReady: (label: string) => void;
   onError: (message: string) => void;
+  onDeviceChange?: () => void;
 }
 
 export interface CaptureService {
@@ -144,9 +210,13 @@ export const startCaptureService = async (
   const port = (server.address() as AddressInfo).port;
 
   wss.on('connection', (socket) => {
-    socket.on('message', (data: Buffer, isBinary: boolean) => {
+    socket.on('message', (data, isBinary: boolean) => {
       if (isBinary) {
-        const buffer = Buffer.from(data);
+        const buffer = Buffer.isBuffer(data)
+          ? data
+          : Array.isArray(data)
+            ? Buffer.concat(data)
+            : Buffer.from(data);
         if (buffer.byteLength >= 2) {
           handlers.onPcm(
             new Int16Array(
@@ -163,11 +233,18 @@ export const startCaptureService = async (
           type?: string;
           label?: string;
           message?: string;
+          devices?: Array<{ id?: string; label?: string }>;
         };
         if (message.type === 'ready') {
           handlers.onReady(message.label || 'external microphone');
         } else if (message.type === 'error') {
           handlers.onError(message.message || 'capture error');
+        } else if (message.type === 'devices') {
+          logger.info('[cyrvis capture] input devices', {
+            devices: message.devices,
+          });
+        } else if (message.type === 'devicechange') {
+          handlers.onDeviceChange?.();
         }
       } catch (error) {
         logger.warn('[cyrvis capture] bad control message', error);

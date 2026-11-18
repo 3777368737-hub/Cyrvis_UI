@@ -104,6 +104,7 @@ const flush = async () => {
 const setup = (options?: {
   requireWakeWord?: boolean;
   awakeTimeoutMs?: number;
+  rememberFact?: (text: string) => Promise<string | null>;
 }) => {
   const adapter = new FakeGUIAdapter();
   const controller = new CyrvisController(adapter, {
@@ -132,6 +133,7 @@ const setup = (options?: {
     {
       requireWakeWord: options?.requireWakeWord ?? true,
       awakeTimeoutMs: options?.awakeTimeoutMs ?? 0,
+      rememberFact: options?.rememberFact,
     },
   );
 
@@ -150,6 +152,28 @@ describe('VoiceBrain', () => {
     provider.emitTranscript('你好', true);
 
     expect(brain.getState().awake).toBe(true);
+  });
+
+  it('routes explicit remember requests through long-term memory', async () => {
+    const remembered: string[] = [];
+    const { brain, provider } = setup({
+      requireWakeWord: false,
+      rememberFact: async (text) => {
+        remembered.push(text);
+        return text;
+      },
+    });
+    await brain.start();
+
+    provider.emitToolCall({
+      callId: 'memory-1',
+      name: 'remember_fact',
+      args: { text: '用户喜欢简洁回答' },
+    });
+    await flush();
+
+    expect(remembered).toEqual(['用户喜欢简洁回答']);
+    expect(provider.toolResults.at(-1)?.output).toContain('用户喜欢简洁回答');
   });
 
   it('does not wake on unrelated background speech', async () => {
@@ -186,6 +210,16 @@ describe('VoiceBrain', () => {
     expect(brain.getState().lastUserText).toContain('记事本');
   });
 
+  it('auto-wakes on a clear search need without the wake word', async () => {
+    const { brain, provider } = setup();
+    await brain.start();
+
+    provider.emitTranscript('我要去巴黎的机票', true);
+
+    expect(brain.getState().awake).toBe(true);
+    expect(brain.getState().lastUserText).toContain('巴黎');
+  });
+
   it('drops audio while asleep and plays it after waking', async () => {
     const { brain, provider, audioOut } = setup();
     await brain.start();
@@ -212,6 +246,70 @@ describe('VoiceBrain', () => {
 
     expect(adapter.instruction).toBe('');
     expect(provider.toolResults[0].output).toContain('REJECTED');
+  });
+
+  it('redirects a pure search request from start_gui_task to search_web', async () => {
+    const { brain, provider, adapter } = setup();
+    await brain.start();
+    provider.emitTranscript('我要去巴黎的机票', true);
+
+    provider.emitToolCall({
+      name: 'start_gui_task',
+      args: { instruction: '打开浏览器搜索去巴黎的机票' },
+      callId: 'call-search-redirect',
+    });
+    await flush();
+
+    expect(adapter.instruction).toBe('');
+    expect(provider.toolResults[0].output).toContain('USE_SEARCH_WEB');
+    expect(provider.toolResults[0].output).toContain('去巴黎的机票');
+  });
+
+  it('rejects a web search for a stable knowledge question', async () => {
+    const { brain, provider } = setup();
+    await brain.start();
+    provider.emitTranscript('给我介绍下邓小平', true);
+
+    provider.emitToolCall({
+      name: 'search_web',
+      args: { query: '邓小平 简介' },
+      callId: 'call-knowledge',
+    });
+    await flush();
+
+    expect(provider.toolResults[0].output).toContain('ANSWER_FROM_KNOWLEDGE');
+  });
+
+  it('redirects site navigation from search_web to open_site', async () => {
+    const { brain, provider } = setup();
+    await brain.start();
+    provider.emitTranscript('打开B站', true);
+
+    provider.emitToolCall({
+      name: 'search_web',
+      args: { query: 'B站' },
+      callId: 'call-nav-search',
+    });
+    await flush();
+
+    expect(provider.toolResults[0].output).toContain('USE_OPEN_SITE');
+    expect(provider.toolResults[0].output).toContain('bilibili');
+  });
+
+  it('redirects site navigation from start_gui_task to open_site', async () => {
+    const { brain, provider, adapter } = setup();
+    await brain.start();
+    provider.emitTranscript('打开B站', true);
+
+    provider.emitToolCall({
+      name: 'start_gui_task',
+      args: { instruction: '打开B站首页' },
+      callId: 'call-nav-gui',
+    });
+    await flush();
+
+    expect(adapter.instruction).toBe('');
+    expect(provider.toolResults[0].output).toContain('USE_OPEN_SITE');
   });
 
   it('dispatches a real GUI task and returns a task id', async () => {
@@ -242,7 +340,8 @@ describe('VoiceBrain', () => {
     provider.emitToolCall({
       name: 'start_gui_task',
       args: {
-        instruction: '打开携程，搜索从当前城市到巴黎的最便宜机票。',
+        instruction:
+          '打开携程，点击机票搜索，查看从当前城市到巴黎的最便宜机票。',
       },
       callId: 'call-paris',
     });
@@ -277,10 +376,10 @@ describe('VoiceBrain', () => {
     const { brain, provider, controller } = setup();
     await brain.start();
     provider.emitTranscript('Hello CYRVIS', true);
-    provider.emitTranscript('Open Notepad', true);
+    provider.emitTranscript('Open Notepad and type hello', true);
     provider.emitToolCall({
       name: 'start_gui_task',
-      args: { instruction: 'Open Notepad' },
+      args: { instruction: 'Open Notepad and type hello' },
       callId: 'call-start',
     });
     await flush();
@@ -295,16 +394,21 @@ describe('VoiceBrain', () => {
 
     expect(controller.getStatus().status).toBe('cancelled');
     expect(provider.toolResults.at(-1)?.output).toContain('cancelled');
+    // The tool-result response is the single acknowledgment; no proactive
+    // "已停止" line should race it.
+    expect(
+      provider.spoken.filter((text) => text.includes('已停止')),
+    ).toHaveLength(0);
   });
 
   it('blocks a premature completion claim while the GUI task is running', async () => {
     const { brain, provider, adapter } = setup();
     await brain.start();
     provider.emitTranscript('Hello CYRVIS', true);
-    provider.emitTranscript('Open Notepad', true);
+    provider.emitTranscript('Open Notepad and type hello', true);
     provider.emitToolCall({
       name: 'start_gui_task',
-      args: { instruction: 'Open Notepad' },
+      args: { instruction: 'Open Notepad and type hello' },
       callId: 'call-start',
     });
     await flush();
@@ -317,17 +421,17 @@ describe('VoiceBrain', () => {
     expect(provider.spoken.some((text) => text.includes('正在执行'))).toBe(
       true,
     );
-    expect(adapter.instruction).toBe('Open Notepad');
+    expect(adapter.instruction).toBe('Open Notepad and type hello');
   });
 
   it('cancels deterministically on "停" even without a tool call', async () => {
     const { brain, provider, controller } = setup();
     await brain.start();
     provider.emitTranscript('Hello CYRVIS', true);
-    provider.emitTranscript('Open Notepad', true);
+    provider.emitTranscript('Open Notepad and type hello', true);
     provider.emitToolCall({
       name: 'start_gui_task',
-      args: { instruction: 'Open Notepad' },
+      args: { instruction: 'Open Notepad and type hello' },
       callId: 'call-start',
     });
     await flush();
@@ -336,16 +440,19 @@ describe('VoiceBrain', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(controller.getStatus().status).toBe('cancelled');
+    expect(
+      provider.spoken.filter((text) => text.includes('已停止')),
+    ).toHaveLength(0);
   });
 
   it('pauses deterministically on "暂停"', async () => {
     const { brain, provider, controller } = setup();
     await brain.start();
     provider.emitTranscript('Hello CYRVIS', true);
-    provider.emitTranscript('Open Notepad', true);
+    provider.emitTranscript('Open Notepad and type hello', true);
     provider.emitToolCall({
       name: 'start_gui_task',
-      args: { instruction: 'Open Notepad' },
+      args: { instruction: 'Open Notepad and type hello' },
       callId: 'call-start',
     });
     await flush();
@@ -354,6 +461,42 @@ describe('VoiceBrain', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(controller.getStatus().status).toBe('paused');
+    expect(
+      provider.spoken.filter((text) => text.includes('已暂停')),
+    ).toHaveLength(0);
+  });
+
+  it('ignores a short self-echo transcript while the assistant is speaking', async () => {
+    const { brain, provider } = setup({ requireWakeWord: false });
+    await brain.start();
+    provider.callbacks.onResponseStarted?.();
+    provider.emitAudio(new Int16Array(320));
+    provider.callbacks.onAssistantText?.('我在呢，随时待命。', true);
+    provider.emitTranscript('我在', true);
+    await flush();
+
+    expect(provider.canceled).toBeGreaterThan(0);
+  });
+
+  it('suppresses the model reply after a bare stop', async () => {
+    const { brain, provider, audioOut } = setup({ requireWakeWord: false });
+    await brain.start();
+
+    provider.callbacks.onResponseStarted?.();
+    provider.emitAudio(new Int16Array(320));
+    provider.emitTranscript('停一下', true);
+    await flush();
+
+    expect(provider.canceled).toBeGreaterThan(0);
+    expect(brain.shouldSuppressReply()).toBe(true);
+
+    const audioBefore = audioOut.length;
+    provider.callbacks.onResponseStarted?.();
+    provider.emitAudio(new Int16Array(320));
+    provider.callbacks.onAssistantText?.('好的，已暂停当前任务。', true);
+    await flush();
+
+    expect(audioOut.length).toBe(audioBefore);
   });
 
   it('sleeps after the awake timeout', async () => {
@@ -368,14 +511,27 @@ describe('VoiceBrain', () => {
     expect(wakeEvents).toContain('sleep');
   });
 
+  it('stays awake when wake word is disabled', async () => {
+    vi.useFakeTimers();
+    const { brain } = setup({
+      requireWakeWord: false,
+      awakeTimeoutMs: 0,
+    });
+    await brain.start();
+
+    expect(brain.getState().awake).toBe(true);
+    vi.advanceTimersByTime(60_000);
+    expect(brain.getState().awake).toBe(true);
+  });
+
   it('speaks proactive task completion', async () => {
     const { brain, provider, adapter } = setup();
     await brain.start();
     provider.emitTranscript('Hello CYRVIS', true);
-    provider.emitTranscript('Open Notepad', true);
+    provider.emitTranscript('Open Notepad and type hello', true);
     provider.emitToolCall({
       name: 'start_gui_task',
-      args: { instruction: 'Open Notepad' },
+      args: { instruction: 'Open Notepad and type hello' },
       callId: 'call-start',
     });
     await flush();

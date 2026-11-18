@@ -1,0 +1,6 @@
+sherpa-onnx==2.0.1
+fastapi
+uvicorn
+numpy
+sounddevice
+soundfile

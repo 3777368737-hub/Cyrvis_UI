@@ -1,0 +1,10 @@
+# Install torch/torchvision from the CUDA 12.8 index first (RTX 5060 / Blackwell):
+#   python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+torch
+torchvision
+transformers
+accelerate
+fastapi
+uvicorn
+pillow
+qwen-vl-utils

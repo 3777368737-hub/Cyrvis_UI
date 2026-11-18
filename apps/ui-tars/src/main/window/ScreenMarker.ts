@@ -13,12 +13,14 @@ import { PredictionParsed, Conversation } from '@ui-tars/shared/types';
 
 import * as env from '@main/env';
 import { logger } from '@main/logger';
+import { SettingStore } from '@main/store/setting';
 
 import { AppUpdater } from '@main/utils/updateApp';
 import { setOfMarksOverlays } from '@main/shared/setOfMarks';
 import path from 'path';
 import MenuBuilder from '../menu';
 import { windowManager } from '../services/windowManager';
+import { applyWidgetOverlayBehavior } from './widgetOverlay';
 
 let appUpdater;
 
@@ -139,22 +141,30 @@ class ScreenMarker {
   }
 
   showWidgetWindow() {
-    if (this.widgetWindow) {
-      this.widgetWindow.close();
-      this.widgetWindow = null;
+    if (this.widgetWindow && !this.widgetWindow.isDestroyed()) {
+      applyWidgetOverlayBehavior(
+        this.widgetWindow,
+        SettingStore.get('widgetOverlayMode'),
+      );
+      this.widgetWindow.showInactive();
+      return;
     }
+    this.widgetWindow = null;
 
     const primaryDisplay = screen.getPrimaryDisplay();
-    const { width: screenWidth, height: screenHeight } = primaryDisplay.size;
+    const workArea = primaryDisplay.workArea;
+    const widgetWidth = 440;
+    const widgetHeight = Math.min(620, Math.max(420, workArea.height - 48));
 
     this.widgetWindow = new BrowserWindow({
-      width: 400,
-      height: 400,
+      width: widgetWidth,
+      height: widgetHeight,
       transparent: true,
       frame: false,
-      alwaysOnTop: true,
+      alwaysOnTop: false,
+      show: false,
       skipTaskbar: true,
-      focusable: false,
+      focusable: true,
       resizable: false,
       type: 'toolbar',
       visualEffectState: 'active', // macOS only
@@ -165,12 +175,28 @@ class ScreenMarker {
       },
     });
 
-    this.widgetWindow.setFocusable(false);
+    this.widgetWindow.setFocusable(true);
+    this.widgetWindow.setIgnoreMouseEvents(false);
+    applyWidgetOverlayBehavior(
+      this.widgetWindow,
+      SettingStore.get('widgetOverlayMode'),
+    );
     this.widgetWindow.setContentProtection(true); // not show for vlm model
     this.widgetWindow.setPosition(
-      Math.floor(screenWidth - 400 - 32),
-      Math.floor(screenHeight - 400 - 32 - 64),
+      Math.floor(workArea.x + workArea.width - widgetWidth - 24),
+      Math.floor(workArea.y + workArea.height - widgetHeight - 24),
     );
+    if (process.platform === 'darwin') {
+      this.widgetWindow.setVisibleOnAllWorkspaces(true, {
+        visibleOnFullScreen: true,
+      });
+    }
+    this.widgetWindow.once('ready-to-show', () => {
+      this.widgetWindow?.showInactive();
+    });
+    this.widgetWindow.on('closed', () => {
+      this.widgetWindow = null;
+    });
 
     if (!app.isPackaged && env.rendererUrl) {
       this.widgetWindow.loadURL(env.rendererUrl + '#widget');
@@ -191,6 +217,13 @@ class ScreenMarker {
     menuBuilder.buildMenu();
 
     windowManager.registerWindow(this.widgetWindow);
+  }
+
+  syncWidgetOverlayMode() {
+    applyWidgetOverlayBehavior(
+      this.widgetWindow,
+      SettingStore.get('widgetOverlayMode'),
+    );
   }
 
   // show Screen Marker in screen for prediction
@@ -319,6 +352,10 @@ export const showPredictionMarker = (
 
 export const showWidgetWindow = () => {
   ScreenMarker.getInstance().showWidgetWindow();
+};
+
+export const syncWidgetOverlayMode = () => {
+  ScreenMarker.getInstance().syncWidgetOverlayMode();
 };
 
 export const hideWidgetWindow = () => {

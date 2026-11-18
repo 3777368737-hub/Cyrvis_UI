@@ -13,7 +13,6 @@ import { showCompanion } from '@main/window';
 import {
   closeScreenMarker,
   hideScreenWaterFlow,
-  hideWidgetWindow,
 } from '@main/window/ScreenMarker';
 
 import type { GUIAdapter, GUIAdapterCallbacks } from './types';
@@ -324,7 +323,6 @@ export class ElectronGUIAdapter implements GUIAdapter {
   }
 
   private restoreUI(): void {
-    hideWidgetWindow();
     closeScreenMarker();
     hideScreenWaterFlow();
     showCompanion();

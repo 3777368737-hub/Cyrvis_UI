@@ -27,7 +27,7 @@ app.whenReady().then(() => {
  (globalThis as any).selectedVoice = resolveCompanionSkin(store.get('skinId')).voice;
  store.onDidChange('skinId', id => { (globalThis as any).selectedVoice = resolveCompanionSkin(id).voice; });
  let state = { status: 'init', messages: [], theme: 'light', thinking: false, instructions: '', ensurePermissions: {accessibility:true, screenCapture:true} };
- let settings = { vlmApiKey:'test', vlmBaseUrl:'https://example.invalid', vlmModelName:'test', vlmProvider:'test' };
+ let settings = { voiceEngine:'omni', vlmApiKey:'test', vlmBaseUrl:'https://example.invalid', vlmModelName:'test', vlmProvider:'test' };
  const publish = () => BrowserWindow.getAllWindows().forEach(w => w.webContents.send('subscribe', state));
  ipcMain.handle('getState', () => state);
  ipcMain.handle('setting:get', () => settings);
@@ -251,7 +251,7 @@ async function check() {
       Menu.prototype.popup = globalThis.originalPopup;
     });
     console.log(
-      'PASS: nine right-click skins and voice selections, six states each, local image decoding, animated atlases, checked menu items, stored selection, voice cannot overwrite appearance',
+      'PASS — nine right-click skins and voice selections, six states each, local image decoding, animated atlases, checked menu items, stored selection, voice cannot overwrite appearance',
     );
     await expect
       .poll(() =>
@@ -772,7 +772,7 @@ async function check() {
       .click();
     await expect(pet.locator('.companion-button')).toHaveAttribute(
       'title',
-      'Error: Test mode',
+      'Test mode',
     );
     await expect(
       pet.getByRole('region', { name: 'Live conversation' }),
@@ -797,7 +797,7 @@ async function check() {
       pet.getByRole('region', { name: 'Live conversation' }),
     ).toHaveCount(0);
     console.log(
-      'PASS: streaming conversation, late ASR final, replacement on new response, interrupt/pause/start controls, long text scrolling, bounds, auto-hide after silence, fresh-turn reopening, and idle/error compact mode',
+      'PASS — streaming conversation, late ASR final, replacement on new response, interrupt/pause/start controls, long text scrolling, bounds, auto-hide after silence, fresh-turn reopening, and idle/error compact mode',
     );
     // Real Chromium audio clock with silent PCM: generation finishes before
     // two seconds of output drain, so the mic must not reopen immediately.
@@ -838,12 +838,12 @@ async function check() {
       throw new Error('Replaced player emitted a stale playback-idle event');
     await emit('cyrvis:voice:response-stopped');
     console.log(
-      'PASS: real audio clock drains complete PCM response and replacement does not release the next response microphone',
+      'PASS — real audio clock drains complete PCM response and replacement does not release the next response microphone',
     );
     if (errors.length)
       throw new Error('Renderer errors: ' + JSON.stringify(errors));
     console.log(
-      'PASS: drag without accidental open, keyboard activation, pet-first startup, six poses, click/open/close, one audio owner, persisted conversation, non-destructive history browsing, continuation with context, persistence across navigation, compact layout, draft-only new chat, repeated clicks and blank input, first-send creation, screenshot selection, cancel/delete and data removal, English UI, settings; zero page errors',
+      'PASS — drag without accidental open, keyboard activation, pet-first startup, six poses, click/open/close, one audio owner, persisted conversation, non-destructive history browsing, continuation with context, persistence across navigation, compact layout, draft-only new chat, repeated clicks and blank input, first-send creation, screenshot selection, cancel/delete and data removal, English UI, settings; zero page errors',
     );
     await app.evaluate(({ Menu }) => {
       Menu.prototype.popup = function () {
@@ -872,7 +872,7 @@ async function check() {
       'Raymond',
     );
     console.log(
-      'PASS: appearance and voice restored after a full Electron restart',
+      'PASS — appearance and voice restored after a full Electron restart',
     );
   } finally {
     await restarted.close();

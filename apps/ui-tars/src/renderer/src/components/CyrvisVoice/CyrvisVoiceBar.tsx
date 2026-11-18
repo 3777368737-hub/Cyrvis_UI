@@ -30,13 +30,17 @@ export function CyrvisVoiceBar() {
     thinking,
     playbackActive,
     audioMode,
+    outputDevices,
+    selectedOutputId,
+    setOutputDevice,
+    testOutputDevice,
     error,
     ptt,
     start,
     stop,
     togglePtt,
     interrupt,
-    toggleAudioMode,
+    selectAudioMode,
     forceAwake,
     cancelTask,
   } = useVoiceAudio();
@@ -126,23 +130,62 @@ export function CyrvisVoiceBar() {
           </div>
 
           <div className="flex shrink-0 items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() => void toggleAudioMode()}
-              className={`flex h-8 items-center gap-1 rounded-md border px-2 text-xs ${
-                audioMode === 'speaker'
-                  ? 'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300'
-                  : 'border-gray-200 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800'
-              }`}
-              title="Switch output: headset (voice interruption) / speakers (Ctrl+Alt+X to interrupt)"
+            {outputDevices.length > 0 && (
+              <select
+                value={selectedOutputId}
+                onChange={(event) => void setOutputDevice(event.target.value)}
+                className="h-8 max-w-[150px] rounded-md border border-gray-200 bg-white px-1 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300"
+                title="选择播放设备（耳机 / 外放）"
+              >
+                <option value="" disabled>
+                  输出设备
+                </option>
+                {outputDevices.map((device) => (
+                  <option key={device.deviceId} value={device.deviceId}>
+                    {device.label}
+                  </option>
+                ))}
+              </select>
+            )}
+            {outputDevices.length > 0 && (
+              <button
+                type="button"
+                onClick={() => void testOutputDevice(selectedOutputId)}
+                className="flex h-8 items-center rounded-md border border-gray-200 px-2 text-xs text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                title="在当前选择的设备上播放 1 秒测试音"
+              >
+                试听
+              </button>
+            )}
+            <div
+              className="flex h-8 items-center overflow-hidden rounded-md border border-gray-200 dark:border-gray-700"
+              title="耳机模式：耳机麦克风 + 耳机扬声器；外放模式：耳机麦克风 + 电脑扬声器。切换时自动同步 Windows 输出和 App 播放设备。"
             >
-              {audioMode === 'speaker' ? (
-                <Volume2 className="h-3.5 w-3.5" />
-              ) : (
+              <button
+                type="button"
+                onClick={() => void selectAudioMode('headset')}
+                className={`flex h-full items-center gap-1 px-2 text-xs ${
+                  audioMode === 'headset'
+                    ? 'bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300'
+                    : 'text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800'
+                }`}
+              >
                 <Headphones className="h-3.5 w-3.5" />
-              )}
-              {audioMode === 'speaker' ? 'Speakers' : 'Headset'}
-            </button>
+                耳机
+              </button>
+              <button
+                type="button"
+                onClick={() => void selectAudioMode('speaker')}
+                className={`flex h-full items-center gap-1 border-l border-gray-200 px-2 text-xs dark:border-gray-700 ${
+                  audioMode === 'speaker'
+                    ? 'bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300'
+                    : 'text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800'
+                }`}
+              >
+                <Volume2 className="h-3.5 w-3.5" />
+                外放
+              </button>
+            </div>
             {ptt.mode && (
               <button
                 type="button"
@@ -163,10 +206,10 @@ export function CyrvisVoiceBar() {
                 type="button"
                 onClick={() => interrupt()}
                 className="flex h-8 items-center gap-1 rounded-md border border-amber-200 px-2 text-xs text-amber-700 hover:bg-amber-50 dark:border-amber-900 dark:text-amber-400 dark:hover:bg-amber-950"
-                title="Stop speaking (or just start talking, or press Ctrl+Alt+X)"
+                title="停止播报：直接说“停”，或按 Ctrl+Alt+X"
               >
                 <Square className="h-3.5 w-3.5" />
-                Interrupt
+                打断
               </button>
             )}
             <button

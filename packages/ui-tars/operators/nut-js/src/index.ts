@@ -99,6 +99,9 @@ export class NutJSOperator extends Operator {
     const startBoxStr = action_inputs?.start_box || '';
 
     logger.info('[NutjsOperator] execute', scaleFactor);
+    // Treat start_box as normalized [0..1] against the captured screen. Do not
+    // use the parser's start_coords here: it applies the display scaleFactor a
+    // second time, which pushed y=0.98 to 1764 on a 1440px-tall screen.
     const { x: startX, y: startY } = parseBoxToScreenCoords({
       boxStr: startBoxStr,
       screenWidth,

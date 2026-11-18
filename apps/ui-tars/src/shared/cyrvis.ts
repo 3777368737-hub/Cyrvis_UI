@@ -1,0 +1,170 @@
+/*
+ * Copyright (c) 2025 Bytedance, Inc. and its affiliates.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+export type TaskStatus =
+  | 'idle'
+  | 'starting'
+  | 'executing'
+  | 'paused'
+  | 'cancelling'
+  | 'done'
+  | 'failed'
+  | 'cancelled';
+
+export type TaskSource = 'voice' | 'text';
+
+export interface TaskSnapshot {
+  taskId: string | null;
+  status: TaskStatus;
+  instruction: string | null;
+  source: TaskSource | null;
+  step: number;
+  lastSummary: string | null;
+  error: string | null;
+  startedAt: number | null;
+  endedAt: number | null;
+}
+
+export interface StepUpdate {
+  index: number;
+  summary: string;
+  actionType: string;
+}
+
+export type ControllerEvent =
+  | {
+      type: 'task_started';
+      taskId: string;
+      instruction: string;
+      source: TaskSource;
+    }
+  | { type: 'task_executing'; taskId: string }
+  | {
+      type: 'step_update';
+      taskId: string;
+      step: number;
+      summary: string;
+      actionType: string;
+    }
+  | { type: 'task_stalled'; taskId: string; step: number }
+  | { type: 'task_needs_user'; taskId: string; question: string }
+  | { type: 'task_paused'; taskId: string }
+  | { type: 'task_resumed'; taskId: string }
+  | { type: 'task_cancelling'; taskId: string }
+  | { type: 'task_done'; taskId: string; summary: string }
+  | { type: 'task_failed'; taskId: string; error: string }
+  | { type: 'task_cancelled'; taskId: string };
+
+export interface CyrvisVoiceState {
+  awake: boolean;
+  userSpeaking: boolean;
+  ttsSpeaking: boolean;
+  lastUserText: string;
+  task: TaskSnapshot;
+}
+
+export type VoiceToolName =
+  | 'start_gui_task'
+  | 'cancel_gui_task'
+  | 'pause_gui_task'
+  | 'resume_gui_task'
+  | 'get_gui_status'
+  | 'confirm_action'
+  | 'remember_fact';
+
+export type CyrvisMemoryTurnRole = 'user' | 'assistant';
+
+export interface CyrvisMemoryTurn {
+  id: string;
+  role: CyrvisMemoryTurnRole;
+  text: string;
+  createdAt: number;
+}
+
+export type CyrvisActivityKind =
+  | 'session'
+  | 'speech'
+  | 'tool'
+  | 'task'
+  | 'memory'
+  | 'error';
+
+export interface CyrvisActivityEvent {
+  id: string;
+  kind: CyrvisActivityKind;
+  text: string;
+  createdAt: number;
+}
+
+export interface CyrvisMemorySnapshot {
+  turns: CyrvisMemoryTurn[];
+  activities: CyrvisActivityEvent[];
+  facts: string[];
+}
+
+const TERMINAL_TASK_STATUSES: TaskStatus[] = [
+  'idle',
+  'done',
+  'failed',
+  'cancelled',
+];
+
+export const isActiveTaskStatus = (status: TaskStatus): boolean =>
+  !TERMINAL_TASK_STATUSES.includes(status);
+
+export const describeVoiceToolCall = (
+  name: VoiceToolName,
+  instruction?: string,
+): string => {
+  switch (name) {
+    case 'start_gui_task':
+      return instruction ? `启动电脑任务：${instruction}` : '启动电脑任务';
+    case 'cancel_gui_task':
+      return '取消电脑任务';
+    case 'pause_gui_task':
+      return '暂停电脑任务';
+    case 'resume_gui_task':
+      return '继续电脑任务';
+    case 'get_gui_status':
+      return '查询任务状态';
+    case 'confirm_action':
+      return '确认任务操作';
+    case 'remember_fact':
+      return '保存长期记忆';
+    default:
+      return '调用语音工具';
+  }
+};
+
+export const describeControllerEvent = (
+  event: ControllerEvent,
+): string | null => {
+  switch (event.type) {
+    case 'task_started':
+      return `开始任务：${event.instruction}`;
+    case 'task_executing':
+      return 'GUI Agent 已开始执行';
+    case 'step_update':
+      return `步骤 ${event.step}：${event.summary}`;
+    case 'task_stalled':
+      return `任务等待中，当前步骤 ${event.step}`;
+    case 'task_needs_user':
+      return `需要确认：${event.question}`;
+    case 'task_paused':
+      return '任务已暂停';
+    case 'task_resumed':
+      return '任务已继续';
+    case 'task_cancelling':
+      return '正在停止任务';
+    case 'task_done':
+      return event.summary || '任务已完成';
+    case 'task_failed':
+      return `任务失败：${event.error}`;
+    case 'task_cancelled':
+      return '任务已取消';
+    default:
+      return null;
+  }
+};

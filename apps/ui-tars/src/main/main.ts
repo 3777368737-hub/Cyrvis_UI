@@ -18,7 +18,12 @@ import ElectronStore from 'electron-store';
 
 import * as env from '@main/env';
 import { logger } from '@main/logger';
-import { createMainWindow, showCompanion } from '@main/window/index';
+import {
+  createMainWindow,
+  hideMainWindow,
+  showCompanion,
+} from '@main/window/index';
+import { syncWidgetOverlayMode } from '@main/window/ScreenMarker';
 import { registerIpcMain } from '@ui-tars/electron-ipc/main';
 import { ipcRoutes } from './ipcRoutes';
 
@@ -153,9 +158,15 @@ const initializeApp = async () => {
   );
 
   const { unsubscribe } = registerIPCHandlers([mainWindow]);
+  const unsubscribeWidgetOverlay = SettingStore.getInstance().onDidAnyChange(
+    () => {
+      syncWidgetOverlayMode();
+    },
+  );
 
   // Voice layer is optional; it no-ops when QWEN_API_KEY is absent.
   startVoiceService();
+  await hideMainWindow();
 
   // The companion is the first visible surface. The main history window is
   // preloaded in the background so voice playback remains alive while it is
@@ -177,6 +188,7 @@ const initializeApp = async () => {
 
   app.on('quit', () => {
     logger.info('app quit');
+    unsubscribeWidgetOverlay();
     unsubscribe();
   });
 

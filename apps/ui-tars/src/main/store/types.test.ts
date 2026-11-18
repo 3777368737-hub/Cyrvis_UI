@@ -21,10 +21,16 @@ describe('VLMProviderV2', () => {
     expect(VLMProviderV2.doubao_1_5).toBe(
       'VolcEngine Ark for Doubao-1.5-UI-TARS',
     );
+    expect(VLMProviderV2.doubao_1_5_vl).toBe(
+      'VolcEngine Ark for Doubao-1.5-thinking-vision-pro',
+    );
+    expect(VLMProviderV2.doubao_seed_2_1_turbo).toBe(
+      'VolcEngine Ark for Doubao-Seed-2.1-turbo',
+    );
   });
 
-  it('should contain exactly three providers', () => {
+  it('should contain all supported providers', () => {
     const providerCount = Object.keys(VLMProviderV2).length;
-    expect(providerCount).toBe(3);
+    expect(providerCount).toBe(5);
   });
 });

@@ -67,14 +67,7 @@ export function setContentProtection(enable: boolean) {
 }
 
 export async function showWindow() {
-  hideCompanionWindow();
-  mainWindow?.setContentProtection(false);
-  mainWindow?.setIgnoreMouseEvents(false);
-  mainWindow?.setFocusable(true);
-  mainWindow?.setAlwaysOnTop(false);
-  mainWindow?.show();
-  mainWindow?.restore();
-  mainWindow?.focus();
+  await showMainWindow();
 }
 
 export function sendCompanionCommand(command: string) {
@@ -100,12 +93,16 @@ export async function hideMainWindow() {
 export async function showMainWindow() {
   try {
     hideCompanionWindow();
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      mainWindow = createMainWindow();
+    }
     mainWindow?.setContentProtection(false);
-    setTimeout(() => {
-      mainWindow?.setAlwaysOnTop(false);
-    }, 100);
+    mainWindow?.setIgnoreMouseEvents(false);
+    mainWindow?.setAlwaysOnTop(false);
     mainWindow?.setFocusable(true);
+    mainWindow?.restore();
     mainWindow?.show();
+    mainWindow?.focus();
   } catch (error) {
     logger.error('[showMainWindow]', error);
   }

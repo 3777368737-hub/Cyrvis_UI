@@ -74,6 +74,10 @@ export type VoiceToolCall =
       };
     }
   | {
+      name: 'open_site';
+      args: { site: string; query?: string; task_instruction?: string };
+    }
+  | {
       name: 'confirm_action';
       args: { task_id: string; approved: boolean };
     };

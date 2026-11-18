@@ -7,7 +7,7 @@ import { TaskBusyError } from './controller';
 import type { AllowedApp, SearchEngine } from './desktop-actions';
 import { classifyIntent, isExplicitChat } from './intent-gate';
 import { ProactivityPolicy, type ProactivityOptions } from './proactivity';
-import { detectSearchIntent } from './search-intent';
+import { classifyVoiceIntent, type VoiceIntentDecision } from './search-intent';
 import type { ControllerEvent } from './types';
 import type { CyrvisVoiceState } from '@shared/cyrvis';
 import type {
@@ -94,6 +94,7 @@ export class VoiceBrain {
   private userSpeaking = false;
   private ttsSpeaking = false;
   private lastUserText = '';
+  private lastVoiceIntent: VoiceIntentDecision | null = null;
   private partialUserText = '';
   private assistantTextBuffer = '';
   private lastFinalTranscript = '';
@@ -410,14 +411,20 @@ export class VoiceBrain {
     }
 
     this.lastUserText = text;
-    const searchIntent = detectSearchIntent(text);
-    if (searchIntent.isSearch) {
+    const voiceIntent = classifyVoiceIntent(text);
+    this.lastVoiceIntent = voiceIntent;
+    if (voiceIntent.mode !== 'chat') {
       console.log(
-        '[cyrvis search] intent',
+        '[cyrvis intent]',
         JSON.stringify({
-          query: searchIntent.query,
-          confidence: searchIntent.confidence,
-          reason: searchIntent.reason,
+          mode: voiceIntent.mode,
+          query: voiceIntent.query,
+          target: voiceIntent.target,
+          targetKind: voiceIntent.targetKind,
+          silent: voiceIntent.silent,
+          siteSearch: voiceIntent.siteSearch === true,
+          confidence: voiceIntent.confidence,
+          reason: voiceIntent.reason,
         }),
       );
     }
@@ -458,7 +465,8 @@ export class VoiceBrain {
         this.options.autoWakeOnTask !== false &&
         (decision.kind === 'task' ||
           decision.kind === 'control' ||
-          searchIntent.confidence === 'high');
+          ((voiceIntent.mode === 'search' || voiceIntent.mode === 'compare') &&
+            voiceIntent.confidence === 'high'));
 
       if (this.isWakePhrase(text) || autoWake) {
         this.wake();
@@ -480,6 +488,7 @@ export class VoiceBrain {
     target: string,
     taskInstruction: unknown,
     delayMs: number,
+    silent = false,
   ): Promise<void> {
     const instruction =
       typeof taskInstruction === 'string' ? taskInstruction.trim() : '';
@@ -490,8 +499,9 @@ export class VoiceBrain {
           ok: true,
           status: 'opened',
           target,
-          message:
-            'OPENED. The target is opening/loading. If the user asked you to read, compare, or click results, call start_gui_task with a concrete instruction. Do not claim results yet.',
+          message: silent
+            ? 'OPENED. The user asked to browse without a summary. Do NOT read, summarize, or describe results. Do not claim what is on the page; wait for the user.'
+            : 'OPENED. The target is opening/loading. If the user asked you to read, compare, or click results, call start_gui_task with a concrete instruction. Do not claim results yet.',
         }),
       );
       return;
@@ -571,25 +581,44 @@ export class VoiceBrain {
           return;
         }
 
-        // The model sometimes routes "我要去巴黎的机票" to the GUI agent and
-        // slowly opens a homepage. Pure lookup/search should use search_web.
-        // Allow the GUI path when the instruction itself needs interaction.
-        const searchIntent = this.lastUserText
-          ? detectSearchIntent(this.lastUserText)
-          : null;
+        // The model sometimes routes "我要去巴黎的机票" or "打开B站" to the
+        // GUI agent and slowly clicks through a homepage. Pure navigation and
+        // search have faster fast-path tools. Allow the GUI path when the
+        // instruction itself needs interaction.
+        const voiceIntent = this.lastVoiceIntent;
         const needsGuiInteraction = GUI_INTERACTION_PATTERNS.some((pattern) =>
           pattern.test(instruction),
         );
-        if (searchIntent?.confidence === 'high' && !needsGuiInteraction) {
+        if (voiceIntent?.mode === 'navigate' && !needsGuiInteraction) {
+          const target = voiceIntent.target;
+          const isApp = voiceIntent.targetKind === 'app';
+          this.provider.sendToolResult(
+            call.callId,
+            JSON.stringify({
+              ok: false,
+              status: isApp ? 'use_open_app' : 'use_open_site',
+              target,
+              message: isApp
+                ? `USE_OPEN_APP: "${this.lastUserText}" is app navigation, not a GUI task. Call open_app with app "${target}".`
+                : `USE_OPEN_SITE: "${this.lastUserText}" is site navigation, not a GUI task. Call open_site with site "${target ?? 'bing'}".`,
+            }),
+          );
+          return;
+        }
+        if (
+          voiceIntent?.mode === 'search' &&
+          voiceIntent.confidence === 'high' &&
+          !needsGuiInteraction
+        ) {
           this.provider.sendToolResult(
             call.callId,
             JSON.stringify({
               ok: false,
               status: 'use_search_tool',
-              query: searchIntent.query,
+              query: voiceIntent.query,
               message:
                 `USE_SEARCH_WEB: "${this.lastUserText}" is a web information need, not a GUI automation task. ` +
-                `Call search_web with query "${searchIntent.query}" instead. ` +
+                `Call search_web with query "${voiceIntent.query}" instead. ` +
                 'If the user also wants to read/compare/click the results, pass a task_instruction to search_web.',
             }),
           );
@@ -621,9 +650,51 @@ export class VoiceBrain {
         break;
       }
       case 'search_web': {
-        const { buildSearchUrl, defaultSearchEngine, openSearch } =
+        const intent = this.lastVoiceIntent;
+        if (intent?.mode === 'navigate') {
+          const isApp = intent.targetKind === 'app';
+          this.provider.sendToolResult(
+            call.callId,
+            JSON.stringify({
+              ok: false,
+              status: isApp ? 'use_open_app' : 'use_open_site',
+              target: intent.target,
+              message: isApp
+                ? `USE_OPEN_APP: "${this.lastUserText}" is app navigation. Call open_app with app "${intent.target}" instead of searching.`
+                : `USE_OPEN_SITE: "${this.lastUserText}" is site navigation. Call open_site with site "${intent.target ?? 'bing'}" instead of searching.`,
+            }),
+          );
+          return;
+        }
+        const { buildSearchUrl, defaultSearchEngine, openSearch, openSite } =
           await import('./desktop-actions');
         const query = String(call.args.query || '').trim();
+
+        // "打开B站搜一下猫": keep the search inside Bilibili instead of
+        // sending the user to a generic Bing results page.
+        if (
+          intent?.siteSearch &&
+          intent.target &&
+          intent.targetKind === 'site'
+        ) {
+          const siteQuery = query || intent.query;
+          if (siteQuery) {
+            try {
+              const result = await openSite(intent.target, siteQuery);
+              await this.finishFastOpen(
+                call,
+                `${result.label}: ${result.url}`,
+                call.args.task_instruction,
+                1200,
+                intent.silent,
+              );
+              break;
+            } catch (error) {
+              console.warn('[cyrvis voice] site search redirect failed', error);
+            }
+          }
+        }
+
         if (!query) {
           this.provider.sendToolResult(
             call.callId,
@@ -646,6 +717,7 @@ export class VoiceBrain {
             url,
             call.args.task_instruction,
             1200,
+            this.lastVoiceIntent?.silent === true,
           );
         } catch (error) {
           this.provider.sendToolResult(
@@ -672,6 +744,7 @@ export class VoiceBrain {
             opened,
             call.args.task_instruction,
             1200,
+            this.lastVoiceIntent?.silent === true,
           );
         } catch (error) {
           this.provider.sendToolResult(
@@ -682,6 +755,22 @@ export class VoiceBrain {
         break;
       }
       case 'open_app': {
+        if (
+          this.lastVoiceIntent?.mode === 'navigate' &&
+          this.lastVoiceIntent.targetKind === 'site' &&
+          this.lastVoiceIntent.target
+        ) {
+          this.provider.sendToolResult(
+            call.callId,
+            JSON.stringify({
+              ok: false,
+              status: 'use_open_site',
+              target: this.lastVoiceIntent.target,
+              message: `USE_OPEN_SITE: "${this.lastUserText}" is site navigation. Call open_site with site "${this.lastVoiceIntent.target}" instead of opening an app.`,
+            }),
+          );
+          return;
+        }
         const { openApp } = await import('./desktop-actions');
         const appValue = String(call.args.app || '');
         const allowedApps: AllowedApp[] = [
@@ -709,6 +798,51 @@ export class VoiceBrain {
             label,
             call.args.task_instruction,
             1800,
+            this.lastVoiceIntent?.silent === true,
+          );
+        } catch (error) {
+          this.provider.sendToolResult(
+            call.callId,
+            `ERROR: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        break;
+      }
+      case 'open_site': {
+        if (
+          this.lastVoiceIntent?.targetKind === 'app' &&
+          this.lastVoiceIntent.target
+        ) {
+          this.provider.sendToolResult(
+            call.callId,
+            JSON.stringify({
+              ok: false,
+              status: 'use_open_app',
+              target: this.lastVoiceIntent.target,
+              message: `USE_OPEN_APP: "${this.lastUserText}" is app navigation. Call open_app with app "${this.lastVoiceIntent.target}" instead of open_site.`,
+            }),
+          );
+          return;
+        }
+        const { openSite } = await import('./desktop-actions');
+        const siteValue = String(call.args.site || '').trim();
+        if (!siteValue) {
+          this.provider.sendToolResult(
+            call.callId,
+            'ERROR: open_site requires a site.',
+          );
+          return;
+        }
+        const query =
+          typeof call.args.query === 'string' ? call.args.query.trim() : '';
+        try {
+          const result = await openSite(siteValue, query || undefined);
+          await this.finishFastOpen(
+            call,
+            `${result.label}: ${result.url}`,
+            call.args.task_instruction,
+            1200,
+            this.lastVoiceIntent?.silent === true,
           );
         } catch (error) {
           this.provider.sendToolResult(

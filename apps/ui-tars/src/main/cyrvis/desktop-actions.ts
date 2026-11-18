@@ -3,9 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-import { shell } from 'electron';
+import { app, shell } from 'electron';
 
 import { logger } from '@main/logger';
+
+import { buildSiteSearchUrl, resolveSite } from './site-registry';
 
 export type SearchEngine = 'bing' | 'baidu' | 'google';
 export type AllowedApp = 'vscode' | 'chrome' | 'explorer' | 'notepad';
@@ -56,7 +58,82 @@ export const openUrl = async (value: string): Promise<string> => {
   const url = assertHttpUrl(value.trim());
   logger.info('[cyrvis desktop] opening url', { url: url.toString() });
   await shell.openExternal(url.toString());
+  if (process.platform === 'win32') {
+    void focusBrowserWithRetry();
+  }
   return url.toString();
+};
+
+export interface OpenSiteResult {
+  site: string;
+  label: string;
+  url: string;
+}
+
+export const openSite = async (
+  value: string,
+  query?: string,
+): Promise<OpenSiteResult> => {
+  const site = resolveSite(value);
+  if (!site) {
+    throw new Error(`unknown site: ${value}`);
+  }
+  const trimmedQuery = query?.trim() || '';
+  const url = trimmedQuery ? buildSiteSearchUrl(site, trimmedQuery) : site.url;
+  await openUrl(url);
+  return { site: site.id, label: site.label, url };
+};
+
+const BROWSER_FOCUS_SCRIPT_CANDIDATES = () => [
+  path.resolve(app.getAppPath(), '../../scripts/cyrvis/focus-browser.ps1'),
+  path.resolve(process.cwd(), 'scripts/cyrvis/focus-browser.ps1'),
+  path.resolve(process.cwd(), '../../scripts/cyrvis/focus-browser.ps1'),
+];
+
+const findBrowserFocusScript = (): string | null =>
+  BROWSER_FOCUS_SCRIPT_CANDIDATES().find((candidate) =>
+    fs.existsSync(candidate),
+  ) ?? null;
+
+/**
+ * Windows opens the URL in an existing Edge/Chrome window without bringing it
+ * to the foreground, especially when the browser is minimized. Restore and
+ * activate it explicitly so a spoken search is visible.
+ */
+const focusBrowserWindow = async (): Promise<boolean> => {
+  if (process.platform !== 'win32') {
+    return false;
+  }
+  const script = findBrowserFocusScript();
+  if (!script) {
+    logger.warn('[cyrvis desktop] focus-browser.ps1 not found');
+    return false;
+  }
+
+  try {
+    const { stdout } = await execFileAsync(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script],
+      { timeout: 5000, windowsHide: true },
+    );
+    const result = JSON.parse(stdout.trim()) as { ok?: boolean };
+    logger.info('[cyrvis desktop] browser focus result', {
+      ok: result.ok === true,
+    });
+    return result.ok === true;
+  } catch (error) {
+    logger.warn('[cyrvis desktop] browser focus failed', error);
+    return false;
+  }
+};
+
+const focusBrowserWithRetry = async (): Promise<void> => {
+  for (const delayMs of [250, 700, 1500, 3000]) {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    if (await focusBrowserWindow()) {
+      return;
+    }
+  }
 };
 
 /**
@@ -83,6 +160,9 @@ export const openSearch = async (value: string): Promise<string> => {
   }
 
   await shell.openExternal(url);
+  if (process.platform === 'win32') {
+    void focusBrowserWithRetry();
+  }
   return url;
 };
 

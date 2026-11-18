@@ -265,6 +265,38 @@ describe('VoiceBrain', () => {
     expect(provider.toolResults[0].output).toContain('去巴黎的机票');
   });
 
+  it('redirects site navigation from search_web to open_site', async () => {
+    const { brain, provider } = setup();
+    await brain.start();
+    provider.emitTranscript('打开B站', true);
+
+    provider.emitToolCall({
+      name: 'search_web',
+      args: { query: 'B站' },
+      callId: 'call-nav-search',
+    });
+    await flush();
+
+    expect(provider.toolResults[0].output).toContain('USE_OPEN_SITE');
+    expect(provider.toolResults[0].output).toContain('bilibili');
+  });
+
+  it('redirects site navigation from start_gui_task to open_site', async () => {
+    const { brain, provider, adapter } = setup();
+    await brain.start();
+    provider.emitTranscript('打开B站', true);
+
+    provider.emitToolCall({
+      name: 'start_gui_task',
+      args: { instruction: '打开B站首页' },
+      callId: 'call-nav-gui',
+    });
+    await flush();
+
+    expect(adapter.instruction).toBe('');
+    expect(provider.toolResults[0].output).toContain('USE_OPEN_SITE');
+  });
+
   it('dispatches a real GUI task and returns a task id', async () => {
     const { brain, provider, adapter, controller } = setup();
     await brain.start();
@@ -329,10 +361,10 @@ describe('VoiceBrain', () => {
     const { brain, provider, controller } = setup();
     await brain.start();
     provider.emitTranscript('Hello CYRVIS', true);
-    provider.emitTranscript('Open Notepad', true);
+    provider.emitTranscript('Open Notepad and type hello', true);
     provider.emitToolCall({
       name: 'start_gui_task',
-      args: { instruction: 'Open Notepad' },
+      args: { instruction: 'Open Notepad and type hello' },
       callId: 'call-start',
     });
     await flush();
@@ -358,10 +390,10 @@ describe('VoiceBrain', () => {
     const { brain, provider, adapter } = setup();
     await brain.start();
     provider.emitTranscript('Hello CYRVIS', true);
-    provider.emitTranscript('Open Notepad', true);
+    provider.emitTranscript('Open Notepad and type hello', true);
     provider.emitToolCall({
       name: 'start_gui_task',
-      args: { instruction: 'Open Notepad' },
+      args: { instruction: 'Open Notepad and type hello' },
       callId: 'call-start',
     });
     await flush();
@@ -374,17 +406,17 @@ describe('VoiceBrain', () => {
     expect(provider.spoken.some((text) => text.includes('正在执行'))).toBe(
       true,
     );
-    expect(adapter.instruction).toBe('Open Notepad');
+    expect(adapter.instruction).toBe('Open Notepad and type hello');
   });
 
   it('cancels deterministically on "停" even without a tool call', async () => {
     const { brain, provider, controller } = setup();
     await brain.start();
     provider.emitTranscript('Hello CYRVIS', true);
-    provider.emitTranscript('Open Notepad', true);
+    provider.emitTranscript('Open Notepad and type hello', true);
     provider.emitToolCall({
       name: 'start_gui_task',
-      args: { instruction: 'Open Notepad' },
+      args: { instruction: 'Open Notepad and type hello' },
       callId: 'call-start',
     });
     await flush();
@@ -402,10 +434,10 @@ describe('VoiceBrain', () => {
     const { brain, provider, controller } = setup();
     await brain.start();
     provider.emitTranscript('Hello CYRVIS', true);
-    provider.emitTranscript('Open Notepad', true);
+    provider.emitTranscript('Open Notepad and type hello', true);
     provider.emitToolCall({
       name: 'start_gui_task',
-      args: { instruction: 'Open Notepad' },
+      args: { instruction: 'Open Notepad and type hello' },
       callId: 'call-start',
     });
     await flush();
@@ -481,10 +513,10 @@ describe('VoiceBrain', () => {
     const { brain, provider, adapter } = setup();
     await brain.start();
     provider.emitTranscript('Hello CYRVIS', true);
-    provider.emitTranscript('Open Notepad', true);
+    provider.emitTranscript('Open Notepad and type hello', true);
     provider.emitToolCall({
       name: 'start_gui_task',
-      args: { instruction: 'Open Notepad' },
+      args: { instruction: 'Open Notepad and type hello' },
       callId: 'call-start',
     });
     await flush();

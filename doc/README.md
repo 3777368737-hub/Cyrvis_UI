@@ -41,7 +41,8 @@ apps/ui-tars/src/main/cyrvis/          # CYRVIS 主进程
   controller.ts                        # 单任务状态机
   gui-adapter.ts                       # 包装 runAgent / GUIAgent
   voice-brain.ts                       # 意图路由、唤醒、确定性控制、主动播报
-  search-intent.ts                     # 显式/隐式搜索意图识别
+  search-intent.ts                     # 统一意图分类（导航/搜索/比价/任务）
+  site-registry.ts                     # 常用站点别名与站内搜索 URL
   travel-search.ts                     # 多站比价骨架（适配器 + 推荐）
   desktop-actions.ts                   # 搜索/开 URL/开应用快速工具
   capture-service.ts                   # 隐藏采集窗口 + 本地 HTTP/WS

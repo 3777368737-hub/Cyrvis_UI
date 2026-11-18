@@ -83,6 +83,61 @@ const EMPTY_STATE: VoiceUiState = {
   },
 };
 
+const VIRTUAL_MIC_PATTERN = /todesk|virtual|stereo mix|line in/i;
+const PREFERRED_MIC_PATTERN =
+  /cc ultimate|headset|airpods|bluetooth|耳机|耳麦/i;
+
+/**
+ * The Windows default input is often the ToDesk virtual cable, which produces
+ * silence. Prefer a real microphone instead of marking voice as ready.
+ */
+const openMicrophoneStream = async (): Promise<MediaStream> => {
+  const constraints: MediaTrackConstraints = {
+    echoCancellation: true,
+    noiseSuppression: false,
+    autoGainControl: true,
+    channelCount: 1,
+  };
+  let stream: MediaStream | null = null;
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: constraints });
+    const label = stream.getAudioTracks()[0]?.label || '';
+    if (!VIRTUAL_MIC_PATTERN.test(label)) {
+      return stream;
+    }
+
+    console.log('[cyrvis] default mic is virtual; switching', { label });
+    stream.getTracks().forEach((track) => track.stop());
+    stream = null;
+
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const physical = devices.filter(
+      (device) =>
+        device.kind === 'audioinput' &&
+        device.deviceId &&
+        device.label &&
+        !VIRTUAL_MIC_PATTERN.test(device.label),
+    );
+    if (!physical.length) {
+      throw new Error('未找到物理麦克风，请连接耳机麦克风后重新开始语音。');
+    }
+    const preferred =
+      physical.find((device) => PREFERRED_MIC_PATTERN.test(device.label)) ??
+      physical[0];
+    console.log('[cyrvis] switching to physical mic', {
+      label: preferred.label,
+    });
+    return await navigator.mediaDevices.getUserMedia({
+      audio: { ...constraints, deviceId: { exact: preferred.deviceId } },
+    });
+  } catch (error) {
+    stream?.getTracks().forEach((track) => track.stop());
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`无法启动麦克风：${message}`);
+  }
+};
+
 export function useVoiceAudio() {
   const { settings } = useSetting();
   const [state, setState] = useState<VoiceUiState>(EMPTY_STATE);
@@ -560,20 +615,17 @@ export function useVoiceAudio() {
     if (mediaStreamRef.current) {
       return;
     }
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        // NS attenuates the near-end voice during double-talk on this
-        // hardware; AEC alone keeps the echo below the barge threshold.
-        noiseSuppression: false,
-        autoGainControl: true,
-        channelCount: 1,
-      },
-    });
+    const stream = await openMicrophoneStream();
     mediaStreamRef.current = stream;
     const audioContext = new AudioContext();
     captureContextRef.current = audioContext;
     captureSampleRateRef.current = audioContext.sampleRate;
+    const captureTrack = stream.getAudioTracks()[0];
+    console.log('[cyrvis] mic capture ready', {
+      label: captureTrack?.label || '',
+      deviceId: captureTrack?.getSettings().deviceId || '',
+      sampleRate: audioContext.sampleRate,
+    });
     await audioContext.resume();
     const source = audioContext.createMediaStreamSource(stream);
     sourceRef.current = source;
@@ -591,7 +643,7 @@ export function useVoiceAudio() {
     source.connect(processor);
     processor.connect(silentGain);
     silentGain.connect(audioContext.destination);
-    stream.getAudioTracks()[0]?.addEventListener('ended', () => {
+    captureTrack?.addEventListener('ended', () => {
       setMicReady(false);
       setError('Microphone disconnected');
       window.electron.voice.notifyCaptureError('Microphone disconnected');
@@ -599,7 +651,7 @@ export function useVoiceAudio() {
     setMicReady(true);
     setError(null);
     window.electron.voice.notifyCaptureReady(
-      stream.getAudioTracks()[0]?.label || 'renderer microphone',
+      captureTrack?.label || 'renderer microphone',
     );
     await refreshOutputDevices();
   }, [processSamples, refreshOutputDevices]);
@@ -823,6 +875,7 @@ export function useVoiceAudio() {
     }
 
     const deviceChange = () => {
+      console.log('[cyrvis] audio device changed; restarting capture');
       void restartCapture().catch((restartError) => {
         console.warn('[cyrvis] mic restart failed', restartError);
       });

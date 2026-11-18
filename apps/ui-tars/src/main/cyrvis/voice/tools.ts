@@ -115,7 +115,7 @@ export const CYRVIS_VOICE_TOOLS: QwenToolDefinition[] = [
     function: {
       name: 'search_web',
       description:
-        'Open a web search directly in the platform browser (Bing on Windows, Safari on macOS). Use this for ANY web information need — prices, flights/hotels, weather, news, places, reviews, recommendations, comparisons, tutorials, policies — even when the user does not say "search" (e.g. "我要去巴黎的机票", "这个耳机多少钱", "最近有什么新闻"). Do NOT use it for local desktop/file/app actions. If the user also wants you to read, compare, or click the results, set task_instruction so the GUI agent continues after the page opens.',
+        'Open a web search directly in the platform browser (Bing on Windows, Safari on macOS). Use this for ANY web information need — prices, flights/hotels, weather, news, places, reviews, recommendations, comparisons, tutorials, policies — even when the user does not say "search" (e.g. "我要去巴黎的机票", "这个耳机多少钱", "最近有什么新闻"). Do NOT use it for local desktop/file/app actions. For bare navigation like "打开B站/打开淘宝", use open_site instead. If the user also wants you to read, compare, or click the results, set task_instruction so the GUI agent continues after the page opens.',
       parameters: {
         type: 'object',
         properties: {
@@ -193,6 +193,35 @@ export const CYRVIS_VOICE_TOOLS: QwenToolDefinition[] = [
           },
         },
         required: ['app'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'open_site',
+      description:
+        'Open a known website (Bilibili, Taobao, JD, YouTube, Zhihu, Weibo, Xiaohongshu, Baidu, Google, Bing, GitHub) for bare navigation requests like "打开B站/打开淘宝/打开YouTube". Do NOT use search_web or GUI clicking for these. If the user also wants a search inside the site ("打开B站搜一下猫"), set query. If they want you to interact with the page afterwards, set task_instruction.',
+      parameters: {
+        type: 'object',
+        properties: {
+          site: {
+            type: 'string',
+            description:
+              'Site id, alias, Chinese name, or domain, e.g. bilibili, B站, 淘宝, YouTube, github.com.',
+          },
+          query: {
+            type: 'string',
+            description:
+              'Optional on-site search query, e.g. "猫" for "打开B站搜一下猫".',
+          },
+          task_instruction: {
+            type: 'string',
+            description:
+              'Optional GUI task to start after the page opens, e.g. "在B站搜索并播放第一个视频".',
+          },
+        },
+        required: ['site'],
       },
     },
   },

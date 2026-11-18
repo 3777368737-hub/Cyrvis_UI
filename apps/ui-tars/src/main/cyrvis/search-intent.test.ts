@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  classifyVoiceIntent,
   detectSearchIntent,
   extractSearchQuery,
   isHighConfidenceSearch,
@@ -64,5 +65,72 @@ describe('detectSearchIntent', () => {
     const decision = detectSearchIntent('帮我查一下电脑配置');
     expect(decision.isSearch).toBe(false);
     expect(decision.reason).toContain('local');
+  });
+});
+
+describe('classifyVoiceIntent', () => {
+  it.each([
+    ['打开bilibili', 'bilibili'],
+    ['打开B站', 'bilibili'],
+    ['打开淘宝', 'taobao'],
+    ['打开YouTube', 'youtube'],
+  ])('routes "%s" to site navigation', (text, target) => {
+    const decision = classifyVoiceIntent(text);
+    expect(decision.mode).toBe('navigate');
+    expect(decision.target).toBe(target);
+    expect(decision.targetKind).toBe('site');
+  });
+
+  it('routes app navigation separately from sites', () => {
+    const decision = classifyVoiceIntent('打开VS Code');
+    expect(decision.mode).toBe('navigate');
+    expect(decision.target).toBe('vscode');
+    expect(decision.targetKind).toBe('app');
+  });
+
+  it.each([
+    ['打开B站搜一下猫', '猫', 'bilibili'],
+    ['B站怎么投币', '怎么投币', 'bilibili'],
+    ['给我邓小平的简介', '邓小平的简介', null],
+    ['打开浏览器搜索巴黎机票', '巴黎机票', null],
+  ])('routes "%s" to search with query "%s"', (text, query, target) => {
+    const decision = classifyVoiceIntent(text);
+    expect(decision.mode).toBe('search');
+    expect(decision.query).toBe(query);
+    expect(decision.target).toBe(target);
+  });
+
+  it('keeps the silent-browse flag', () => {
+    const decision = classifyVoiceIntent('搜一下巴黎机票，我自己看');
+    expect(decision.mode).toBe('search');
+    expect(decision.query).toBe('巴黎机票');
+    expect(decision.silent).toBe(true);
+  });
+
+  it('marks on-site searches separately from web answers', () => {
+    expect(classifyVoiceIntent('打开B站搜一下猫').siteSearch).toBe(true);
+    expect(classifyVoiceIntent('打开淘宝买耳机').siteSearch).toBe(true);
+    expect(classifyVoiceIntent('B站怎么投币').siteSearch).toBeFalsy();
+    expect(classifyVoiceIntent('给我邓小平的简介').siteSearch).toBeFalsy();
+  });
+
+  it('treats bare search/browser navigation as navigation', () => {
+    const decision = classifyVoiceIntent('打开搜索，我自己看');
+    expect(decision.mode).toBe('navigate');
+    expect(decision.target).toBe('bing');
+    expect(decision.silent).toBe(true);
+  });
+
+  it('routes comparison and transaction intents', () => {
+    expect(classifyVoiceIntent('帮我比较携程和去哪儿的价格').mode).toBe(
+      'compare',
+    );
+    expect(classifyVoiceIntent('打开淘宝买耳机').mode).toBe('search');
+    expect(classifyVoiceIntent('打开记事本输入 Hello').mode).toBe('task');
+  });
+
+  it('marks pointer-only requests as ambiguous', () => {
+    expect(classifyVoiceIntent('打开这个视频').mode).toBe('ambiguous');
+    expect(classifyVoiceIntent('这个多少钱').mode).toBe('ambiguous');
   });
 });

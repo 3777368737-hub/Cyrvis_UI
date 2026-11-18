@@ -2,12 +2,17 @@
 
 ## 2026-11-18
 - [x] 新增 `search-intent.ts`：识别显式/隐式搜索需求。示例：“我要去巴黎的机票” -> `去巴黎的机票`，“我想买一个降噪耳机” -> `买一个降噪耳机`，“今天天气怎么样” -> `今天天气`；本地任务（查电脑配置、写代码）不误判。
-- [x] 语音唤醒扩展：高置信搜索意图可在不说 “Hello CYRVIS” 时自动唤醒；`VoiceBrain` 日志新增 `[cyrvis search] intent {query, confidence, reason}`。
+- [x] 语音唤醒扩展：高置信搜索意图可在不说 “Hello CYRVIS” 时自动唤醒；`VoiceBrain` 日志新增 `[cyrvis intent] {mode, query, target, silent, siteSearch}`。
 - [x] GUI 误路由兜底：当模型把纯搜索请求交给 `start_gui_task` 时返回 `USE_SEARCH_WEB`，要求改用 `search_web(query=...)`；真正需要点击/输入/预订的指令仍允许 GUI。
+- [x] 统一意图分类 `classifyVoiceIntent`：navigate / search / compare / task / chat / ambiguous；支持 `silent`（“我自己看/别念”）和 `siteSearch`（“打开B站搜一下猫”）。
+- [x] 站点导航：新增 `site-registry.ts`（B站/淘宝/京东/YouTube/知乎/微博/小红书/抖音/百度/Google/Bing/GitHub）和 `open_site` 工具；纯导航只开页面，不读摘要；站内搜索直接打开站点搜索页。
+- [x] 导航误路由兜底：`search_web`/`start_gui_task` 收到“打开B站”时返回 `USE_OPEN_SITE`/`USE_OPEN_APP`；含点击/输入的指令仍允许 GUI。
+- [x] 页面前台化：`openSearch`/`openUrl` 打开 Windows 浏览器后调用 `scripts/cyrvis/focus-browser.ps1`，还原最小化窗口并置前；实测 Edge 最小化时 `ok:true`。
+- [x] 麦克风回退：默认输入是 ToDesk 虚拟麦时自动切换到物理麦克风（优先 cc ultimate/耳机/蓝牙），找不到物理麦时明确报错；新增 `mic capture ready`/`audio device changed` 日志。
 - [x] 平台化搜索：Windows 用 Bing 结果页，macOS 用 `open -a Safari`（失败回退默认浏览器）；`defaultSearchEngine()` 在 macOS 默认 Google，其余平台默认 Bing。
-- [x] 提示词强化：明确“外部信息需求”优先 `search_web`，并给出“我要…/我想…”示例；本机应用/文件/点击/预订仍走 `open_app`/`start_gui_task`。
+- [x] 提示词强化：明确“外部信息需求”优先 `search_web`，导航用 `open_site`，并给出“我要…/我想…”示例；本机应用/文件/点击/预订仍走 `open_app`/`start_gui_task`。
 - [x] 多站比价骨架：新增 `travel-search.ts`（携程/去哪儿/飞猪 URL 适配器、城市码、报价/错误类型、确定性最低价/最快/综合推荐）与 `doc/travel-search.md`；抓取 `search()` 暂为 TODO，未暴露语音工具。
-- [x] 验证：`npm run typecheck:node` 通过；CYRVIS 测试 119/119 通过（新增 search-intent 24、travel-search 8、voice-brain 22）。
+- [x] 验证：`npm run typecheck`（node+web）通过；CYRVIS 测试 140/140 通过（新增 search-intent、site-registry、voice-brain 导航用例）。
 
 ## 2026-11-16
 - [x] GUI Agent Action Batching：`GUIAgent` 已支持同轮执行多个 `parsedPredictions`；给 `DOUBAO_1_5_15B` 提示词加入受限多动作规则（2–4 个、空行分隔、仅限可预测序列）。

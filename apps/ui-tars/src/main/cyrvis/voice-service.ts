@@ -1177,6 +1177,9 @@ const registerVoiceIpc = () => {
 
   ipcMain.on('cyrvis:voice:renderer-capture-ready', (_event, label: string) => {
     captureReady = true;
+    logger.info('[cyrvis voice] renderer capture ready', {
+      label: label || 'renderer microphone',
+    });
     broadcast('cyrvis:voice:capture-ready', {
       label: label || 'renderer microphone',
     });
@@ -1186,6 +1189,9 @@ const registerVoiceIpc = () => {
     'cyrvis:voice:renderer-capture-error',
     (_event, message: string) => {
       captureReady = false;
+      logger.warn('[cyrvis voice] renderer capture error', {
+        message: message || 'renderer microphone error',
+      });
       broadcast('cyrvis:voice:capture-error', {
         message: message || 'renderer microphone error',
       });

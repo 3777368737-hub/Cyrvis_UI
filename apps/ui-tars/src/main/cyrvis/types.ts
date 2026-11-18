@@ -53,6 +53,10 @@ export type VoiceToolCall =
   | { name: 'get_gui_status'; args: Record<string, never> }
   | { name: 'remember_fact'; args: { text: string } }
   | {
+      name: `cyrvis_${string}`;
+      args: Record<string, unknown>;
+    }
+  | {
       name: 'confirm_action';
       args: { task_id: string; approved: boolean };
     };

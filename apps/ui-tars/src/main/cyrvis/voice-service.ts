@@ -30,9 +30,13 @@ import { KeywordGate } from './keyword-gate';
 import { voiceMemoryService } from './memory';
 import { SpeakerEchoDetector, type SpeakerEchoAnalysis } from './speaker-barge';
 import { isLikelySpeakerEcho } from './speaker-echo';
+import { LocalDesktopHost } from './tools/desktop-host';
+import { createFastToolMatrix } from './tools';
+import { SystemStateStore } from './system/system-state';
 import { CascadeVoiceProvider } from './voice/cascade-provider';
 import { QwenOmniProvider } from './voice/qwen-omni';
 import type { InteractiveVoiceProvider } from './voice/provider';
+import { CYRVIS_VOICE_TOOLS } from './voice/tools';
 import { VoiceBrain, type VoiceBrainState } from './voice-brain';
 import type { ControllerEvent } from './types';
 
@@ -40,6 +44,7 @@ interface VoiceService {
   brain: VoiceBrain;
   provider: InteractiveVoiceProvider;
   controller: CyrvisController;
+  systemState: SystemStateStore;
 }
 
 let service: VoiceService | null = null;
@@ -215,7 +220,7 @@ let bargeSampleBuffer: Int16Array[] = [];
 // Continuous ~1s buffer that is NOT cleared at response start. The normal
 // capturePreroll is cleared so a new response starts clean, which left the
 // first 0.5s with no voiceprint window and produced score=null near-misses.
-let keywordPreroll: Int16Array[] = [];
+const keywordPreroll: Int16Array[] = [];
 // Aligned playback reference for relative user-vs-TTS verification.
 let referencePreroll: Float32Array[] = [];
 let lastBargeDumpAt = 0;
@@ -1000,7 +1005,9 @@ const syncProviderMemoryContext = async (): Promise<void> => {
   if (!service) {
     return;
   }
-  service.provider.setContext?.(await voiceMemoryService.getContext());
+  service.provider.setContext?.(
+    `${await voiceMemoryService.getContext()}\n\n${service.systemState.getContext()}`,
+  );
 };
 
 const recordTurn = (role: CyrvisMemoryTurnRole, text: string): void => {
@@ -1465,7 +1472,61 @@ export const startVoiceService = (): VoiceService | null => {
   }
 
   const controller = new CyrvisController(new ElectronGUIAdapter());
+  const desktopHost = new LocalDesktopHost();
+  const runtimeRefreshMs = Number(process.env.CYRVIS_SYSTEM_RUNTIME_REFRESH_MS);
+  const fullRefreshMs = Number(process.env.CYRVIS_SYSTEM_FULL_REFRESH_MS);
+  const systemState = new SystemStateStore(desktopHost, {
+    runtimeRefreshMs:
+      Number.isFinite(runtimeRefreshMs) && runtimeRefreshMs >= 1_000
+        ? runtimeRefreshMs
+        : undefined,
+    fullRefreshMs:
+      Number.isFinite(fullRefreshMs) && fullRefreshMs >= 60_000
+        ? fullRefreshMs
+        : undefined,
+  });
+  systemState.start();
+  const userDataDirectory = app.getPath('userData');
+  const configuredManifestDirectories = (
+    process.env.CYRVIS_PROVIDER_MANIFEST_DIRS || ''
+  )
+    .split(/[;\r\n]/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const fastToolMatrix =
+    process.env.CYRVIS_FAST_TOOLS === '0'
+      ? null
+      : createFastToolMatrix(desktopHost, process.cwd(), systemState, {
+          manifestDirectories: [
+            path.join(userDataDirectory, 'cyrvis', 'providers'),
+            ...(process.resourcesPath
+              ? [path.join(process.resourcesPath, 'cyrvis', 'providers')]
+              : []),
+            ...configuredManifestDirectories,
+          ],
+          usageStateFile: path.join(
+            userDataDirectory,
+            'cyrvis-tool-usage.json',
+          ),
+          usageAuditFile: path.join(
+            userDataDirectory,
+            'cyrvis-tool-audit.jsonl',
+          ),
+        });
+  const buildVoiceTools = () => [
+    ...(fastToolMatrix?.providerCatalog.tools ?? []),
+    ...CYRVIS_VOICE_TOOLS,
+  ];
+  const voiceTools = buildVoiceTools();
+  if (fastToolMatrix) {
+    logger.info('[cyrvis fast-tools] ready', {
+      tools: fastToolMatrix.registry.list().length,
+      providerTools: voiceTools.length,
+      systemStateScanning: true,
+    });
+  }
   let provider!: InteractiveVoiceProvider;
+  let unsubscribeFastToolUpdates: (() => void) | null = null;
   const requireWakeWord = settings.voiceRequireWakeWord ?? true;
   const configuredWakeWord = settings.voiceWakeWord?.trim();
   const escapeRegExp = (value: string) =>
@@ -1551,6 +1612,11 @@ export const startVoiceService = (): VoiceService | null => {
         },
         onTranscript: (text: string, final: boolean) => {
           logger.info('[cyrvis voice] transcript', { text, final });
+          const pendingConfirmationReply =
+            final &&
+            fastToolMatrix?.router.isPendingConfirmationReply(text) === true;
+          const explicitConfirmation =
+            final && fastToolMatrix?.router.isConfirmationIntent(text) === true;
           if (final && deferredBargeGuiStop) {
             deferredBargeGuiStop = false;
             const keepGuiRunning =
@@ -1563,6 +1629,8 @@ export const startVoiceService = (): VoiceService | null => {
           }
           if (
             final &&
+            !pendingConfirmationReply &&
+            !explicitConfirmation &&
             isLikelySpeakerEcho(
               text,
               lastAssistantText,
@@ -1578,7 +1646,13 @@ export const startVoiceService = (): VoiceService | null => {
             emitActivity('speech', '已忽略外放回声，未触发追问');
             return;
           }
-          callbacks.onTranscript?.(text, final);
+          if (pendingConfirmationReply) {
+            logger.info(
+              '[cyrvis voice] pending confirmation reply bypassed echo filter',
+              { text },
+            );
+          }
+          return callbacks.onTranscript?.(text, final);
         },
         onResponseStarted: () => {
           if (service?.brain.shouldSuppressReply()) {
@@ -1664,13 +1738,14 @@ export const startVoiceService = (): VoiceService | null => {
 
       provider =
         selectedVoiceEngine === 'cascade'
-          ? new CascadeVoiceProvider(wrapped)
+          ? new CascadeVoiceProvider(wrapped, voiceTools)
           : new QwenOmniProvider({
               apiKey,
               model: process.env.QWEN_MODEL || 'qwen3.8-omni-flash-realtime',
               endpoint: process.env.QWEN_REALTIME_URL || undefined,
               voice: process.env.QWEN_VOICE || undefined,
               callbacks: wrapped,
+              tools: voiceTools,
               vadType: 'semantic_vad_ec',
               silenceDurationMs:
                 settings.voiceSilenceTimeoutMs ||
@@ -1687,7 +1762,9 @@ export const startVoiceService = (): VoiceService | null => {
         minGapMs: 5000,
         progressCooldownMs: 30000,
       },
-      memoryContextProvider: () => voiceMemoryService.getContext(),
+      memoryContextProvider: async () =>
+        `${await voiceMemoryService.getContext()}\n\n${systemState.getContext()}`,
+      fastToolRouter: fastToolMatrix?.router,
       rememberFact: async (text) => {
         const remembered = await voiceMemoryService.rememberFact(text);
         if (remembered) {
@@ -1698,7 +1775,39 @@ export const startVoiceService = (): VoiceService | null => {
     },
   );
 
-  service = { brain, provider, controller };
+  service = { brain, provider, controller, systemState };
+  unsubscribeFastToolUpdates =
+    fastToolMatrix?.providerCatalog.subscribe?.(() => {
+      const nextTools = buildVoiceTools();
+      provider.setTools?.(nextTools);
+      logger.info('[cyrvis fast-tools] tool surface updated', {
+        registryTools: fastToolMatrix.registry.list().length,
+        providerTools: nextTools.length,
+        revision: fastToolMatrix.providerCatalog.revision,
+      });
+    }) ?? null;
+  if (fastToolMatrix) {
+    void fastToolMatrix.providerManager
+      .start()
+      .then(() => {
+        logger.info('[cyrvis providers] started', {
+          providers: fastToolMatrix.providerManager.list().length,
+          tools: fastToolMatrix.registry.list().length,
+        });
+      })
+      .catch((error: unknown) => {
+        logger.warn('[cyrvis providers] start failed', error);
+      });
+  }
+  let lastSystemContextSyncAt = 0;
+  systemState.onChange(() => {
+    const now = Date.now();
+    if (now - lastSystemContextSyncAt < 30_000) {
+      return;
+    }
+    lastSystemContextSyncAt = now;
+    void syncProviderMemoryContext();
+  });
 
   if (selectedVoiceEngine === 'omni') {
     // Load the local stop-word models before capture starts. If a model is
@@ -1776,6 +1885,10 @@ export const startVoiceService = (): VoiceService | null => {
     breezeTtsService.stop();
     qwenTtsRealtimeService.stopAll();
     keywordGate = null;
+    unsubscribeFastToolUpdates?.();
+    unsubscribeFastToolUpdates = null;
+    fastToolMatrix?.dispose();
+    systemState.stop();
     brain.dispose();
     service = null;
   });

@@ -15,6 +15,7 @@ Voice Agent (Qwen Realtime) ↔ VoiceBrain ↔ CyrvisController ↔ ElectronGUIA
 - **端到端实时语音**：Qwen3.8-Omni-Flash-Realtime，WebSocket，非 ASR→LLM→TTS 级联；
 - **语音大脑**：区分聊天与 GUI 任务，只有明确任务才调用 `start_gui_task`；
 - **语音打断**：播报中直接说“停 / 停一下 / 别说了 / 赛维斯停止”即可打断；外放模式用本地 KWS + 声纹门控过滤助手自身回声；
+- **前方快速工具矩阵与系统感知**：文件、应用、窗口、Office、进程、网页及动态软件/Steam/系统状态工具已注册给 Qwen，支持定时系统感知和软件启动；
 - **双输出模式**：耳机（耳机麦 + 耳机扬声器）/ 外放（耳机麦 + 主机扬声器）；`Ctrl+Alt+X` 始终可用；
 - **GUI 任务**：Controller 单任务状态机、暂停/恢复/取消、stall 监测；
 - **主动性基础**：任务开始/完成/失败/取消的语音反馈；
@@ -73,6 +74,7 @@ VLM 接口类型容易混淆：
 | [doc/README.md](./doc/README.md)                         | 文档索引与代码地图                  |
 | [doc/architecture.md](./doc/architecture.md)             | 整体分层、状态机、接口              |
 | [doc/voice-architecture.md](./doc/voice-architecture.md) | 语音实现权威说明                    |
+| [doc/fast-tool-matrix.md](./doc/fast-tool-matrix.md)     | 前方工具矩阵、路由、安全与 MCP 接口 |
 | [doc/roadmap.md](./doc/roadmap.md)                       | GUI 加速/MCP、UI、眼动、主动性/记忆 |
 | [doc/development.md](./doc/development.md)               | 环境、启动、测试、日志、故障        |
 | [doc/progress.md](./doc/progress.md)                     | 实时进度                            |

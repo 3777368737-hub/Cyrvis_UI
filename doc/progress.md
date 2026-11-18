@@ -177,3 +177,10 @@
 - [x] 相对声纹外放打断：`SpeakerEchoDetector` 返回对齐 TTS 参考，主进程维护 1s referencePreroll；能量兜底 200ms/1200，margin>0.05 即打断；离线双讲用户 margin +0.2~+0.58，TTS 回声 -0.09~-0.13；新增 `prefers the enrolled user over the TTS reference` 测试。
 - [x] 修复长回复相对声纹失效：`webaudio-player` 不再把整段队列塞进一个 AudioBuffer，改为 1s 分块独立 `startedAt`/`onSegmentStart`；`SpeakerEchoDetector` 改用采集时钟 prune，保留未来已排队参考、只淘汰播放超过 5s 的段，并跳过未开始的段；新增长回复排队单测。
 - [x] 真机外放复测“任意说话”：修复后长回复 `relativeAvailable` 持续为 true；00:29:02 / 00:29:25 / 00:30:11 三次相对声纹（margin +0.33 / +0.066 / +0.106）成功打断，回声检查（-0.45 ~ +0.025）全部拒绝。连续大声 TTS 时仍以 KWS 停词为快速路径。
+- [x] 前方快速工具矩阵：实现 32 个文件、应用、窗口、剪贴板、系统、Office、进程和网页工具；`VoiceBrain` 对确定性工具指令优先短路并阻止同一轮 GUI 调用；路径/敏感文件/覆盖/删除确认、MCP `tools/list`/`tools/call` 同源 facade、10 个工具矩阵测试和 5 个 VoiceBrain 本地执行测试均通过。
+- [x] 本地工具注册给 Qwen：32 个工具转换为 `cyrvis_*` function schema，Omni 与 Cascade 均直接看到完整工具集；模型点名本地工具后由 VoiceBrain/Registry 校验执行，高风险工具保持语音确认，`start_gui_task` 改为复杂视觉任务兜底。
+- [x] 修复确认循环与确认误判：模型高风险工具调用不再把 `CONFIRMATION_REQUIRED` 回灌给模型循环调用，而是取消当前响应并直接播报确认提示；“确认执行”等待确认控制词在自回声过滤前识别。新增原生 `office.create_presentation`，新文件不再走覆盖确认，并使用 PowerPoint COM 创建真实 `.pptx`。
+- [x] 聊天与回复兜底：最终助手文本若没有真实音频或独立 TTS 输入，会在聊天框展示后自动补播；每个有效用户最终回合增加 6 秒回复看门狗，任务执行中回“我在处理”，普通请求回“正在理解”，避免用户被晾住。重复最终转写去重窗口从 6 秒缩短到 750ms。
+- [x] 播报中命令迟钝修复：Renderer 打断阈值从 `0.05/3帧` 调整为 `0.04/2帧`，约 170ms 即可开始命令捕获；“打开浏览器搜索…”新增确定性 `web.search` 路由，模型误调用 `start_gui_task` 时也会自动改走本地搜索工具。
+- [x] 系统感知与任务交互：新增 `SystemStateStore`，定时采集系统/硬件/磁盘/电池/网络/安装应用/Steam/服务/进程/窗口；当前机器实扫到 323 个应用、4 个 Steam 游戏、334 个服务、369 个进程和 8 个窗口。新增 9 个动态系统工具、10 秒运行态刷新和 10 分钟全量刷新；任务开始、关键进度、追问、暂停、完成、失败、取消和状态查询均强制进入聊天与语音。
+- [x] 确认交互修复：显式“确认执行/取消”无条件绕过 VoiceService 与 VoiceBrain 的回声过滤，待确认有效期延长到 120 秒；pending 丢失时会重放最近一次本地工具或 GUI 任务。确认语音只说明可能涉及文件/隐私/系统状态，不再朗读真实路径、文件名或具体位置。

@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import type { VoiceToolCall } from '../types';
+import type { QwenToolDefinition } from './tools';
 
 export type VoiceToolCallWithId = VoiceToolCall & { callId: string };
 
@@ -11,7 +12,11 @@ export interface VoiceProviderCallbacks {
   onClose?: () => void;
   onSpeechStarted?: () => void;
   onSpeechStopped?: () => void;
-  onTranscript?: (text: string, final: boolean) => void;
+  /**
+   * Return true when a deterministic front-end layer consumed the transcript.
+   * Cascade must then skip its own ASR -> LLM turn.
+   */
+  onTranscript?: (text: string, final: boolean) => boolean | void;
   onAssistantText?: (text: string, final: boolean) => void;
   onSpeechText?: (text: string, final: boolean) => void;
   onToolCall?: (call: VoiceToolCallWithId) => void;
@@ -31,6 +36,7 @@ export interface VoiceProviderCallbacks {
  */
 export interface VoiceProvider {
   connect(): Promise<void>;
+  setTools?(tools: QwenToolDefinition[]): void;
   setContext?(context: string): void;
   sendAudio(pcm16: Int16Array): void;
   sendToolResult(callId: string, output: string): void;
@@ -59,9 +65,14 @@ export interface InteractiveVoiceProvider extends VoiceProvider {
 export const DEFAULT_VOICE_INSTRUCTIONS = `你是 CYRVIS，一个可以操作 Windows 电脑的语音助手。
 
 最重要的规则：
-- 如果一句话里同时包含问候（如“Hello CYRVIS”）和操作请求（如“打开记事本”），必须按操作请求处理，立刻调用 start_gui_task，不要只回问候。
+- 如果一句话里同时包含问候（如“Hello CYRVIS”）和操作请求（如“打开记事本”），必须按操作请求处理，优先选择匹配的本地工具，必要时再调用 start_gui_task，不要只回问候。
 - 语音识别可能把 CYRVIS 识别成 service、sirvis、cervis、sirius，遇到这些词都当作你的名字。
-- 用户明确要求操作电脑、打开/关闭应用、浏览器、搜索、点击、输入、保存文件时，调用 start_gui_task。
+- 优先使用名字以 cyrvis_ 开头的本地快速工具。文件、目录、应用、窗口、剪贴板、系统、进程和网页直达操作，只要本地工具参数足够，就不要调用 start_gui_task。
+- 如果当前可见工具无法完成，但可能属于 CYRVIS 的深层能力，先调用 capability.search 或 capability.describe，再通过 capability.invoke 调用。不要因为工具没有直接暴露就立即转 GUI。
+- 文件路径优先使用“桌面”“下载”“文档”“图片”“音乐”“视频”等别名；相对路径默认位于用户主目录，不是项目目录。不要从项目文件夹名推断 Windows 用户名，也不要凭空构造 C:/Users/... 路径。
+- 用户明确给出的绝对路径可以访问整个系统中的非敏感区域；敏感目录或敏感文件仍会要求用户确认。
+- 查询系统硬件、磁盘、进程、窗口、已安装软件或 Steam 游戏时，优先调用 system.snapshot、system.search_apps、software.list_installed、steam.list_games；启动已安装软件使用 software.launch。只有本地能力无法完成时才使用 GUI。
+- 只有本地工具无法完成，或任务必须查看/点击现有界面、处理登录弹窗、拖拽和复杂多步 GUI 时，才调用 start_gui_task。
 - 日常问候、闲聊、身份问题、感谢，且句子里没有操作请求时，直接用自然语言回答，绝对不要调用 GUI 工具。
 - 用户说“停/取消/暂停/继续/到哪一步了”时，调用对应的控制工具。
 - 指令不明确（例如“打开那个”“点左边那个”）时，先追问，不要调用 GUI 工具。

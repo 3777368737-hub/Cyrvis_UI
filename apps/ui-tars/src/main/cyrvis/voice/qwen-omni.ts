@@ -105,7 +105,12 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
   private readonly voice: string;
   private readonly baseInstructions: string;
   private context = '';
-  private readonly tools: QwenToolDefinition[];
+  private contextDirty = false;
+  private tools: QwenToolDefinition[];
+  private toolsDirty = false;
+  private lastAcceptedTools: QwenToolDefinition[];
+  private pendingSessionTools: QwenToolDefinition[] | null = null;
+  private rejectedToolUpdateAttempts = 0;
   private readonly callbacks: VoiceProviderCallbacks;
   private readonly vadType: QwenVadType;
   private readonly silenceDurationMs: number;
@@ -121,6 +126,7 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
     this.voice = config.voice || 'Tina';
     this.baseInstructions = config.instructions || DEFAULT_VOICE_INSTRUCTIONS;
     this.tools = config.tools || CYRVIS_VOICE_TOOLS;
+    this.lastAcceptedTools = this.tools.slice();
     this.callbacks = config.callbacks;
     this.vadType = config.vadType || 'semantic_vad_ec';
     this.silenceDurationMs = config.silenceDurationMs ?? 600;
@@ -129,7 +135,23 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
   }
 
   setContext(context: string): void {
-    this.context = context.trim();
+    const next = context.trim();
+    if (next === this.context) {
+      return;
+    }
+    this.context = next;
+    this.contextDirty = true;
+    this.pumpContextUpdate();
+  }
+
+  setTools(tools: QwenToolDefinition[]): void {
+    const next = JSON.stringify(tools);
+    if (next === JSON.stringify(this.tools)) {
+      return;
+    }
+    this.tools = tools;
+    this.toolsDirty = true;
+    this.pumpContextUpdate();
   }
 
   connect(): Promise<void> {
@@ -359,6 +381,7 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
     // then mistake for the canceled one and cancel again.
     setTimeout(() => {
       this.cancelRequested = false;
+      this.pumpResponseQueue();
     }, 400);
   }
 
@@ -367,9 +390,10 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
       return;
     }
 
-    if (this.awaitingResponse || this.playbackBusy) {
+    if (this.cancelRequested || this.awaitingResponse || this.playbackBusy) {
       this.pendingSpeak = text;
       console.log('[cyrvis provider] proactive speech queued', {
+        cancelRequested: this.cancelRequested,
         playbackBusy: this.playbackBusy,
       });
       return;
@@ -543,6 +567,12 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
         break;
       case 'session.updated':
         this.connected = true;
+        this.contextDirty = false;
+        if (this.pendingSessionTools) {
+          this.lastAcceptedTools = this.pendingSessionTools.slice();
+          this.pendingSessionTools = null;
+          this.rejectedToolUpdateAttempts = 0;
+        }
         if (this.pendingConnect) {
           clearTimeout(this.pendingConnect.timer);
           this.pendingConnect.resolve();
@@ -695,6 +725,7 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
         this.callbacks.onResponseDone?.();
         this.restoreInstructionsIfNeeded();
         this.pumpResponseQueue();
+        this.pumpContextUpdate();
         break;
       }
       case 'error': {
@@ -708,12 +739,27 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
         // expected after a barge-in; reconnecting on those made every
         // interruption sleep the brain and lose the next reply.
         const fatal =
-          /buffer exceeded|maximum duration|invalid_session|session.*(expired|closed)/i.test(
+          /buffer exceeded|maximum duration|invalid_session|session.*(expired|closed)|tool.*(invalid|schema|unsupported)|unsupported.*tool|session\.update.*(fail|invalid|unsupported)/i.test(
             message,
           );
         if (!fatal) {
           console.log('[cyrvis provider] non-fatal server error', message);
           break;
+        }
+        const rejectedToolUpdate =
+          this.pendingSessionTools !== null &&
+          /tool|schema|session\.update/i.test(message);
+        if (rejectedToolUpdate) {
+          this.rejectedToolUpdateAttempts += 1;
+          if (this.rejectedToolUpdateAttempts >= 2) {
+            console.warn(
+              '[cyrvis provider] tool update rejected twice; reverting tool surface',
+              { attempted: this.pendingSessionTools?.length },
+            );
+            this.tools = this.lastAcceptedTools.slice();
+            this.pendingSessionTools = null;
+            this.toolsDirty = false;
+          }
         }
         this.connected = false;
         this.localSpeechActive = false;
@@ -877,6 +923,9 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
   }
 
   private sendSessionUpdate(): void {
+    this.contextDirty = false;
+    this.toolsDirty = false;
+    this.pendingSessionTools = this.tools.slice();
     this.send({
       event_id: eventId('event_session'),
       type: 'session.update',
@@ -919,6 +968,20 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
       type: 'session.update',
       session: { instructions: this.instructions },
     });
+  }
+
+  private pumpContextUpdate(): void {
+    if (
+      !this.connected ||
+      (!this.contextDirty && !this.toolsDirty) ||
+      this.awaitingResponse ||
+      this.responseActive ||
+      this.playbackBusy ||
+      this.cancelRequested
+    ) {
+      return;
+    }
+    this.sendSessionUpdate();
   }
 
   private get instructions(): string {

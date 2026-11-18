@@ -31,10 +31,11 @@ import {
 
 let voiceOwner: symbol | null = null;
 
-const BARGE_CONFIRMATION_FRAMES = 3;
-// AEC double-talk leaves the user's voice around 0.05-0.06 RMS on this
-// hardware. 0.055 sat right on the boundary and caused intermittent misses.
-const TTS_BARGE_THRESHOLD = 0.05;
+const BARGE_CONFIRMATION_FRAMES = 2;
+// Full commands spoken over the speaker were repeatedly missed at 0.05/3
+// frames. Two AEC frames at 0.04 still reject steady echo but let normal
+// speech start the command capture before the first words are lost.
+const TTS_BARGE_THRESHOLD = 0.04;
 const MAX_BARGE_PREROLL_CHUNKS = 8;
 const BARGE_ENDPOINT_SILENCE_MS = MIN_ENDPOINT_SILENCE_MS;
 

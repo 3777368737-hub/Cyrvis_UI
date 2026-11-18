@@ -22,7 +22,7 @@ export const CYRVIS_VOICE_TOOLS: QwenToolDefinition[] = [
     function: {
       name: 'start_gui_task',
       description:
-        'Start a GUI task on the user computer. Only call this when the user explicitly asks to open/close an app, control a browser, search, click, type, save a file, or otherwise operate the desktop. Never call for greetings, thanks, identity questions, or chit-chat.',
+        'Fallback GUI task executor. Call this only when no cyrvis_* local fast tool can complete the request, or when the request requires visual inspection, interaction with an existing app UI, login, popups, dragging, or other multi-step GUI work. Prefer local file, app, window, clipboard, system, process, and web tools whenever their schemas fit. Never call for greetings, thanks, identity questions, or chit-chat.',
       parameters: {
         type: 'object',
         properties: {

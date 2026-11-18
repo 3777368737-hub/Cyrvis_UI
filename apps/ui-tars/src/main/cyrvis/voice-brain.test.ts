@@ -257,6 +257,29 @@ describe('VoiceBrain', () => {
     expect(provider.toolResults[0].output).toContain('task-1');
   });
 
+  it('answers task progress queries without waiting for the model', async () => {
+    const { brain, provider, adapter } = setup();
+    await brain.start();
+    provider.emitTranscript('Hello CYRVIS', true);
+    provider.emitTranscript('Open Notepad', true);
+    provider.emitToolCall({
+      name: 'start_gui_task',
+      args: { instruction: 'Open Notepad' },
+      callId: 'call-status-task',
+    });
+    await flush();
+    adapter.callbacks?.onStep({
+      index: 2,
+      summary: '打开记事本窗口',
+      actionType: 'click',
+    });
+
+    provider.emitTranscript('任务进度怎么样了', true);
+
+    expect(provider.spoken.at(-1)).toContain('第 2 步');
+    expect(provider.spoken.at(-1)).toContain('打开记事本窗口');
+  });
+
   it('allows a short continuation after an earlier task request', async () => {
     const { brain, provider, adapter } = setup();
     await brain.start();
@@ -370,7 +393,7 @@ describe('VoiceBrain', () => {
     ).toHaveLength(0);
   });
 
-  it('pauses deterministically on "暂停"', async () => {
+  it('pauses deterministically and acknowledges "暂停"', async () => {
     const { brain, provider, controller } = setup();
     await brain.start();
     provider.emitTranscript('Hello CYRVIS', true);
@@ -388,7 +411,7 @@ describe('VoiceBrain', () => {
     expect(controller.getStatus().status).toBe('paused');
     expect(
       provider.spoken.filter((text) => text.includes('已暂停')),
-    ).toHaveLength(0);
+    ).toHaveLength(1);
   });
 
   it('ignores a short self-echo transcript while the assistant is speaking', async () => {

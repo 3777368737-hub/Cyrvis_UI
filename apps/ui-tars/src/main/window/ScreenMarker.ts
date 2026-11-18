@@ -318,10 +318,6 @@ class ScreenMarker {
       this.currentOverlay.close();
       this.currentOverlay = null;
     }
-    if (this.widgetWindow) {
-      this.widgetWindow.close();
-      this.widgetWindow = null;
-    }
     if (this.screenWaterFlow) {
       this.screenWaterFlow.close();
       this.screenWaterFlow = null;

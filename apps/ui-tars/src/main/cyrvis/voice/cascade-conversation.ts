@@ -9,9 +9,9 @@ import { logger } from '@main/logger';
 import { SettingStore } from '@main/store/setting';
 
 import { cleanSpeechText, spokenCharacterCount } from './tars-speech';
-import { shouldDisableThinking, shouldUseCascadeTools } from './cascade-policy';
+import { shouldDisableThinking } from './cascade-policy';
 import type { VoiceToolCallWithId } from './provider';
-import { CYRVIS_VOICE_TOOLS } from './tools';
+import { CYRVIS_VOICE_TOOLS, type QwenToolDefinition } from './tools';
 
 type StreamingToolCall = {
   id?: string;
@@ -39,6 +39,26 @@ when the user explicitly asks to operate the computer, manage a task, inspect
 status, or remember a durable fact. Never claim that a GUI task is complete until
 the tool result or the task event confirms it.
 
+Prefer tools whose names start with cyrvis_ for file, directory, app, window,
+clipboard, system, process, and web operations. Use start_gui_task only when no
+local cyrvis_ tool can complete the request, or when visual UI interaction is
+actually required.
+
+When the visible tool list does not contain an operation that may be a deeper
+CYRVIS capability, call capability.search or capability.describe first, then
+invoke it through capability.invoke. Do not route directly to GUI merely because
+the specialized tool is hidden from the initial surface.
+
+For file paths, prefer aliases such as Desktop, Downloads, Documents, Pictures,
+Music, and Videos. Relative paths are resolved from the user's home directory,
+not the project directory. Never infer a Windows username from the project
+path or invent a C:\\Users\\... path. Explicit absolute paths may access any
+non-sensitive area of the system; sensitive paths still require confirmation.
+
+For OS hardware, disks, processes, windows, installed software, or Steam games,
+prefer system.snapshot, system.search_apps, software.list_installed,
+steam.list_games, and software.launch before using GUI automation.
+
 Every final answer is sent to text-to-speech. Return plain spoken language with
 natural punctuation. Do not return Markdown, tables, code fences, emoji, raw
 JSON, shell commands, or URLs unless the user explicitly asks to hear them.
@@ -56,6 +76,12 @@ export class CascadeConversationClient {
       reject: (error: Error) => void;
     }
   >();
+
+  constructor(private tools: QwenToolDefinition[] = CYRVIS_VOICE_TOOLS) {}
+
+  setTools(tools: QwenToolDefinition[]): void {
+    this.tools = tools;
+  }
 
   setContext(context: string): void {
     this.context = context.trim();
@@ -98,17 +124,11 @@ export class CascadeConversationClient {
     }
 
     const client = new OpenAI({ apiKey, baseURL });
-    const toolsEnabled = shouldUseCascadeTools(userText);
     const requiredLanguage = /\p{Script=Han}/u.test(userText)
       ? 'Simplified Chinese'
       : 'the same language as the user';
-    const tools = (toolsEnabled
-      ? CYRVIS_VOICE_TOOLS.filter(
-          (tool) =>
-            tool.function.name !== 'remember_fact' ||
-            /记住|记忆|remember/i.test(userText),
-        )
-      : []) as unknown as OpenAI.Chat.Completions.ChatCompletionTool[];
+    const tools = this
+      .tools as unknown as OpenAI.Chat.Completions.ChatCompletionTool[];
 
     const requestMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] =
       [
@@ -136,11 +156,13 @@ ${this.context || '(empty)'}`,
         callbacks: options.callbacks,
       });
 
-      this.history.push({ role: 'user', content: userText });
       if (result.text.trim()) {
-        this.history.push({ role: 'assistant', content: result.text.trim() });
+        requestMessages.push({
+          role: 'assistant',
+          content: result.text.trim(),
+        });
       }
-      this.history = this.history.slice(-20);
+      this.history = this.trimHistory(requestMessages.slice(1));
       return result;
     } catch (error) {
       this.cancelPendingToolResults(
@@ -148,6 +170,14 @@ ${this.context || '(empty)'}`,
       );
       throw error;
     }
+  }
+
+  private trimHistory(
+    messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+  ): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
+    const recent = messages.slice(-30);
+    const firstUser = recent.findIndex((message) => message.role === 'user');
+    return firstUser > 0 ? recent.slice(firstUser) : recent;
   }
 
   private async runCompletion({

@@ -10,7 +10,7 @@ import { runAgent } from '@main/services/runAgent';
 import { store } from '@main/store/create';
 import type { AppState } from '@main/store/types';
 import {
-  closeScreenMarker,
+  closeOverlay,
   hideScreenWaterFlow,
   showWidgetWindow,
 } from '@main/window/ScreenMarker';
@@ -323,7 +323,7 @@ export class ElectronGUIAdapter implements GUIAdapter {
   }
 
   private restoreUI(): void {
-    closeScreenMarker();
+    closeOverlay();
     hideScreenWaterFlow();
     showWidgetWindow();
   }

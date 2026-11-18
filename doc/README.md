@@ -5,21 +5,24 @@ Voice Agent（Qwen Realtime）↔ VoiceBrain ↔ Controller ↔ ElectronGUIAdapt
 
 > 所有过程文档遵循 `doc/` 目录约定；`docs/` 是上游 UI-TARS 自带文档，勿混用。
 
-## 先看这四份
+## 先看这几份
 
-| 文档 | 内容 |
-|---|---|
-| [architecture.md](./architecture.md) | 整体分层、状态机、接口、早期可行性分析 |
+| 文档                                             | 内容                                                                |
+| ------------------------------------------------ | ------------------------------------------------------------------- |
+| [architecture.md](./architecture.md)             | 整体分层、状态机、接口、早期可行性分析                              |
 | [voice-architecture.md](./voice-architecture.md) | **当前语音实现权威说明**：采集/播放分进程、打断、双模式、阈值、实测 |
-| [roadmap.md](./roadmap.md) | 后续重点：GUI 加速 + MCP + 简单任务直连、UI、眼动、主动性/记忆 |
-| [development.md](./development.md) | 环境、启动、测试、日志、密钥与常见故障 |
+| [fast-tool-matrix.md](./fast-tool-matrix.md)     | 前方快速工具矩阵：能力、Router、安全策略、MCP 与扩展方式            |
+| [provider-manifests.md](./provider-manifests.md) | 动态 Provider manifest、签名、权限、MCP 生命周期与审计              |
+| [system-awareness.md](./system-awareness.md)     | 系统状态感知、软件发现、Steam、动态能力和任务交互                   |
+| [roadmap.md](./roadmap.md)                       | 后续重点：GUI 加速 + MCP + 简单任务直连、UI、眼动、主动性/记忆      |
+| [development.md](./development.md)               | 环境、启动、测试、日志、密钥与常见故障                              |
 
 ## 过程记录
 
-| 文档 | 用途 |
-|---|---|
-| [plan.md](./plan.md) | 项目计划与文档索引（含当前阶段） |
-| [progress.md](./progress.md) | 按时间推进的完成项与待办 |
+| 文档                         | 用途                                       |
+| ---------------------------- | ------------------------------------------ |
+| [plan.md](./plan.md)         | 项目计划与文档索引（含当前阶段）           |
+| [progress.md](./progress.md) | 按时间推进的完成项与待办                   |
 | [findings.md](./findings.md) | 排障结论、模型/接口/音频事实，避免重复踩坑 |
 | [travel-search.md](./travel-search.md) | 多站旅行比价骨架、站点适配器状态与下一步 |
 
@@ -27,12 +30,12 @@ Voice Agent（Qwen Realtime）↔ VoiceBrain ↔ Controller ↔ ElectronGUIAdapt
 
 ## 历史归档
 
-| 文档 | 说明 |
-|---|---|
-| [archive/product-vision-v1.md](./archive/product-vision-v1.md) | 2026-11-14 初始产品愿景与 14 天计划；已被实现文档取代，保留背景 |
-| [archive/architecture-v1.md](./archive/architecture-v1.md) | 2026-11-14 v1 整体设计（接口/目录已部分被实现取代） |
-| [archive/voice-plan-v1.md](./archive/voice-plan-v1.md) | 早期语音方案对比（端到端 vs 级联） |
-| [archive/voice-implementation-v1.md](./archive/voice-implementation-v1.md) | 首版语音任务清单与排期 |
+| 文档                                                                       | 说明                                                            |
+| -------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| [archive/product-vision-v1.md](./archive/product-vision-v1.md)             | 2026-11-14 初始产品愿景与 14 天计划；已被实现文档取代，保留背景 |
+| [archive/architecture-v1.md](./archive/architecture-v1.md)                 | 2026-11-14 v1 整体设计（接口/目录已部分被实现取代）             |
+| [archive/voice-plan-v1.md](./archive/voice-plan-v1.md)                     | 早期语音方案对比（端到端 vs 级联）                              |
+| [archive/voice-implementation-v1.md](./archive/voice-implementation-v1.md) | 首版语音任务清单与排期                                          |
 
 ## 代码地图
 
@@ -48,8 +51,9 @@ apps/ui-tars/src/main/cyrvis/          # CYRVIS 主进程
   capture-service.ts                   # 隐藏采集窗口 + 本地 HTTP/WS
   voice-service.ts                     # 单例、IPC、打断检测、双模式
   voice/                               # Qwen Realtime Provider、工具定义
+  tools/                               # 前方快速工具矩阵、Router、MCP facade
   types.ts                             # 共享类型
-  # 后续：gui/ gaze/ proactivity/ memory/
+  # 已有：memory/ proactivity/；后续：gui/ gaze/
 apps/ui-tars/src/renderer/src/components/CyrvisVoice/   # 语音条、WAV 播放器
 apps/ui-tars/src/preload/index.ts      # voice IPC 桥
 doc/                                   # 本目录

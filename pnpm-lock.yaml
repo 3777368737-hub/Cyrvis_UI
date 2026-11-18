@@ -98,6 +98,9 @@ importers:
       '@computer-use/node-mac-permissions':
         specifier: 2.2.2
         version: 2.2.2
+      '@modelcontextprotocol/sdk':
+        specifier: 1.15.1
+        version: 1.15.1
       esbuild-register:
         specifier: '*'
         version: 3.6.0(esbuild@0.25.0)

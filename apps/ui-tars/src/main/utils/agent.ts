@@ -11,7 +11,7 @@ import {
   getSystemPromptV1_5,
 } from '../agent/prompts';
 import {
-  closeScreenMarker,
+  closeOverlay,
   hideScreenWaterFlow,
   showScreenWaterFlow,
 } from '../window/ScreenMarker';
@@ -86,7 +86,7 @@ export const afterAgentRun = (operator: Operator) => {
     case Operator.RemoteBrowser:
       break;
     case Operator.LocalComputer:
-      closeScreenMarker();
+      closeOverlay();
       hideScreenWaterFlow();
       showCompanion();
       break;

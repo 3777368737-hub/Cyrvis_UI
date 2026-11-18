@@ -8,7 +8,14 @@ import type { AllowedApp, SearchEngine } from './desktop-actions';
 import { classifyIntent, isExplicitChat } from './intent-gate';
 import { ProactivityPolicy, type ProactivityOptions } from './proactivity';
 import { classifyVoiceIntent, type VoiceIntentDecision } from './search-intent';
+import { TaskConversationCoordinator } from './task-conversation';
 import type { ControllerEvent } from './types';
+import {
+  SENSITIVE_CONFIRMATION_PROMPT,
+  extractBrowserSearchQuery,
+  toFastToolProviderName,
+  type FastToolRouter,
+} from './tools';
 import type { CyrvisVoiceState } from '@shared/cyrvis';
 import type {
   VoiceProvider,
@@ -44,6 +51,7 @@ export interface VoiceBrainOptions {
   proactivity?: ProactivityOptions;
   memoryContextProvider?: () => Promise<string>;
   rememberFact?: (text: string) => Promise<string | null>;
+  fastToolRouter?: FastToolRouter;
 }
 
 const DEFAULT_WAKE_PATTERNS: RegExp[] = [
@@ -54,6 +62,8 @@ const DEFAULT_WAKE_PATTERNS: RegExp[] = [
   /(你好|您好|嗨|喂|哈喽|哈啰|哈罗)[，,\s]*(cyrvis|赛维斯|瑟维斯|瑟尔维斯|赛勒斯|塞勒斯|赛鲁斯|塞浦路斯|塞维斯)/i,
   /(赛维斯|瑟维斯|瑟尔维斯|赛勒斯|塞勒斯|赛鲁斯|塞维斯)/i,
 ];
+
+const USER_RESPONSE_FALLBACK_MS = 6000;
 
 const normalize = (text: string) =>
   text
@@ -90,11 +100,14 @@ const GUI_INTERACTION_PATTERNS: RegExp[] = [
 export class VoiceBrain {
   private readonly provider: VoiceProvider;
   private readonly proactivity: ProactivityPolicy;
+  private readonly taskConversation: TaskConversationCoordinator;
   private awake = false;
   private userSpeaking = false;
   private ttsSpeaking = false;
   private lastUserText = '';
   private lastVoiceIntent: VoiceIntentDecision | null = null;
+  private lastActionableUserText = '';
+  private conversationConfirmationUntil = 0;
   private partialUserText = '';
   private assistantTextBuffer = '';
   private lastFinalTranscript = '';
@@ -105,9 +118,14 @@ export class VoiceBrain {
   private speakWatchdog: ReturnType<typeof setTimeout> | null = null;
   private playbackWatchdog: ReturnType<typeof setTimeout> | null = null;
   private responseHadAudio = false;
+  private responseHadText = false;
+  private responseHadSpeechOutput = false;
+  private currentResponseText = '';
+  private userResponseWatchdog: ReturnType<typeof setTimeout> | null = null;
+  private waitingForUserResponse = false;
+  private userResponseOutputSeen = false;
   private lastAssistantText = '';
   private lastAssistantAudioAt = 0;
-  private suppressControlProactivityUntil = 0;
   // After a bare "停/暂停", do not let the model speak an acknowledgment.
   // The user expects the audio to stop, not a new reply confirming it.
   private suppressReplyUntil = 0;
@@ -115,6 +133,8 @@ export class VoiceBrain {
     kind: 'cancel' | 'pause';
     at: number;
   } | null = null;
+  private fastToolGuardUntil = 0;
+  private deterministicFastToolGuardUntil = 0;
   private readonly unsubscribeController: () => void;
   private readonly completionClaimPattern =
     /(已经打开|已经输入|已经完成|已完成|完成了|打开了|输入了|opened|typed|completed|finished|done|succeeded)/i;
@@ -150,22 +170,19 @@ export class VoiceBrain {
         ...options.proactivity,
       },
     );
+    this.taskConversation = new TaskConversationCoordinator({
+      speak: (text) => {
+        if (!this.awake) {
+          this.wake();
+        }
+        this.speak(text);
+      },
+      getStatus: () => this.controller.getStatus(),
+    });
 
     this.unsubscribeController = controller.onEvent((event) => {
       this.callbacks.onTaskEvent?.(event);
-      // Pause/cancel/resume are acknowledged by the tool-result response.
-      // The proactive "已暂停/已停止" line used to race that response and cut
-      // it off mid-word. Suppress control events for a short window after the
-      // user's control utterance; task_done/task_failed still speak.
-      const isControlEvent =
-        event.type === 'task_paused' ||
-        event.type === 'task_cancelled' ||
-        event.type === 'task_resumed';
-      const controlSuppressed =
-        isControlEvent && Date.now() < this.suppressControlProactivityUntil;
-      if (this.options.enableProactivity !== false && !controlSuppressed) {
-        this.proactivity.onEvent(event);
-      }
+      this.taskConversation.onEvent(event);
       this.notifyState();
     });
   }
@@ -206,6 +223,45 @@ export class VoiceBrain {
     return Date.now() < this.suppressReplyUntil;
   }
 
+  private clearUserResponseWatchdog(): void {
+    if (this.userResponseWatchdog) {
+      clearTimeout(this.userResponseWatchdog);
+      this.userResponseWatchdog = null;
+    }
+  }
+
+  private markUserResponseOutput(): void {
+    this.userResponseOutputSeen = true;
+    this.waitingForUserResponse = false;
+    this.clearUserResponseWatchdog();
+    this.taskConversation.dispose();
+  }
+
+  private armUserResponseWatchdog(): void {
+    this.clearUserResponseWatchdog();
+    this.waitingForUserResponse = true;
+    this.userResponseOutputSeen = false;
+    this.userResponseWatchdog = setTimeout(() => {
+      this.userResponseWatchdog = null;
+      if (
+        !this.waitingForUserResponse ||
+        this.userResponseOutputSeen ||
+        this.shouldSuppressReply()
+      ) {
+        return;
+      }
+      const taskActive = ['starting', 'executing', 'paused'].includes(
+        this.controller.getStatus().status,
+      );
+      this.markUserResponseOutput();
+      this.speak(
+        taskActive
+          ? '我在处理，请稍等，完成后我会告诉你。'
+          : '我在，正在理解你的请求，请稍等。',
+      );
+    }, USER_RESPONSE_FALLBACK_MS);
+  }
+
   /**
    * Any confirmed barge is a stop request, even when ASR returns empty or
    * mishears "停". Cancel the current response and keep the model silent for
@@ -216,6 +272,8 @@ export class VoiceBrain {
     // cancelled. 3s covers the observed 2.3s follow-up while still allowing
     // a real new command to clear the window immediately.
     this.suppressReplyUntil = Date.now() + 3000;
+    this.clearUserResponseWatchdog();
+    this.waitingForUserResponse = false;
   }
 
   /**
@@ -241,6 +299,7 @@ export class VoiceBrain {
     }
     this.awake = false;
     this.clearAwakeTimer();
+    this.clearUserResponseWatchdog();
     this.callbacks.onSleep?.();
     this.notifyState();
   }
@@ -248,6 +307,7 @@ export class VoiceBrain {
   dispose(): void {
     this.clearAwakeTimer();
     this.clearPlaybackWatchdog();
+    this.clearUserResponseWatchdog();
     if (this.speakWatchdog) {
       clearTimeout(this.speakWatchdog);
       this.speakWatchdog = null;
@@ -290,16 +350,29 @@ export class VoiceBrain {
           return;
         }
         if (text.trim()) {
-          this.responseHadAudio = true;
+          this.responseHadText = true;
+          this.taskConversation.noteAssistantOutput();
+          this.currentResponseText = final
+            ? text
+            : `${this.currentResponseText}${text}`;
+          this.markUserResponseOutput();
         }
         if (final && text.trim()) {
           this.lastAssistantText = text;
+          if (/确认执行|是否执行|是否确认|需要确认|请确认|确认吗/i.test(text)) {
+            this.conversationConfirmationUntil = Date.now() + 120_000;
+          }
         }
         this.guardCompletionClaim(text);
         this.callbacks.onAssistantText?.(text, final);
       },
       onSpeechText: (text, final) => {
         if (!this.shouldSuppressReply()) {
+          if (text.trim()) {
+            this.responseHadSpeechOutput = true;
+            this.taskConversation.noteAssistantOutput();
+            this.markUserResponseOutput();
+          }
           this.callbacks.onSpeechText?.(text, final);
         }
       },
@@ -312,6 +385,8 @@ export class VoiceBrain {
       },
       onAudio: (pcm16) => {
         this.responseHadAudio = true;
+        this.taskConversation.noteAssistantOutput();
+        this.markUserResponseOutput();
         this.lastAssistantAudioAt = Date.now();
         if (
           this.awake &&
@@ -331,17 +406,33 @@ export class VoiceBrain {
         this.completionGuardTriggered = false;
         this.suppressAudioUntilResponseDone = false;
         this.responseHadAudio = false;
+        this.responseHadText = false;
+        this.responseHadSpeechOutput = false;
+        this.currentResponseText = '';
+        this.taskConversation.noteAssistantOutput();
         this.clearPlaybackWatchdog();
         this.ttsSpeaking = true;
         this.proactivity.setTtsSpeaking(true);
         this.notifyState();
       },
       onResponseDone: () => {
+        const textOnlyFallback =
+          !this.suppressAudioUntilResponseDone &&
+          !this.shouldSuppressReply() &&
+          this.responseHadText &&
+          !this.responseHadAudio &&
+          !this.responseHadSpeechOutput;
+        const fallbackText = this.currentResponseText.trim();
+        const hadAudio = this.responseHadAudio;
         this.assistantTextBuffer = '';
         this.suppressAudioUntilResponseDone = false;
         this.completionGuardTriggered = false;
+        this.responseHadAudio = false;
+        this.responseHadText = false;
+        this.responseHadSpeechOutput = false;
+        this.currentResponseText = '';
         this.resetAwakeTimer();
-        if (this.responseHadAudio) {
+        if (hadAudio) {
           // The server finished generating audio, but the renderer is still
           // playing the WAV queue. Keep ttsSpeaking=true so proactive lines
           // cannot start a second response and cut this one off.
@@ -352,6 +443,13 @@ export class VoiceBrain {
           this.clearPlaybackWatchdog();
         }
         this.notifyState();
+        if (textOnlyFallback && fallbackText) {
+          setTimeout(() => {
+            if (!this.shouldSuppressReply()) {
+              this.speak(fallbackText);
+            }
+          }, 50);
+        }
       },
       onPlaybackIdle: () => {
         this.clearPlaybackWatchdog();
@@ -361,11 +459,15 @@ export class VoiceBrain {
       },
       onError: (error) => {
         this.callbacks.onError?.(error);
+        if (this.waitingForUserResponse && !this.userResponseOutputSeen) {
+          this.markUserResponseOutput();
+          this.speak('抱歉，刚才没有成功生成回复，请再说一遍。');
+        }
       },
     };
   }
 
-  private handleTranscript(text: string, final: boolean): void {
+  private handleTranscript(text: string, final: boolean): boolean {
     this.callbacks.onTranscript?.(text, final);
 
     if (!final) {
@@ -373,7 +475,7 @@ export class VoiceBrain {
       if (!this.awake && this.isWakePhrase(this.partialUserText)) {
         this.wake();
       }
-      return;
+      return false;
     }
 
     this.partialUserText = '';
@@ -384,7 +486,7 @@ export class VoiceBrain {
       // arrives here as an empty transcript and must not produce "好的，请问…".
       this.markUserStop();
       this.provider.cancelResponse();
-      return;
+      return true;
     }
 
     const now = Date.now();
@@ -392,27 +494,45 @@ export class VoiceBrain {
     if (
       transcriptKey &&
       transcriptKey === this.lastFinalTranscript &&
-      now - this.lastFinalAt < 6000
+      now - this.lastFinalAt < 750
     ) {
       console.log('[cyrvis voice] duplicate transcript ignored');
-      return;
+      return true;
     }
     this.lastFinalTranscript = transcriptKey;
     this.lastFinalAt = now;
 
+    const voiceIntent = classifyVoiceIntent(text);
+    this.lastVoiceIntent = voiceIntent;
+    const semanticMode =
+      voiceIntent.mode === 'answer' ||
+      voiceIntent.mode === 'search' ||
+      voiceIntent.mode === 'compare' ||
+      (voiceIntent.mode === 'navigate' && voiceIntent.targetKind === 'site');
+    // The semantic layer owns answers, navigation, search and comparison. Do
+    // not let the dynamic fast-tool router consume those turns.
+    const canHandleFastTool =
+      !semanticMode && this.options.fastToolRouter?.canHandle(text) === true;
+    const explicitConfirmation =
+      this.options.fastToolRouter?.isConfirmationIntent(text) === true;
+
     // Speaker mode: the mic can pick up the assistant's own voice. If ASR
     // returns a short echo of the last reply ("我在", "我来", "我"), do not
     // start another turn; otherwise the model answers itself forever.
-    if (this.isSelfEchoTranscript(text)) {
+    // Pending confirmation is explicit control input and must bypass this
+    // filter because the assistant itself just spoke "confirm execution".
+    if (
+      !canHandleFastTool &&
+      !explicitConfirmation &&
+      this.isSelfEchoTranscript(text)
+    ) {
       console.log('[cyrvis voice] self-echo transcript ignored', text);
       this.callbacks.onSelfEcho?.();
       this.provider.cancelResponse();
-      return;
+      return true;
     }
 
     this.lastUserText = text;
-    const voiceIntent = classifyVoiceIntent(text);
-    this.lastVoiceIntent = voiceIntent;
     if (voiceIntent.mode !== 'chat') {
       console.log(
         '[cyrvis intent]',
@@ -429,35 +549,28 @@ export class VoiceBrain {
       );
     }
 
-    // Safety-critical: stop/pause must act even if the voice model forgets to
-    // call the tool (observed in real testing: it said "paused" but the GUI
-    // agent kept running).
-    const deterministicControl = this.handleDeterministicControl(text);
-    const bareStop =
-      /^(停|停下|停止|暂停|停一下|停一停|先停|先停一下|别说了|不要说了|stop|cancel)[。！!，,\s]*$/i.test(
-        text.trim(),
-      );
-    if (bareStop) {
-      // A bare stop should end playback, not trigger "好的，已暂停…" audio.
-      this.markUserStop();
-      this.provider.cancelResponse();
-    }
-    if (deterministicControl) {
-      // The tool-result response is the single acknowledgment. Suppress the
-      // proactive "已暂停/已停止" line that would otherwise race it.
-      this.suppressControlProactivityUntil = Date.now() + 5000;
+    if (!canHandleFastTool) {
+      this.deterministicFastToolGuardUntil = 0;
     }
 
     // After a stop, a real new command should not be delayed by the 3s
     // anti-acknowledgment window. Numeric/short fragments are usually TTS
     // echo or noise, so they do not clear it.
-    if (this.shouldSuppressReply() && !bareStop) {
+    if (this.shouldSuppressReply()) {
       const trimmed = text.trim();
-      if (trimmed.length >= 3 && !/^\d+$/.test(trimmed)) {
+      if (
+        canHandleFastTool ||
+        (trimmed.length >= 3 && !/^\d+$/.test(trimmed))
+      ) {
         this.suppressReplyUntil = 0;
         console.log('[cyrvis voice] new command after stop; allowing reply');
       }
     }
+
+    const bareStop =
+      /^(停|停下|停止|暂停|停一下|停一停|先停|先停一下|别说了|不要说了|stop|cancel)[。！!，,\s]*$/i.test(
+        text.trim(),
+      );
 
     if (!this.awake) {
       const decision = classifyIntent(text);
@@ -465,24 +578,126 @@ export class VoiceBrain {
         this.options.autoWakeOnTask !== false &&
         (decision.kind === 'task' ||
           decision.kind === 'control' ||
+          canHandleFastTool ||
           ((voiceIntent.mode === 'search' ||
             voiceIntent.mode === 'compare' ||
             voiceIntent.mode === 'answer') &&
             voiceIntent.confidence === 'high'));
-
       if (this.isWakePhrase(text) || autoWake) {
         this.wake();
       } else {
         // The model may already be answering background speech. Suppress it.
         console.log('[cyrvis voice] asleep; transcript ignored', text);
         this.provider.cancelResponse();
+        return true;
       }
       this.notifyState();
-      return;
+    }
+
+    if (!bareStop) {
+      this.armUserResponseWatchdog();
+    }
+
+    const isStatusQuery = this.isTaskStatusQuery(text);
+    if (!explicitConfirmation && !bareStop && !isStatusQuery) {
+      this.lastActionableUserText = text;
+      this.conversationConfirmationUntil = 0;
+    }
+
+    if (
+      explicitConfirmation &&
+      !canHandleFastTool &&
+      Date.now() < this.conversationConfirmationUntil &&
+      this.tryRecoveredConfirmation()
+    ) {
+      return true;
+    }
+
+    if (isStatusQuery && this.handleTaskStatusQuery(text)) {
+      return true;
+    }
+
+    // A deterministic fast command owns this turn before the broader GUI
+    // control/verb heuristics run.
+    if (canHandleFastTool && this.handleFastToolCommand(text)) {
+      return true;
+    }
+
+    // Safety-critical: stop/pause must act even if the voice model forgets to
+    // call the tool (observed in real testing: it said "paused" but the GUI
+    // agent kept running).
+    this.handleDeterministicControl(text);
+    if (bareStop) {
+      // A bare stop should end playback, not trigger "好的，已暂停…" audio.
+      this.markUserStop();
+      this.provider.cancelResponse();
     }
 
     this.resetAwakeTimer();
     this.notifyState();
+    return Boolean(bareStop);
+  }
+
+  private handleTaskStatusQuery(text: string): boolean {
+    if (!this.isTaskStatusQuery(text)) {
+      return false;
+    }
+    this.speak(this.taskConversation.describeStatus());
+    return true;
+  }
+
+  private isTaskStatusQuery(text: string): boolean {
+    return /(?:任务.*(?:进度|状态|到哪|第几步)|(?:进度|第几步|执行到哪|做到哪|现在在做什么)|(?:任务|你).*怎么样了)/i.test(
+      text,
+    );
+  }
+
+  private tryRecoveredConfirmation(): boolean {
+    const router = this.options.fastToolRouter;
+    const lastCommand = this.lastActionableUserText.trim();
+    if (!router || !lastCommand) {
+      return false;
+    }
+    if (router.canHandle(lastCommand)) {
+      this.fastToolGuardUntil = Date.now() + 8000;
+      this.deterministicFastToolGuardUntil = Date.now() + 8000;
+      this.provider.cancelResponse();
+      void router
+        .executeConfirmedCommand(lastCommand)
+        .then((outcome) => {
+          if (!outcome?.handled || !outcome.speech) {
+            return;
+          }
+          this.conversationConfirmationUntil = 0;
+          this.fastToolGuardUntil = Date.now() + 3000;
+          this.deterministicFastToolGuardUntil = Date.now() + 3000;
+          this.speak(outcome.speech);
+        })
+        .catch((error: unknown) => {
+          this.fastToolGuardUntil = 0;
+          this.deterministicFastToolGuardUntil = 0;
+          const normalized =
+            error instanceof Error ? error : new Error(String(error));
+          this.callbacks.onError?.(normalized);
+          this.speak(`操作失败：${normalized.message}`);
+        });
+      return true;
+    }
+    if (
+      !this.controller.isBusy() &&
+      classifyIntent(lastCommand).kind === 'task'
+    ) {
+      try {
+        this.conversationConfirmationUntil = 0;
+        this.controller.startTask(lastCommand, 'voice');
+        return true;
+      } catch (error) {
+        this.callbacks.onError?.(
+          error instanceof Error ? error : new Error(String(error)),
+        );
+      }
+    }
+    return false;
   }
 
   private async finishFastOpen(
@@ -548,9 +763,159 @@ export class VoiceBrain {
     }
 
     this.resetAwakeTimer();
+    const localFastTool = this.options.fastToolRouter?.resolveProviderToolName(
+      call.name,
+    );
+    if (
+      Date.now() >= this.deterministicFastToolGuardUntil &&
+      (localFastTool === 'web.search' ||
+        localFastTool === 'web.open_url' ||
+        localFastTool === 'app.launch')
+    ) {
+      const mode = this.lastVoiceIntent?.mode;
+      if (mode === 'answer') {
+        this.provider.sendToolResult(
+          call.callId,
+          JSON.stringify({
+            ok: false,
+            status: 'answer_from_knowledge',
+            message:
+              `ANSWER_FROM_KNOWLEDGE: "${this.lastUserText}" is stable knowledge. ` +
+              'Answer from your internal knowledge; do not use a web or app fast tool.',
+          }),
+        );
+        return;
+      }
+      if (mode === 'search') {
+        this.provider.sendToolResult(
+          call.callId,
+          JSON.stringify({
+            ok: false,
+            status: 'use_search_tool',
+            query: this.lastVoiceIntent?.query,
+            message: `USE_SEARCH_WEB: call search_web with query "${this.lastVoiceIntent?.query}" instead of cyrvis web tools.`,
+          }),
+        );
+        return;
+      }
+      if (mode === 'navigate') {
+        const target = this.lastVoiceIntent?.target;
+        const isApp = this.lastVoiceIntent?.targetKind === 'app';
+        this.provider.sendToolResult(
+          call.callId,
+          JSON.stringify({
+            ok: false,
+            status: isApp ? 'use_open_app' : 'use_open_site',
+            target,
+            message: isApp
+              ? `USE_OPEN_APP: call open_app with app "${target}" instead of a cyrvis app tool.`
+              : `USE_OPEN_SITE: call open_site with site "${target ?? 'bing'}" instead of a cyrvis web tool.`,
+          }),
+        );
+        return;
+      }
+    }
+    if (
+      Date.now() < this.deterministicFastToolGuardUntil &&
+      (localFastTool || call.name === 'start_gui_task')
+    ) {
+      this.provider.sendToolResult(
+        call.callId,
+        'ALREADY_HANDLED_BY_FAST_TOOL: the deterministic local route already handled this turn. Do not execute it again.',
+      );
+      return;
+    }
+    if (localFastTool) {
+      if (this.options.fastToolRouter?.hasPendingConfirmation()) {
+        this.provider.cancelResponse();
+        console.info('[cyrvis fast-tools] ignored tool call while confirming', {
+          providerTool: call.name,
+          tool: localFastTool,
+        });
+        return;
+      }
+      await this.handleFastProviderToolCall(call, localFastTool);
+      return;
+    }
 
     switch (call.name) {
       case 'start_gui_task': {
+        // Semantic intents own the turn before the dynamic web.search shortcut.
+        const earlyInstruction = call.args.instruction?.trim() || '';
+        const earlyIntent = this.lastVoiceIntent;
+        const earlyNeedsGui = GUI_INTERACTION_PATTERNS.some((pattern) =>
+          pattern.test(earlyInstruction),
+        );
+        if (earlyIntent?.mode === 'navigate' && !earlyNeedsGui) {
+          const target = earlyIntent.target;
+          const isApp = earlyIntent.targetKind === 'app';
+          this.provider.sendToolResult(
+            call.callId,
+            JSON.stringify({
+              ok: false,
+              status: isApp ? 'use_open_app' : 'use_open_site',
+              target,
+              message: isApp
+                ? `USE_OPEN_APP: "${this.lastUserText}" is app navigation, not a GUI task. Call open_app with app "${target}".`
+                : `USE_OPEN_SITE: "${this.lastUserText}" is site navigation, not a GUI task. Call open_site with site "${target ?? 'bing'}".`,
+            }),
+          );
+          return;
+        }
+        if (
+          earlyIntent?.mode === 'search' &&
+          earlyIntent.confidence === 'high' &&
+          !earlyNeedsGui
+        ) {
+          this.provider.sendToolResult(
+            call.callId,
+            JSON.stringify({
+              ok: false,
+              status: 'use_search_tool',
+              query: earlyIntent.query,
+              message:
+                `USE_SEARCH_WEB: "${this.lastUserText}" is a web information need, not a GUI automation task. ` +
+                `Call search_web with query "${earlyIntent.query}" instead. ` +
+                'If the user also wants to read/compare/click the results, pass a task_instruction to search_web.',
+            }),
+          );
+          return;
+        }
+        if (earlyIntent?.mode === 'answer') {
+          this.provider.sendToolResult(
+            call.callId,
+            JSON.stringify({
+              ok: false,
+              status: 'answer_from_knowledge',
+              message:
+                `ANSWER_FROM_KNOWLEDGE: "${this.lastUserText}" is stable knowledge. ` +
+                'Answer from your internal knowledge; do not start a GUI task or search.',
+            }),
+          );
+          return;
+        }
+
+        const searchQuery = extractBrowserSearchQuery(
+          call.args.instruction || '',
+        );
+        if (searchQuery && this.options.fastToolRouter) {
+          await this.handleFastProviderToolCall(
+            {
+              ...call,
+              name: toFastToolProviderName('web.search'),
+              args: { query: searchQuery },
+            },
+            'web.search',
+          );
+          return;
+        }
+        if (Date.now() < this.fastToolGuardUntil) {
+          this.provider.sendToolResult(
+            call.callId,
+            'ALREADY_HANDLED_BY_FAST_TOOL: the local fast-tool matrix handled the user command. Do not start a GUI task for the same request.',
+          );
+          return;
+        }
         const instruction = call.args.instruction?.trim();
         if (!instruction) {
           this.provider.sendToolResult(
@@ -868,7 +1233,6 @@ export class VoiceBrain {
         break;
       }
       case 'cancel_gui_task': {
-        this.suppressControlProactivityUntil = Date.now() + 5000;
         if (
           this.lastDeterministicControl?.kind === 'cancel' &&
           Date.now() - this.lastDeterministicControl.at < 4000
@@ -891,7 +1255,6 @@ export class VoiceBrain {
         break;
       }
       case 'pause_gui_task': {
-        this.suppressControlProactivityUntil = Date.now() + 5000;
         if (
           this.lastDeterministicControl?.kind === 'pause' &&
           Date.now() - this.lastDeterministicControl.at < 4000
@@ -968,6 +1331,151 @@ export class VoiceBrain {
     }
   }
 
+  private handleFastToolCommand(text: string): boolean {
+    const router = this.options.fastToolRouter;
+    if (!router) {
+      return false;
+    }
+    const startedAt = Date.now();
+    this.fastToolGuardUntil = Date.now() + 8000;
+    this.deterministicFastToolGuardUntil = Date.now() + 8000;
+    this.provider.cancelResponse();
+    this.resetAwakeTimer();
+    void router
+      .match(text)
+      .then(async (route) => {
+        if (!route) {
+          return null;
+        }
+        console.info('[cyrvis fast-tools] route', {
+          tool: route.tool,
+          domain: route.domain,
+          risk: route.risk,
+          requiresConfirmation: route.requiresConfirmation,
+        });
+        return router.execute(route);
+      })
+      .then((outcome) => {
+        if (!outcome?.handled || !outcome.speech) {
+          return;
+        }
+        if (
+          outcome.route?.kind === 'confirm' ||
+          outcome.route?.kind === 'cancel'
+        ) {
+          this.conversationConfirmationUntil = 0;
+        }
+        console.info('[cyrvis fast-tools] result', {
+          tool: outcome.route?.tool,
+          ok: outcome.ok,
+          confirmationRequired: outcome.route?.requiresConfirmation === true,
+          durationMs: Date.now() - startedAt,
+        });
+        this.fastToolGuardUntil = Date.now() + 3000;
+        this.deterministicFastToolGuardUntil = Date.now() + 3000;
+        this.speak(outcome.speech);
+      })
+      .catch((error: unknown) => {
+        this.fastToolGuardUntil = 0;
+        this.deterministicFastToolGuardUntil = 0;
+        const normalized =
+          error instanceof Error ? error : new Error(String(error));
+        this.callbacks.onError?.(normalized);
+        this.speak(`操作失败：${normalized.message}`);
+      });
+    return true;
+  }
+
+  private async handleFastProviderToolCall(
+    call: VoiceToolCallWithId,
+    localName: string,
+  ): Promise<void> {
+    const router = this.options.fastToolRouter;
+    if (!router) {
+      this.provider.sendToolResult(
+        call.callId,
+        'ERROR: local fast-tool router is unavailable.',
+      );
+      return;
+    }
+
+    const discoveryOnly =
+      localName === 'capability.search' || localName === 'capability.describe';
+    this.fastToolGuardUntil = discoveryOnly ? 0 : Date.now() + 8000;
+    try {
+      const execution = await router.executeProviderToolCall(
+        call.name,
+        call.args as Record<string, unknown>,
+      );
+      if (!execution) {
+        this.provider.sendToolResult(
+          call.callId,
+          `ERROR: unknown local fast tool "${call.name}".`,
+        );
+        return;
+      }
+      const outcome = execution.outcome;
+      const confirmationRequired =
+        outcome.route?.requiresConfirmation === true ||
+        outcome.result?.error?.code === 'CONFIRMATION_REQUIRED';
+      if (confirmationRequired) {
+        // Returning another tool result starts a new model response, which
+        // commonly calls the same tool again and repeats "confirm". Cancel the
+        // model turn and ask directly from the deterministic confirmation state.
+        this.provider.cancelResponse();
+        this.speak(outcome.speech || SENSITIVE_CONFIRMATION_PROMPT);
+        console.info('[cyrvis fast-tools] confirmation required', {
+          providerTool: call.name,
+          tool: localName,
+        });
+        return;
+      }
+      const payload = {
+        ok: outcome.ok === true,
+        status: outcome.ok === true ? 'completed' : 'failed',
+        tool: localName,
+        message: outcome.speech,
+        data: outcome.result?.data,
+        error: outcome.result?.error,
+      };
+      const serialized = JSON.stringify(payload);
+      this.provider.sendToolResult(
+        call.callId,
+        serialized.length > 12_000
+          ? `${serialized.slice(0, 12_000)}...TRUNCATED`
+          : serialized,
+      );
+      const handledLocally =
+        !discoveryOnly &&
+        (outcome.ok === true ||
+          outcome.result?.error?.code === 'CONFIRMATION_REQUIRED');
+      this.fastToolGuardUntil = handledLocally ? Date.now() + 3000 : 0;
+      console.info('[cyrvis fast-tools] model tool result', {
+        providerTool: call.name,
+        tool: localName,
+        ok: outcome.ok,
+        confirmationRequired,
+      });
+    } catch (error) {
+      this.fastToolGuardUntil = 0;
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn('[cyrvis fast-tools] model tool failed', {
+        providerTool: call.name,
+        tool: localName,
+        error: message,
+      });
+      this.provider.sendToolResult(
+        call.callId,
+        JSON.stringify({
+          ok: false,
+          status: 'failed',
+          tool: localName,
+          message: `本地工具执行失败：${message}`,
+        }),
+      );
+    }
+  }
+
   private handleDeterministicControl(text: string): 'cancel' | 'pause' | null {
     const status = this.controller.getStatus().status;
     const active = ['starting', 'executing', 'paused', 'cancelling'].includes(
@@ -984,10 +1492,6 @@ export class VoiceBrain {
 
     if (explicitCancel) {
       this.lastDeterministicControl = { kind: 'cancel', at: Date.now() };
-      // Set this before calling the controller: cancelTask can emit
-      // task_cancelled synchronously, and that event must not trigger the
-      // proactive "已停止" line.
-      this.suppressControlProactivityUntil = Date.now() + 5000;
       void this.controller.cancelTask().catch((error: unknown) => {
         this.callbacks.onError?.(
           error instanceof Error ? error : new Error(String(error)),
@@ -997,7 +1501,6 @@ export class VoiceBrain {
     }
     if (pause) {
       this.lastDeterministicControl = { kind: 'pause', at: Date.now() };
-      this.suppressControlProactivityUntil = Date.now() + 5000;
       void this.controller.pauseTask().catch((error: unknown) => {
         this.callbacks.onError?.(
           error instanceof Error ? error : new Error(String(error)),
@@ -1082,6 +1585,8 @@ export class VoiceBrain {
   }
 
   private speak(text: string): void {
+    this.taskConversation.noteAssistantOutput();
+    this.markUserResponseOutput();
     this.ttsSpeaking = true;
     this.proactivity.setTtsSpeaking(true);
     this.provider.speak(text);

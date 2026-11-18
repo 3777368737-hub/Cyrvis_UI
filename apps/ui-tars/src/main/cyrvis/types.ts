@@ -78,6 +78,10 @@ export type VoiceToolCall =
       args: { site: string; query?: string; task_instruction?: string };
     }
   | {
+      name: `cyrvis_${string}`;
+      args: Record<string, unknown>;
+    }
+  | {
       name: 'confirm_action';
       args: { task_id: string; approved: boolean };
     };

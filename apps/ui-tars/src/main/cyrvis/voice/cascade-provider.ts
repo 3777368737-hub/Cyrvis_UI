@@ -24,6 +24,7 @@ import type {
   VoiceProviderCallbacks,
 } from './provider';
 import { cleanSpeechText } from './tars-speech';
+import type { QwenToolDefinition } from './tools';
 
 const MAX_MUTE_BUFFER_MS = 1_000;
 
@@ -40,7 +41,7 @@ const abortError = () =>
 export class CascadeVoiceProvider implements InteractiveVoiceProvider {
   private readonly callbacks: VoiceProviderCallbacks;
   private readonly asr: DashScopeStreamingAsrService;
-  private readonly conversation = new CascadeConversationClient();
+  private readonly conversation: CascadeConversationClient;
   private sttProvider: ResolvedVoiceSttProvider = 'qwen-dashscope-streaming';
 
   private connected = false;
@@ -67,11 +68,16 @@ export class CascadeVoiceProvider implements InteractiveVoiceProvider {
   private responseStarted = false;
   private pendingSpeak: string | null = null;
 
-  constructor(callbacks: VoiceProviderCallbacks) {
+  constructor(callbacks: VoiceProviderCallbacks, tools?: QwenToolDefinition[]) {
     this.callbacks = callbacks;
+    this.conversation = new CascadeConversationClient(tools);
     this.asr = new DashScopeStreamingAsrService({
       emit: (event) => this.handleAsrEvent(event),
     });
+  }
+
+  setTools(tools: QwenToolDefinition[]): void {
+    this.conversation.setTools(tools);
   }
 
   setContext(context: string): void {
@@ -334,7 +340,13 @@ export class CascadeVoiceProvider implements InteractiveVoiceProvider {
       if (generation !== this.generation || turnId !== this.activeTurnId) {
         return;
       }
-      this.callbacks.onTranscript?.(text, true);
+      const consumed = this.callbacks.onTranscript?.(text, true);
+      if (consumed === true) {
+        logger.info('[CascadeVoice] final transcript consumed by front-end', {
+          chars: Array.from(text).length,
+        });
+        return;
+      }
       if (text) {
         void this.runConversationTurn(text, generation);
       }
@@ -349,8 +361,17 @@ export class CascadeVoiceProvider implements InteractiveVoiceProvider {
           chars: partial.length,
           error: error instanceof Error ? error.message : String(error),
         });
-        this.callbacks.onTranscript?.(partial, true);
-        void this.runConversationTurn(partial, generation);
+        const consumed = this.callbacks.onTranscript?.(partial, true);
+        if (consumed === true) {
+          logger.info(
+            '[CascadeVoice] partial transcript consumed by front-end',
+            {
+              chars: Array.from(partial).length,
+            },
+          );
+        } else {
+          void this.runConversationTurn(partial, generation);
+        }
       } else if (!/aborted|cancel/i.test(String(error))) {
         this.callbacks.onError?.(
           error instanceof Error ? error : new Error(String(error)),
@@ -372,6 +393,11 @@ export class CascadeVoiceProvider implements InteractiveVoiceProvider {
     text: string,
     generation: number,
   ): Promise<void> {
+    // A deterministic front-end command may cancel the current response while
+    // handling the transcript. Never start a stale LLM turn after that.
+    if (generation !== this.generation || !text.trim()) {
+      return;
+    }
     const abort = new AbortController();
     this.conversationAbort?.abort();
     this.conversationAbort = abort;

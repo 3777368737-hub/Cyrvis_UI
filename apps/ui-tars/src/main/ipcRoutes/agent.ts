@@ -8,7 +8,11 @@ import { store } from '@main/store/create';
 import { runAgent } from '@main/services/runAgent';
 import { showCompanion } from '@main/window/index';
 
-import { closeScreenMarker } from '@main/window/ScreenMarker';
+import {
+  closeOverlay,
+  hideScreenWaterFlow,
+  showWidgetWindow,
+} from '@main/window/ScreenMarker';
 import { GUIAgent } from '@ui-tars/sdk';
 import { Operator } from '@ui-tars/sdk/core';
 
@@ -85,7 +89,9 @@ export const agentRoute = t.router({
       guiAgent.stop();
     }
 
-    closeScreenMarker();
+    closeOverlay();
+    hideScreenWaterFlow();
+    showWidgetWindow();
   }),
   setInstructions: t.procedure
     .input<{ instructions: string }>()

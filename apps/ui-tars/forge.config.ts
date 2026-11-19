@@ -154,7 +154,10 @@ const config: ForgeConfig = {
   packagerConfig: {
     name: 'UI TARS',
     icon: 'resources/icon',
-    extraResource: ['./resources/app-update.yml'],
+    extraResource: [
+      './resources/app-update.yml',
+      '../../scripts/cyrvis/foreground-events.ps1',
+    ],
     asar: {
       unpack,
     },

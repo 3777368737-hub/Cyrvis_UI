@@ -25,6 +25,11 @@ Windows / macOS / Linux
        ├─ capability derivation
        ├─ application search / resolution
        └─ dynamic LLM context
+  -> DynamicContextStore
+       ├─ UserContextStore
+       ├─ ResourceCatalog
+       ├─ BindingResolver
+       └─ RelevanceEngine
   -> ToolRegistry
        ├─ system.snapshot
        ├─ system.search_apps
@@ -40,34 +45,41 @@ Windows / macOS / Linux
 
 ### 3.1 当前采集
 
-| 类别 | 内容 |
-|---|---|
-| 操作系统 | 平台、版本、架构、主机名、运行时间 |
-| 硬件 | CPU 型号/核心数、总内存/可用内存、磁盘容量 |
-| 电源 | 电池百分比、充电状态、预计续航 |
-| 网络 | 网卡名称、地址、family、是否内部接口 |
+| 类别       | 内容                                                                        |
+| ---------- | --------------------------------------------------------------------------- |
+| 操作系统   | 平台、版本、架构、主机名、运行时间                                          |
+| 硬件       | CPU 型号/核心数、总内存/可用内存、磁盘容量                                  |
+| 电源       | 电池百分比、充电状态、预计续航                                              |
+| 网络       | 网卡名称、地址、family、是否内部接口                                        |
 | 已安装应用 | Windows Start Apps、注册表卸载项、macOS Applications、Linux desktop entries |
-| Steam | 安装目录、库目录、AppID、游戏名、安装目录、占用空间 |
-| 运行状态 | 进程、PID、标题、内存，可见窗口 |
-| 动态能力 | software.launch、steam.launch、storage.status、power.status 等 |
+| 最近文件   | Windows Recent 快捷方式的真实目标路径，过滤敏感文件名                       |
+| Steam      | 安装目录、库目录、AppID、游戏名、安装目录、占用空间                         |
+| 运行状态   | 进程、PID、标题、内存，可见窗口                                             |
+| 动态能力   | software.launch、steam.launch、storage.status、power.status 等              |
 
 不会采集密码、Token、Cookie、浏览器历史、键盘输入、聊天内容、私钥或
 凭据文件。
 
 ### 3.2 刷新策略
 
-| 数据 | 默认策略 |
-|---|---|
-| 进程/窗口 | 每 10 秒增量刷新 |
-| 已安装应用、Steam 库、磁盘、电池 | 启动全扫，每 10 分钟刷新 |
-| 工具读取 | 优先使用缓存；缓存过期时按需刷新 |
+| 数据                             | 默认策略                         |
+| -------------------------------- | -------------------------------- |
+| 前台窗口                         | Windows 原生前台事件，轮询兜底   |
+| 进程/窗口                        | 每 10 秒增量刷新                 |
+| 已安装应用、Steam 库、磁盘、电池 | 启动全扫，每 10 分钟刷新         |
+| 工具读取                         | 优先使用缓存；缓存过期时按需刷新 |
 
 配置：
 
 ```env
 CYRVIS_SYSTEM_RUNTIME_REFRESH_MS=10000
 CYRVIS_SYSTEM_FULL_REFRESH_MS=600000
+CYRVIS_FOREGROUND_REFRESH_MS=2000
+CYRVIS_NATIVE_FOREGROUND_EVENTS=1
 ```
+
+动态用户上下文、资源绑定和工具面排序见
+[dynamic-tool-context.md](./dynamic-tool-context.md)。
 
 ## 4. 软件发现与启动
 
@@ -125,17 +137,17 @@ Start Apps 启动目标
 
 新增系统工具：
 
-| 工具 | 能力 |
-|---|---|
-| `system.snapshot` | 完整非敏感系统快照 |
-| `system.capabilities` | 当前动态能力列表 |
-| `system.search_apps` | 模糊搜索已安装应用和 Steam 游戏 |
-| `system.list_services` | 查询非敏感系统服务状态 |
-| `software.list_installed` | 列出或过滤应用 |
-| `software.launch` | 启动发现的应用 |
-| `system.refresh` | 强制刷新系统状态 |
-| `steam.list_games` | 查询 Steam 游戏 |
-| `steam.launch_game` | 启动 Steam 游戏 |
+| 工具                      | 能力                            |
+| ------------------------- | ------------------------------- |
+| `system.snapshot`         | 完整非敏感系统快照              |
+| `system.capabilities`     | 当前动态能力列表                |
+| `system.search_apps`      | 模糊搜索已安装应用和 Steam 游戏 |
+| `system.list_services`    | 查询非敏感系统服务状态          |
+| `software.list_installed` | 列出或过滤应用                  |
+| `software.launch`         | 启动发现的应用                  |
+| `system.refresh`          | 强制刷新系统状态                |
+| `steam.list_games`        | 查询 Steam 游戏                 |
+| `steam.launch_game`       | 启动 Steam 游戏                 |
 
 系统工具始终通过 Registry 校验，模型不能直接执行任意扫描脚本。
 
@@ -157,17 +169,17 @@ Start Apps 启动目标
 
 任务由 `TaskConversationCoordinator` 统一处理，不再依赖模型是否顺手回复。
 
-| 事件 | 交互 |
-|---|---|
-| 任务开始 | 700ms 内没有模型回复时，自动确认“任务已开始” |
-| 关键步骤 | 至少间隔 10 秒播报一次进度 |
-| 任务停滞 | 20 秒冷却后说明仍在处理 |
-| 需要用户 | 立即播报问题 |
-| 暂停/继续 | 播报状态变化 |
-| 完成 | 必须播报完成摘要 |
-| 失败 | 必须播报失败原因 |
-| 取消 | 必须播报已取消 |
-| 用户查进度 | 确定性返回当前步骤和最后摘要 |
+| 事件       | 交互                                         |
+| ---------- | -------------------------------------------- |
+| 任务开始   | 700ms 内没有模型回复时，自动确认“任务已开始” |
+| 关键步骤   | 至少间隔 10 秒播报一次进度                   |
+| 任务停滞   | 20 秒冷却后说明仍在处理                      |
+| 需要用户   | 立即播报问题                                 |
+| 暂停/继续  | 播报状态变化                                 |
+| 完成       | 必须播报完成摘要                             |
+| 失败       | 必须播报失败原因                             |
+| 取消       | 必须播报已取消                               |
+| 用户查进度 | 确定性返回当前步骤和最后摘要                 |
 
 模型已经产生回复时，开始确认定时器会被取消，避免双重播报。
 

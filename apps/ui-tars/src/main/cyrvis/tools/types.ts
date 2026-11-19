@@ -10,6 +10,7 @@ export type ToolDomain =
   | 'system'
   | 'office'
   | 'network'
+  | 'context'
   | 'capability';
 
 export type ToolRisk = 'low' | 'medium' | 'high';
@@ -25,10 +26,14 @@ export type ToolPermission =
   | 'filesystem.write'
   | 'desktop.app'
   | 'desktop.window'
+  | 'desktop.screen'
+  | 'desktop.input'
   | 'clipboard.read'
   | 'clipboard.write'
   | 'system.read'
   | 'system.process'
+  | 'system.media'
+  | 'system.power'
   | 'network'
   | 'office'
   | 'process.spawn'
@@ -84,6 +89,8 @@ export interface DesktopHost {
   closeApplication(name: string): Promise<string>;
   listProcesses(): Promise<ProcessInfo[]>;
   listWindows(): Promise<WindowInfo[]>;
+  getForegroundWindow?(): Promise<WindowInfo | null>;
+  showNotification?(title: string, body: string): Promise<void>;
   controlWindow(
     query: string,
     action: 'focus' | 'minimize' | 'maximize' | 'close',
@@ -110,6 +117,8 @@ export interface WindowInfo {
   pid: number;
   process: string;
   title: string;
+  focused?: boolean;
+  handle?: number;
 }
 
 export interface SystemInfo {
@@ -130,12 +139,21 @@ export interface DiskInfo {
   freeBytes: number;
 }
 
+export interface ToolResourceHint {
+  kind: string;
+  name: string;
+  aliases: string[];
+  metadata: Record<string, string | number | boolean | null>;
+  updatedAt: number;
+}
+
 export interface ToolContext {
   cwd: string;
   homeDirectory: string;
   platform: NodeJS.Platform;
   desktop: DesktopHost;
   resolvePath(input: string): string;
+  getRecentResources?(): ToolResourceHint[];
 }
 
 export interface ToolDefinition<
@@ -177,6 +195,14 @@ export interface FastToolRoute {
   confirmationReason: string | null;
   risk: ToolRisk;
   domain: ToolDomain;
+}
+
+export interface PendingConfirmationSnapshot {
+  tool: string;
+  risk: ToolRisk;
+  domain: ToolDomain;
+  confirmationReason: string | null;
+  expiresAt: number;
 }
 
 export interface FastToolOutcome {

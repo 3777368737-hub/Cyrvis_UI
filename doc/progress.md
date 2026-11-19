@@ -1,13 +1,43 @@
 # CYRVIS 进度
 
 ## 2026-11-19：语义工具与动态工具统一
+
 - [x] 语音模型只暴露 `search_web`、`open_url`、`open_app`、`open_site` 这些语义入口；重复的动态搜索/网址/启动入口从语音工具列表隐藏，Registry/MCP 能力保留。
 - [x] 语义入口经 capability broker 执行底层工具，统一可用性、权限、路径确认和使用审计；保留站内搜索、搜索引擎/站点过滤、静默打开、应用目标和 GUI 后续任务。
 - [x] `capability.invoke` 按实际目标工具检查导航/知识意图，补齐旧入口的确定性防重复，并去重同一回合并发的导航调用；新请求可立即继续操作。
 - [x] 复用原有浏览器前台化、macOS Safari 搜索和已知应用定位；应用启动失败会返回错误。
 - [x] 验证：node/web typecheck 通过，CYRVIS 23 个测试文件、227 项测试通过（新增 19 项回归测试）。尚未做真人语音及真实桌面应用验收。
 
+### 动态工具矩阵与动态感知
+
+- [x] 通用动态感知：新增 `PerceptionProvider`、`PerceptionScheduler` 和 `IncrementalResourceStore`，支持运行时注册/注销、独立周期、并发保护、超时、指数退避和 TTL。
+- [x] 浏览器动态资源：新增 Chrome/Edge DevTools `BrowserPerceptionProvider`，标签页按稳定 target ID 注册为动态资源，并绑定 `browser.activate_tab`、`browser.close_tab`。
+- [x] 动态验证闭环：浏览器工具执行后立即刷新感知；关闭标签页后重新读取 target 列表，目标消失才判定验证成功。
+- [x] 动态工具面：活动窗口关联 Provider 后，相关工具按资源相关性进入 ToolSurface；资源上下文会列出标签页标题、URL 和当前活动标记。
+- [x] 验证：与上游最新导航/语音改动合并后，CYRVIS 测试 255 passed、5 skipped；Node/Web 类型检查、目标 ESLint 和生产构建通过；动态基准 P50 18.7ms、P95 31.0ms。
+- [x] 动态工具上下文核心：新增 `UserContextStore`、`ForegroundMonitor`、`ResourceCatalog`、`BindingResolver`、`RelevanceEngine` 和 `DynamicContextStore`。
+- [x] 用户状态：跟踪前台应用/窗口、焦点控件、选中文本、最近请求、最近工具动作、最近文件和网址、当前任务；临时状态带 TTL，凭据特征内容不保留。
+- [x] 资源与绑定：应用、Steam、窗口、最近文件/网址进入统一资源目录；Provider 能力绑定到具体资源，活动资源相关工具获得更高排序。
+- [x] 动态工具面：`ToolSurface` 根据上下文提升活动资源和未知应用 UI Automation 能力的激活及排序，仍限制最多 24 个模型可见工具。
+- [x] 未知应用兜底：无 Provider 的活动应用会提升 `ui.inspect`、`ui.action`、截图和 OCR；可在有 `ui.*` 工具的平台上进入通用 UI 自动化路径。
+- [x] Provider 延迟激活：manifest 新增 `activation.mode=foreground`，外部 Provider 在匹配应用进入前台前保持等待，前台变化后重新协调。
+- [x] 上下文工具：新增 `context.snapshot` 和 `context.resources`，支持查询当前用户状态、动态资源和绑定。
+- [x] Windows 原生前台事件：新增 `foreground-events.ps1`，通过 `EVENT_SYSTEM_FOREGROUND` 低延迟更新活动窗口；轮询保留为兜底。
+- [x] 系统最近文件：全量扫描读取 Windows Recent 目标路径，过滤敏感文件名后进入动态资源目录。
+- [x] Provider 试点：新增内置 VS Code Provider（打开文件/文件夹）和浏览器 DevTools Provider（标签页列表、打开、切换、关闭）。
+- [x] 绑定执行闭环：新增 `executeBinding`，使用资源默认参数经过 ToolRegistry 执行，并支持路径、进程、窗口和工具自报验证。
+- [x] 用户上下文界面：语音条显示活动应用，支持清除临时上下文；新增 IPC 和 preload 接口。
+- [x] 上下文预算：新增 `CYRVIS_CONTEXT_MAX_CHARS`，限制模型上下文总长度。
+- [x] 通知与计时器：新增 `system.notification`、`timer.create/cancel/list`。
+- [x] 文档与压缩工具：新增 DOCX/XLSX/PPTX 文本提取、可选 `pdftotext` PDF 提取、ZIP 创建和解压。
+- [x] 性能基准：381 个资源、2206 个绑定、81 个注册工具下，刷新 P50 19.1ms、P95 32.7ms。
+- [x] 验证：完整 CYRVIS 测试 227 passed、5 skipped；Node/Web 类型检查与生产构建通过。
+- [x] QQ 浏览器启动修复：Program Files 只读路径检查不再触发敏感确认，新增 QQ 浏览器别名和安装路径解析，`打开QQ浏览器` 直接走 `app.launch`。
+- [x] 删除确认修复：支持“是的、对呀、好的、删了吧、直接执行、我已确认”等 pending 回复，自然确认不再交给模型重新搜索；删除后校验目标路径已消失。
+- [x] 混合确认意图：确定性规则无法判断时，将回复、pending action memory 和最近上下文交给轻量 LLM，仅接受高置信度结构化 `confirm/cancel`，LLM 不直接执行工具。
+
 ## 2026-11-18
+
 - [x] 新增 `search-intent.ts`：识别显式/隐式搜索需求。示例：“我要去巴黎的机票” -> `去巴黎的机票`，“我想买一个降噪耳机” -> `买一个降噪耳机`，“今天天气怎么样” -> `今天天气`；本地任务（查电脑配置、写代码）不误判。
 - [x] 语音唤醒扩展：高置信搜索意图可在不说 “Hello CYRVIS” 时自动唤醒；`VoiceBrain` 日志新增 `[cyrvis intent] {mode, query, target, silent, siteSearch}`。
 - [x] GUI 误路由兜底：当模型把纯搜索请求交给 `start_gui_task` 时返回 `USE_SEARCH_WEB`，要求改用 `search_web(query=...)`；真正需要点击/输入/预订的指令仍允许 GUI。
@@ -23,6 +53,7 @@
 - [x] 验证：`npm run typecheck`（node+web）通过；CYRVIS 测试 146/146 通过（新增 search-intent、site-registry、voice-brain 导航用例）。
 
 ## 2026-11-16
+
 - [x] GUI Agent Action Batching：`GUIAgent` 已支持同轮执行多个 `parsedPredictions`；给 `DOUBAO_1_5_15B` 提示词加入受限多动作规则（2–4 个、空行分隔、仅限可预测序列）。
 - [x] 增加 `[GUIAgent] action batch {count, types}` 日志与批内 200ms 动作间隔。
 - [x] 无执行探针验证：安全序列“输入后回车”返回 2 条动作；打开命令面板的序列仍只返回 1 条。
@@ -59,6 +90,7 @@
 - [ ] 重启 App 后让用户复测：暂停/取消语音是否只播一遍且完整；选择外放/耳机设备后是否路由正确；外放模式下“语音打断”是否仍按半双工策略工作。
 
 ## 2026-11-15
+
 - [x] 仓库整理：CYRVIS 文档迁入 `doc/`，新增 `README.cyrvis.md`、`doc/README.md`、`doc/roadmap.md`、`doc/development.md`；原始产品愿景归档到 `doc/archive/product-vision-v1.md`。
 - [x] 首次提交 `641da6d8` 已推送到 GitHub `main`（SSH）；GitHub 仓库改名 `CYRVIS` 待网页操作/重定向。
 - [x] 清理：`mp3-player.ts` → `wav-player.ts`；删除未使用的 lamejs/lame-encoder/raw 类型与依赖；移除本地绝对路径；新增 `.env.example`、`scripts/cyrvis/start-dev.cmd`；`.gitignore` 补齐 secrets/logs/artifacts。
@@ -104,6 +136,7 @@
 - [ ] 任务暂停/取消的延迟：ASR 转写后 GUI 在飞请求最多需 2–3s 才 abort，后续可评估“打断即先暂停”。
 
 ## 2026-11-14
+
 - [x] 阅读 `CYRVIS_Technical_Architecture.md`，确认项目目标与范围。
 - [x] 克隆 fork 到 `CYRVIS/UI-TARS-desktop`（commit `3ac2cb8`）。
 - [x] 安装 pnpm 9.10.0（Node v24.15.0，npm registry 已指向 npmmirror）。
@@ -127,21 +160,24 @@
 - [ ] 记录成功配置与失败原因，形成 Go/No-Go 结论。
 
 ## 已知非阻塞问题
+
 - 启动日志有 `TypeError: installExtension is not a function`（`electron-devtools-installer` 兼容问题），仅影响 DevTools 扩展安装，应用正常。
 - `origin` 当前指向 `gh-proxy.com` 代理地址，`git push` 前需要改回真实 GitHub 或配置可用代理。
 
 ## 环境快照
-| 项 | 值 |
-|---|---|
-| OS | Windows 11 Pro 10.0.26200 |
-| GPU | NVIDIA RTX 5060 |
-| 显示器 | 单屏 2560×1440 |
-| Node | v24.15.0 |
-| pnpm | 9.10.0 |
-| 浏览器 | Chrome、Edge 已安装 |
+
+| 项          | 值                           |
+| ----------- | ---------------------------- |
+| OS          | Windows 11 Pro 10.0.26200    |
+| GPU         | NVIDIA RTX 5060              |
+| 显示器      | 单屏 2560×1440               |
+| Node        | v24.15.0                     |
+| pnpm        | 9.10.0                       |
+| 浏览器      | Chrome、Edge 已安装          |
 | GitHub 直连 | 不通，使用 gh-proxy.com 克隆 |
 
 ## PR #1 合并（本地集成分支）
+
 - [x] 备份本地修改：`backup/local-voice-fixes-20261116`，patch `D:/temp/cyrvis-local-voice-fixes.patch`。
 - [x] 在 `merge/pr-1` 上合并组员 PR #1（reference-aware echo gating + 浮动语音工作区 + 记忆）；保留 Token Plan 端点、15 秒输入缓冲清理、断线重连、耳机/外放显式按钮。
 - [x] 验证：node/web typecheck 通过；CYRVIS + shared 测试 75/75；wav-player/widgetOverlay/store 测试 9/9；`UI_TARS_APP_PRIVATE_KEY_BASE64=dummy pnpm --filter ui-tars-desktop build:dist` 通过。

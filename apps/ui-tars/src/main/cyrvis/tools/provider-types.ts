@@ -55,6 +55,12 @@ export interface RemoteToolPolicy {
   schemaVersion?: number;
 }
 
+export interface ProviderActivationPolicy {
+  mode?: 'always' | 'foreground';
+  applications?: string[];
+  processes?: string[];
+}
+
 export interface ProviderManifest {
   schemaVersion: number;
   toolApiVersion: number;
@@ -65,6 +71,7 @@ export interface ProviderManifest {
   trust?: ProviderTrust;
   enabled?: boolean;
   requirements?: CapabilityRequirements;
+  activation?: ProviderActivationPolicy;
   permissions?: ToolPermission[];
   transport: ProviderManifestTransport;
   tools?: RemoteToolPolicy[];

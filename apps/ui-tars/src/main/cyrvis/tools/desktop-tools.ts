@@ -3,12 +3,19 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import type { ToolDefinition, ToolResult } from './types';
+import path from 'node:path';
+
 import {
   buildSearchUrl,
   defaultSearchEngine,
   type SearchEngine,
 } from '../navigation';
+import type {
+  ToolContext,
+  ToolDefinition,
+  ToolResourceHint,
+  ToolResult,
+} from './types';
 
 const text = (
   input: Record<string, unknown>,
@@ -45,6 +52,96 @@ const normalizeUrl = (value: string): string => {
     throw new Error('Only http and https URLs are supported');
   }
   return url.toString();
+};
+
+const normalizeTarget = (value: string): string =>
+  value
+    .normalize('NFKC')
+    .trim()
+    .toLowerCase()
+    .replace(/^["']|["']$/g, '')
+    .replace(/\s+/g, ' ');
+
+const isCyrvisWindow = (window: { pid: number; title: string }): boolean =>
+  window.pid === process.pid ||
+  window.title.trim() === 'Cyrvis' ||
+  window.title.trim() === 'Cyrvis Companion';
+
+const recentFileQueryCandidates = (
+  query: string,
+  resources: ToolResourceHint[],
+): string[] => {
+  const normalizedQuery = normalizeTarget(query);
+  if (!normalizedQuery) {
+    return [];
+  }
+  const files = resources.filter((resource) => resource.kind === 'file');
+  const matchesResource = (resource: ToolResourceHint, exact: boolean) =>
+    [resource.name, ...resource.aliases].some((candidate) => {
+      const normalizedCandidate = normalizeTarget(candidate);
+      return exact
+        ? normalizedCandidate === normalizedQuery
+        : normalizedCandidate.includes(normalizedQuery);
+    });
+  const exactMatches = files.filter((resource) =>
+    matchesResource(resource, true),
+  );
+  const fuzzyMatches = files.filter((resource) =>
+    matchesResource(resource, false),
+  );
+  const matchedFiles = exactMatches.length > 0 ? exactMatches : fuzzyMatches;
+  if (matchedFiles.length !== 1 || !matchedFiles[0]) {
+    return [];
+  }
+  const matches = matchedFiles[0];
+  const filePath =
+    typeof matches.metadata.path === 'string'
+      ? matches.metadata.path
+      : undefined;
+  const basename = filePath ? path.basename(filePath) : matches.name;
+  const extension = path.extname(basename);
+  return [
+    basename,
+    extension && basename.toLowerCase().endsWith(extension.toLowerCase())
+      ? basename.slice(0, -extension.length)
+      : '',
+    filePath || '',
+  ].filter(
+    (candidate, index, values): candidate is string =>
+      Boolean(candidate) &&
+      values.findIndex(
+        (entry) => normalizeTarget(entry) === normalizeTarget(candidate),
+      ) === index,
+  );
+};
+
+const closeWindow = async (
+  query: string,
+  context: ToolContext,
+): Promise<{ query: string; title: string }> => {
+  const recentQueries = recentFileQueryCandidates(
+    query,
+    context.getRecentResources?.() || [],
+  );
+  const queries = [...recentQueries, query].filter(
+    (candidate, index, values) =>
+      Boolean(candidate) &&
+      values.findIndex(
+        (entry) => normalizeTarget(entry) === normalizeTarget(candidate),
+      ) === index,
+  );
+  let lastError: unknown;
+  for (const candidate of queries) {
+    try {
+      const title = await context.desktop.controlWindow(candidate, 'close');
+      return { query: candidate, title };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error('No matching closable window.');
 };
 
 export const DESKTOP_TOOLS: ToolDefinition[] = [
@@ -151,7 +248,8 @@ export const DESKTOP_TOOLS: ToolDefinition[] = [
   {
     name: 'window.list',
     domain: 'desktop',
-    description: 'List visible top-level windows.',
+    description:
+      'List visible top-level windows, excluding CYRVIS application surfaces.',
     risk: 'low',
     inputSchema: {
       type: 'object',
@@ -160,7 +258,9 @@ export const DESKTOP_TOOLS: ToolDefinition[] = [
     },
     prepare: () => ({}),
     async execute(_args, context) {
-      const windows = await context.desktop.listWindows();
+      const windows = (await context.desktop.listWindows()).filter(
+        (window) => !isCyrvisWindow(window),
+      );
       return success('window.list', `当前有 ${windows.length} 个可见窗口。`, {
         windows,
       });
@@ -192,7 +292,7 @@ export const DESKTOP_TOOLS: ToolDefinition[] = [
     name: 'window.close',
     domain: 'desktop',
     description:
-      'Request a matching file or document window to close without killing its application process.',
+      'Request a matching file or document window to close without killing its application process. Resolve recent-document references first; never target CYRVIS application surfaces.',
     risk: 'medium',
     capability: {
       providerId: 'desktop.window',
@@ -212,10 +312,11 @@ export const DESKTOP_TOOLS: ToolDefinition[] = [
     }),
     async execute(args, context) {
       const query = String(args.query);
-      const title = await context.desktop.controlWindow(query, 'close');
-      return success('window.close', `已请求关闭 ${title}。`, {
+      const resolved = await closeWindow(query, context);
+      return success('window.close', `已请求关闭 ${resolved.title}。`, {
         query,
-        title,
+        resolvedQuery: resolved.query,
+        title: resolved.title,
       });
     },
   },

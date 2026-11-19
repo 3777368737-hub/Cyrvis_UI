@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -303,6 +305,143 @@ export const FILESYSTEM_TOOLS: ToolDefinition[] = [
           size: stats.size,
           createdAt: stats.birthtime.toISOString(),
           modifiedAt: stats.mtime.toISOString(),
+        },
+      );
+    },
+  },
+  {
+    name: 'fs.exists',
+    domain: 'filesystem',
+    description:
+      'Check whether a path exists and return its file, directory, or symlink kind.',
+    risk: 'low',
+    capability: {
+      providerId: 'filesystem',
+      tier: 2,
+      activation: 'on-demand',
+      priority: 86,
+      tags: [
+        'file',
+        'directory',
+        'exists',
+        'check',
+        '文件',
+        '目录',
+        '存在',
+        '检查',
+      ],
+      permissions: ['filesystem.read'],
+    },
+    inputSchema: {
+      type: 'object',
+      properties: { path: { type: 'string' } },
+      required: ['path'],
+      additionalProperties: false,
+    },
+    pathArgs: (args) => [String(args.path)],
+    prepare: (input, context) => ({
+      path: context.resolvePath(asString(input, 'path', { required: true })),
+    }),
+    async execute(args) {
+      const target = String(args.path);
+      let stats: Awaited<ReturnType<typeof fs.lstat>>;
+      try {
+        stats = await fs.lstat(target);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+          throw error;
+        }
+        return success('fs.exists', '路径不存在。', {
+          path: target,
+          exists: false,
+          kind: null,
+        });
+      }
+      const kind = statKind(stats);
+      return success(
+        'fs.exists',
+        `路径存在，类型是${kind === 'directory' ? '文件夹' : kind === 'file' ? '文件' : '其他'}。`,
+        {
+          path: target,
+          exists: true,
+          kind,
+          size: stats.size,
+          modifiedAt: stats.mtimeMs,
+        },
+      );
+    },
+  },
+  {
+    name: 'fs.hash',
+    domain: 'filesystem',
+    description:
+      'Calculate a SHA-256, SHA-1, or MD5 hash for a file using a streaming read.',
+    risk: 'low',
+    capability: {
+      providerId: 'filesystem',
+      tier: 2,
+      activation: 'on-demand',
+      priority: 59,
+      tags: [
+        'file',
+        'hash',
+        'checksum',
+        'sha256',
+        '文件',
+        '哈希',
+        '校验',
+        '完整性',
+      ],
+      permissions: ['filesystem.read'],
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        algorithm: {
+          type: 'string',
+          enum: ['sha256', 'sha1', 'md5'],
+        },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+    pathArgs: (args) => [String(args.path)],
+    prepare: (input, context) => {
+      const algorithm = asString(input, 'algorithm', {
+        fallback: 'sha256',
+      }).toLowerCase();
+      if (!['sha256', 'sha1', 'md5'].includes(algorithm)) {
+        throw new Error('algorithm must be sha256, sha1, or md5');
+      }
+      return {
+        path: context.resolvePath(asString(input, 'path', { required: true })),
+        algorithm,
+      };
+    },
+    async execute(args) {
+      const target = String(args.path);
+      const stats = await fs.stat(target);
+      if (!stats.isFile()) {
+        return failure('fs.hash', '目标不是文件。', 'NOT_A_FILE');
+      }
+      const hash = createHash(String(args.algorithm));
+      await new Promise<void>((resolve, reject) => {
+        const stream = createReadStream(target);
+        stream.on('data', (chunk) => hash.update(chunk));
+        stream.once('error', reject);
+        stream.once('end', resolve);
+      });
+      const digest = hash.digest('hex');
+      return success(
+        'fs.hash',
+        `文件 ${String(args.algorithm)} 哈希为 ${digest.slice(0, 12)}…`,
+        {
+          path: target,
+          algorithm: args.algorithm,
+          digest,
+          bytes: stats.size,
         },
       );
     },
@@ -728,10 +867,31 @@ export const FILESYSTEM_TOOLS: ToolDefinition[] = [
         );
         await fs.rename(target, destination);
       }
+      let missing = false;
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        try {
+          await fs.access(target);
+        } catch {
+          missing = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      if (!missing) {
+        throw new Error(
+          '回收站操作返回成功，但目标文件仍然存在；未声称删除完成。',
+        );
+      }
       return success(
         'fs.delete_to_trash',
         `已将 ${path.basename(target)} 移到回收站。`,
-        { path: target },
+        {
+          path: target,
+          verification: {
+            kind: 'path_missing',
+            target,
+          },
+        },
       );
     },
   },

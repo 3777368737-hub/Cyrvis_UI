@@ -6,6 +6,7 @@
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
+import path from 'node:path';
 
 import type {
   DesktopHost,
@@ -17,7 +18,7 @@ import type {
 
 const APPLICATION_ALIASES: Record<
   string,
-  { command: string; process: string }
+  { command: string; process: string; candidates?: string[] }
 > = {
   记事本: { command: 'notepad.exe', process: 'notepad' },
   notepad: { command: 'notepad.exe', process: 'notepad' },
@@ -42,6 +43,33 @@ const APPLICATION_ALIASES: Record<
   edge: { command: 'msedge.exe', process: 'msedge' },
   edge浏览器: { command: 'msedge.exe', process: 'msedge' },
   微软浏览器: { command: 'msedge.exe', process: 'msedge' },
+  qq浏览器: {
+    command: 'QQBrowser.exe',
+    process: 'QQBrowser',
+    candidates: [
+      '%ProgramFiles%\\Tencent\\QQBrowser\\QQBrowser.exe',
+      '%ProgramFiles(x86)%\\Tencent\\QQBrowser\\QQBrowser.exe',
+      '%LOCALAPPDATA%\\Tencent\\QQBrowser\\Application\\QQBrowser.exe',
+    ],
+  },
+  qqbrowser: {
+    command: 'QQBrowser.exe',
+    process: 'QQBrowser',
+    candidates: [
+      '%ProgramFiles%\\Tencent\\QQBrowser\\QQBrowser.exe',
+      '%ProgramFiles(x86)%\\Tencent\\QQBrowser\\QQBrowser.exe',
+      '%LOCALAPPDATA%\\Tencent\\QQBrowser\\Application\\QQBrowser.exe',
+    ],
+  },
+  腾讯浏览器: {
+    command: 'QQBrowser.exe',
+    process: 'QQBrowser',
+    candidates: [
+      '%ProgramFiles%\\Tencent\\QQBrowser\\QQBrowser.exe',
+      '%ProgramFiles(x86)%\\Tencent\\QQBrowser\\QQBrowser.exe',
+      '%LOCALAPPDATA%\\Tencent\\QQBrowser\\Application\\QQBrowser.exe',
+    ],
+  },
   word: { command: 'winword.exe', process: 'WINWORD' },
   excel: { command: 'excel.exe', process: 'EXCEL' },
   powerpoint: { command: 'powerpnt.exe', process: 'POWERPNT' },
@@ -53,11 +81,36 @@ const APPLICATION_ALIASES: Record<
 const normalizeAlias = (value: string): string =>
   value.trim().toLowerCase().replace(/\s+/g, ' ');
 
+const expandEnvironmentPath = (value: string): string =>
+  value.replace(/%([^%]+)%/g, (match, name: string) => {
+    return process.env[name] ?? match;
+  });
+
+const resolveApplicationCommand = async (
+  alias: (typeof APPLICATION_ALIASES)[string],
+): Promise<string> => {
+  for (const candidate of alias.candidates || []) {
+    const expanded = expandEnvironmentPath(candidate);
+    try {
+      await fs.access(expanded);
+      return expanded;
+    } catch {
+      // Try the next known installation path.
+    }
+  }
+  return alias.command;
+};
+
 export const isSupportedApplicationAlias = (value: string): boolean =>
   Boolean(APPLICATION_ALIASES[normalizeAlias(value)]);
 
 const runPowerShell = (script: string, env: NodeJS.ProcessEnv = {}) =>
   new Promise<string>((resolve, reject) => {
+    const utf8Script = `
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [Console]::OutputEncoding
+${script}
+`;
     execFile(
       'powershell.exe',
       [
@@ -67,7 +120,7 @@ const runPowerShell = (script: string, env: NodeJS.ProcessEnv = {}) =>
         '-ExecutionPolicy',
         'Bypass',
         '-Command',
-        script,
+        utf8Script,
       ],
       {
         env: { ...process.env, ...env },
@@ -133,14 +186,69 @@ public static class CyrvisWindow {
   );
 }
 "@
-$query = $env:CYRV_WINDOW_QUERY
+$query = [Text.Encoding]::UTF8.GetString(
+  [Convert]::FromBase64String($env:CYRV_WINDOW_QUERY_B64)
+)
 $action = $env:CYRV_WINDOW_ACTION
-$target = Get-Process | Where-Object {
+$protectedPid = 0
+[void][int]::TryParse([string]$env:CYRV_PROTECTED_PID, [ref]$protectedPid)
+$protectedExe = [string]$env:CYRV_PROTECTED_EXE
+$matches = @(Get-Process | Where-Object {
   $_.MainWindowHandle -ne 0 -and (
-    $_.ProcessName -like "*$query*" -or $_.MainWindowTitle -like "*$query*"
+    $_.ProcessName.IndexOf(
+      $query,
+      [StringComparison]::OrdinalIgnoreCase
+    ) -ge 0 -or
+    $_.MainWindowTitle.IndexOf(
+      $query,
+      [StringComparison]::OrdinalIgnoreCase
+    ) -ge 0
   )
-} | Select-Object -First 1
-if (-not $target) { throw "No matching window: $query" }
+})
+if ($matches.Count -eq 0) { throw "No matching window" }
+$selectable = @($matches | Where-Object {
+  if ($protectedPid -gt 0 -and $_.Id -eq $protectedPid) {
+    return $false
+  }
+  if ([string]::IsNullOrWhiteSpace($protectedExe)) {
+    return $true
+  }
+  try {
+    return -not (
+      $_.Path -and
+      $_.Path.Equals($protectedExe, [StringComparison]::OrdinalIgnoreCase)
+    )
+  } catch {
+    return $true
+  }
+})
+if ($selectable.Count -eq 0) {
+  throw "CYRVIS application windows are protected"
+}
+$ranked = @($selectable | ForEach-Object {
+  $rank = 3
+  if ($_.MainWindowTitle.Equals(
+    $query,
+    [StringComparison]::OrdinalIgnoreCase
+  )) {
+    $rank = 0
+  } elseif ($_.ProcessName.Equals(
+    $query,
+    [StringComparison]::OrdinalIgnoreCase
+  )) {
+    $rank = 1
+  } elseif ($_.MainWindowTitle.StartsWith(
+    $query,
+    [StringComparison]::OrdinalIgnoreCase
+  )) {
+    $rank = 2
+  }
+  [pscustomobject]@{ Process = $_; Rank = $rank }
+} | Sort-Object -Property Rank)
+$bestRank = $ranked[0].Rank
+$best = @($ranked | Where-Object { $_.Rank -eq $bestRank })
+if ($best.Count -gt 1) { throw "Window target is ambiguous" }
+$target = $best[0].Process
 if ($action -eq "focus") {
   [void][CyrvisWindow]::ShowWindow($target.MainWindowHandle, 9)
   [void][CyrvisWindow]::SetForegroundWindow($target.MainWindowHandle)
@@ -158,7 +266,49 @@ if ($action -eq "focus") {
 } else {
   throw "Unknown window action: $action"
 }
-Write-Output ($target.ProcessName + "|" + $target.MainWindowTitle)
+$payload = [pscustomobject]@{
+  pid = [int]$target.Id
+  process = $target.ProcessName
+  title = $target.MainWindowTitle
+} | ConvertTo-Json -Compress
+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($payload))
+`;
+
+const FOREGROUND_WINDOW_SCRIPT = `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class CyrvisForeground {
+  [DllImport("user32.dll")]
+  public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")]
+  public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+  public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+}
+"@
+$handle = [CyrvisForeground]::GetForegroundWindow()
+if ($handle -eq [IntPtr]::Zero) {
+  Write-Output "null"
+  exit 0
+}
+$targetPid = [uint32]0
+[void][CyrvisForeground]::GetWindowThreadProcessId($handle, [ref]$targetPid)
+$target = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
+if (-not $target) {
+  Write-Output "null"
+  exit 0
+}
+$builder = New-Object System.Text.StringBuilder 2048
+[void][CyrvisForeground]::GetWindowText($handle, $builder, $builder.Capacity)
+[pscustomobject]@{
+  pid = [int]$targetPid
+  process = $target.ProcessName
+  title = $builder.ToString()
+  handle = $handle.ToInt64()
+  focused = $true
+} | ConvertTo-Json -Compress
 `;
 
 const unsupported = (feature: string): never => {
@@ -253,12 +403,13 @@ export class LocalDesktopHost implements DesktopHost {
     if (!alias) {
       throw new Error(`Unsupported application alias: ${name}`);
     }
+    const command = await resolveApplicationCommand(alias);
     if (process.platform === 'win32') {
       await runPowerShell('Start-Process -FilePath $env:CYRV_APP_COMMAND', {
-        CYRV_APP_COMMAND: alias.command,
+        CYRV_APP_COMMAND: command,
       });
     } else {
-      await launchDetached(alias.command);
+      await launchDetached(command);
     }
     return name.trim();
   }
@@ -269,14 +420,51 @@ export class LocalDesktopHost implements DesktopHost {
     }
     const alias = APPLICATION_ALIASES[normalizeAlias(name)];
     const processName = alias?.process || name.trim();
+    const executableName = path.basename(
+      process.execPath,
+      path.extname(process.execPath),
+    );
+    if (
+      processName.toLowerCase() === executableName.toLowerCase() ||
+      /^(?:cyrvis|cyrvis companion|electron)$/i.test(processName)
+    ) {
+      throw new Error('CYRVIS application processes are protected');
+    }
     if (!/^[A-Za-z0-9_.-]+$/i.test(processName)) {
       throw new Error(
         'Application process name contains unsupported characters',
       );
     }
     await runPowerShell(
-      '$name = $env:CYRV_APP_PROCESS; Get-Process -Name $name -ErrorAction Stop | Stop-Process -Force',
-      { CYRV_APP_PROCESS: processName },
+      `$name = $env:CYRV_APP_PROCESS
+$protectedPid = 0
+[void][int]::TryParse([string]$env:CYRV_PROTECTED_PID, [ref]$protectedPid)
+$protectedExe = [string]$env:CYRV_PROTECTED_EXE
+$targets = @(Get-Process -Name $name -ErrorAction Stop | Where-Object {
+  if ($protectedPid -gt 0 -and $_.Id -eq $protectedPid) {
+    return $false
+  }
+  if ([string]::IsNullOrWhiteSpace($protectedExe)) {
+    return $true
+  }
+  try {
+    return -not (
+      $_.Path -and
+      $_.Path.Equals($protectedExe, [StringComparison]::OrdinalIgnoreCase)
+    )
+  } catch {
+    return $true
+  }
+})
+if ($targets.Count -eq 0) {
+  throw "Only CYRVIS application processes matched"
+}
+$targets | Stop-Process -Force`,
+      {
+        CYRV_APP_PROCESS: processName,
+        CYRV_PROTECTED_PID: String(process.pid),
+        CYRV_PROTECTED_EXE: process.execPath,
+      },
     );
     return name.trim();
   }
@@ -313,6 +501,22 @@ $items | ConvertTo-Json -Compress
       }));
   }
 
+  async getForegroundWindow(): Promise<WindowInfo | null> {
+    if (process.platform !== 'win32') {
+      return null;
+    }
+    const output = await runPowerShell(FOREGROUND_WINDOW_SCRIPT);
+    return parseJson<WindowInfo | null>(output, null);
+  }
+
+  async showNotification(title: string, body: string): Promise<void> {
+    const { Notification } = await import('electron');
+    if (!Notification.isSupported()) {
+      throw new Error('System notifications are not supported.');
+    }
+    new Notification({ title, body }).show();
+  }
+
   async controlWindow(
     query: string,
     action: 'focus' | 'minimize' | 'maximize' | 'close',
@@ -321,11 +525,14 @@ $items | ConvertTo-Json -Compress
       return unsupported('Window control');
     }
     const output = await runPowerShell(WINDOW_CONTROL_SCRIPT, {
-      CYRV_WINDOW_QUERY: query,
+      CYRV_WINDOW_QUERY_B64: Buffer.from(query, 'utf8').toString('base64'),
       CYRV_WINDOW_ACTION: action,
+      CYRV_PROTECTED_PID: action === 'close' ? String(process.pid) : '',
+      CYRV_PROTECTED_EXE: action === 'close' ? process.execPath : '',
     });
-    const [processName, title] = output.split('|');
-    return title || processName || query;
+    const decoded = Buffer.from(output.trim(), 'base64').toString('utf8');
+    const target = parseJson<WindowInfo | null>(decoded, null);
+    return target?.title || target?.process || query;
   }
 
   async minimizeAllWindows(): Promise<number> {

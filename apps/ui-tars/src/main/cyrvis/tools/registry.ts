@@ -17,11 +17,24 @@ import type {
   ToolResult,
 } from './types';
 
+export interface ToolExecutionEvent {
+  toolId: string;
+  ok: boolean;
+  speech: string;
+  data?: unknown;
+  error?: string;
+  timestamp: number;
+  durationMs: number;
+}
+
 export class ToolRegistry {
   private readonly tools = new Map<string, ToolDefinition>();
   private readonly providers = new Map<string, string>();
   private readonly listeners = new Set<(revision: number) => void>();
   private readonly usageListeners = new Set<(toolId: string) => void>();
+  private readonly executionListeners = new Set<
+    (event: ToolExecutionEvent) => void
+  >();
   private readonly pathPolicy: PathPolicy;
   private currentRevision = 0;
 
@@ -123,6 +136,13 @@ export class ToolRegistry {
     return () => this.usageListeners.delete(listener);
   }
 
+  subscribeExecutions(
+    listener: (event: ToolExecutionEvent) => void,
+  ): () => void {
+    this.executionListeners.add(listener);
+    return () => this.executionListeners.delete(listener);
+  }
+
   describeMcpTools(): McpToolDescriptor[] {
     return this.list().map((definition) => ({
       name: definition.name,
@@ -141,7 +161,9 @@ export class ToolRegistry {
     }
     const args = await definition.prepare(rawArgs, this.context);
     const policy = definition.pathArgs
-      ? this.pathPolicy.inspect(definition.pathArgs(args))
+      ? this.pathPolicy.inspect(definition.pathArgs(args), undefined, {
+          allowOutsideRoots: isReadOnlyPathTool(definition.name),
+        })
       : {
           requiresConfirmation: false,
           reason: null,
@@ -170,15 +192,24 @@ export class ToolRegistry {
     try {
       prepared = await this.prepare(tool, rawArgs);
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       this.usageStore.record({
         timestamp: Date.now(),
         toolId: tool,
         providerId: this.getProviderId(tool),
         ok: false,
         durationMs: 0,
-        error: error instanceof Error ? error.message : String(error),
+        error: message,
       });
       this.notifyUsage(tool);
+      this.emitExecution({
+        toolId: tool,
+        ok: false,
+        speech: `操作失败：${message}`,
+        error: message,
+        timestamp: Date.now(),
+        durationMs: 0,
+      });
       throw error;
     }
     return this.executePrepared(prepared, options);
@@ -189,7 +220,7 @@ export class ToolRegistry {
     options: { confirmed?: boolean } = {},
   ): Promise<ToolResult> {
     if (prepared.requiresConfirmation && options.confirmed !== true) {
-      return {
+      const result: ToolResult = {
         ok: false,
         tool: prepared.tool,
         speech: SENSITIVE_CONFIRMATION_PROMPT,
@@ -200,6 +231,16 @@ export class ToolRegistry {
             'The operation requires confirmation.',
         },
       };
+      this.emitExecution({
+        toolId: prepared.tool,
+        ok: false,
+        speech: result.speech,
+        data: result.data,
+        error: result.error?.message,
+        timestamp: Date.now(),
+        durationMs: 0,
+      });
+      return result;
     }
     const startedAt = Date.now();
     try {
@@ -216,6 +257,15 @@ export class ToolRegistry {
         error: result.error?.message,
       });
       this.notifyUsage(prepared.tool);
+      this.emitExecution({
+        toolId: prepared.tool,
+        ok: result.ok,
+        speech: result.speech,
+        data: result.data,
+        error: result.error?.message,
+        timestamp: Date.now(),
+        durationMs: Date.now() - startedAt,
+      });
       return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -237,6 +287,14 @@ export class ToolRegistry {
         error: message,
       });
       this.notifyUsage(prepared.tool);
+      this.emitExecution({
+        toolId: prepared.tool,
+        ok: false,
+        speech: result.speech,
+        error: result.error?.message,
+        timestamp: Date.now(),
+        durationMs: Date.now() - startedAt,
+      });
       return result;
     }
   }
@@ -283,7 +341,39 @@ export class ToolRegistry {
       }
     }
   }
+
+  private emitExecution(event: ToolExecutionEvent): void {
+    for (const listener of [...this.executionListeners]) {
+      try {
+        listener(event);
+      } catch {
+        // Execution observers must not alter tool outcomes.
+      }
+    }
+  }
 }
+
+const READ_ONLY_PATH_TOOLS = new Set([
+  'condition.check',
+  'condition.wait',
+  'document.extract_text',
+  'fs.directory_tree',
+  'fs.exists',
+  'fs.get_info',
+  'fs.hash',
+  'fs.list_directory',
+  'fs.open',
+  'fs.open_random',
+  'fs.read_file',
+  'fs.search',
+  'pdf.extract_text',
+  'screen.ocr',
+  'vscode.open_file',
+  'vscode.open_folder',
+]);
+
+const isReadOnlyPathTool = (tool: string): boolean =>
+  READ_ONLY_PATH_TOOLS.has(tool);
 
 export const createDefaultToolContext = (
   desktop: ToolContext['desktop'],

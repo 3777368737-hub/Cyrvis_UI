@@ -104,6 +104,35 @@ export interface CyrvisMemorySnapshot {
   facts: string[];
 }
 
+export interface CyrvisContextResource {
+  id: string;
+  kind: string;
+  name: string;
+  active: boolean;
+  health: string;
+  providerIds: string[];
+}
+
+export interface CyrvisContextSnapshot {
+  revision: number;
+  updatedAt: number;
+  activeApplication: string | null;
+  activeWindow: string | null;
+  focusedControl: string | null;
+  recentActions: Array<{
+    toolId: string;
+    ok: boolean;
+    at: number;
+  }>;
+  recentResources: CyrvisContextResource[];
+  fallbackResources: CyrvisContextResource[];
+  currentTask: {
+    taskId: string;
+    status: string;
+    instruction: string | null;
+  } | null;
+}
+
 const TERMINAL_TASK_STATUSES: TaskStatus[] = [
   'idle',
   'done',

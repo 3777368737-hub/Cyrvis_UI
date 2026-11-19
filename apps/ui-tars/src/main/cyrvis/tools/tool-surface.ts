@@ -22,16 +22,25 @@ export interface ToolSurfaceSnapshot {
 export interface ToolSurfaceOptions {
   maxVisibleTools?: number;
   activationTtlMs?: number;
+  context?: ToolSurfaceContextAdapter;
+}
+
+export interface ToolSurfaceContextAdapter {
+  getCapabilityBoost(capabilityId: string): number;
+  shouldActivate(capability: CapabilityDescriptor): boolean;
+  subscribe(listener: () => void): () => void;
 }
 
 export class ToolSurface {
   private readonly maxVisibleTools: number;
   private readonly activationTtlMs: number;
+  private readonly contextAdapter?: ToolSurfaceContextAdapter;
   private readonly activations = new Map<string, number>();
   private readonly listeners = new Set<
     (snapshot: ToolSurfaceSnapshot) => void
   >();
   private readonly unsubscribeUsage: () => void;
+  private readonly unsubscribeContext: (() => void) | null;
   private current: ToolSurfaceSnapshot;
   private currentRevision = 0;
 
@@ -42,8 +51,11 @@ export class ToolSurface {
   ) {
     this.maxVisibleTools = options.maxVisibleTools ?? 24;
     this.activationTtlMs = options.activationTtlMs ?? 10 * 60_000;
+    this.contextAdapter = options.context;
     this.current = this.calculate();
     this.unsubscribeUsage = registry.subscribeUsage(() => this.refresh());
+    this.unsubscribeContext =
+      options.context?.subscribe(() => this.refresh()) ?? null;
   }
 
   snapshot(): ToolSurfaceSnapshot {
@@ -95,6 +107,7 @@ export class ToolSurface {
 
   dispose(): void {
     this.unsubscribeUsage();
+    this.unsubscribeContext?.();
     this.listeners.clear();
   }
 
@@ -140,6 +153,9 @@ export class ToolSurface {
     if (capability.tier === 0 || capability.tier === 1) {
       return true;
     }
+    if (this.contextAdapter?.shouldActivate(capability)) {
+      return true;
+    }
     if (capability.tier === 2) {
       return capability.activation === 'state';
     }
@@ -158,7 +174,14 @@ export class ToolSurface {
   }
 
   private effectiveTierRank(capability: CapabilityDescriptor): number {
-    return this.activations.has(capability.id) ? -1 : tierRank(capability.tier);
+    if (this.activations.has(capability.id)) {
+      return -1;
+    }
+    const boost = this.contextAdapter?.getCapabilityBoost(capability.id) || 0;
+    if (boost >= 25) {
+      return 1;
+    }
+    return tierRank(capability.tier);
   }
 
   private effectivePriority(capability: CapabilityDescriptor): number {
@@ -182,6 +205,7 @@ export class ToolSurface {
       capability.priority +
       recency +
       frequency +
+      (this.contextAdapter?.getCapabilityBoost(capability.id) || 0) +
       (this.activations.has(capability.id) ? 1_000 : 0)
     );
   }

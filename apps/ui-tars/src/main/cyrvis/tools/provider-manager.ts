@@ -15,7 +15,7 @@ import type {
   ProviderRuntimeDescriptor,
 } from './provider-types';
 import type { ToolRegistry } from './registry';
-import type { ToolPermission } from './types';
+import type { ToolPermission, WindowInfo } from './types';
 
 export interface ProviderManagerOptions {
   manifestDirectories?: string[];
@@ -23,6 +23,7 @@ export interface ProviderManagerOptions {
   allowUntrusted?: boolean;
   deniedPermissions?: ToolPermission[];
   healthCheckIntervalMs?: number;
+  foregroundWindow?: () => WindowInfo | null;
 }
 
 interface ActiveExternalProvider {
@@ -37,12 +38,19 @@ const splitList = (value: string | undefined): string[] =>
     .map((entry) => entry.trim())
     .filter(Boolean);
 
+const normalize = (value: string): string =>
+  value
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '');
+
 export class ProviderManager {
   private readonly manifestDirectories: string[];
   private readonly publicKeyPem?: string;
   private readonly allowUntrusted: boolean;
   private readonly deniedPermissions: ToolPermission[];
   private readonly healthCheckIntervalMs: number;
+  private readonly foregroundWindow?: () => WindowInfo | null;
   private readonly clients = new Map<string, ExternalMcpProvider>();
   private readonly external = new Map<string, ActiveExternalProvider>();
   private readonly retryAt = new Map<string, number>();
@@ -74,6 +82,7 @@ export class ProviderManager {
         process.env.CYRVIS_DENIED_TOOL_PERMISSIONS,
       ) as ToolPermission[]);
     this.healthCheckIntervalMs = options.healthCheckIntervalMs ?? 30_000;
+    this.foregroundWindow = options.foregroundWindow;
   }
 
   async start(): Promise<void> {
@@ -189,6 +198,10 @@ export class ProviderManager {
     await this.reconcile();
   }
 
+  async refresh(): Promise<void> {
+    await this.reconcile();
+  }
+
   private async reconcile(): Promise<void> {
     if (this.reconcilePromise) {
       return this.reconcilePromise;
@@ -223,6 +236,18 @@ export class ProviderManager {
           availability: snapshot?.capturedAt ? 'unavailable' : 'unknown',
           unavailableReason: evaluation.reason,
           lastError: evaluation.reason,
+        });
+        continue;
+      }
+      if (
+        manifest.transport.type !== 'builtin' &&
+        !this.matchesForegroundActivation(manifest, snapshot)
+      ) {
+        await this.deactivate(manifest.id);
+        this.providers.updateStatus(manifest.id, {
+          availability: 'unknown',
+          unavailableReason: 'Provider 正在等待匹配的前台应用。',
+          lastError: null,
         });
         continue;
       }
@@ -350,5 +375,38 @@ export class ProviderManager {
       });
     }
     await this.reconcile();
+  }
+
+  private matchesForegroundActivation(
+    manifest: ProviderManifest,
+    snapshot: ReturnType<SystemStateStore['getSnapshot']> | null,
+  ): boolean {
+    if (manifest.activation?.mode !== 'foreground') {
+      return true;
+    }
+    const foreground =
+      this.foregroundWindow?.() ||
+      snapshot?.windows.find((window) => window.focused) ||
+      null;
+    if (!foreground) {
+      return false;
+    }
+    const applications = manifest.activation.applications || [];
+    const processes = manifest.activation.processes || [];
+    if (!applications.length && !processes.length) {
+      return true;
+    }
+    const process = normalize(foreground.process);
+    const title = normalize(foreground.title);
+    return (
+      processes.some((entry) => {
+        const target = normalize(entry);
+        return process.includes(target) || title.includes(target);
+      }) ||
+      applications.some((entry) => {
+        const target = normalize(entry);
+        return title.includes(target) || process.includes(target);
+      })
+    );
   }
 }

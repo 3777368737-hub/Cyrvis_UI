@@ -47,6 +47,11 @@ CYRVIS_PROVIDER_MANIFEST_DIRS=D:\providers;E:\team-providers
     "applications": ["Visual Studio Code"],
     "environment": ["EXAMPLE_TOKEN"]
   },
+  "activation": {
+    "mode": "foreground",
+    "applications": ["Visual Studio Code"],
+    "processes": ["Code"]
+  },
   "transport": {
     "type": "stdio",
     "command": "node",
@@ -96,10 +101,14 @@ filesystem.read
 filesystem.write
 desktop.app
 desktop.window
+desktop.screen
+desktop.input
 clipboard.read
 clipboard.write
 system.read
 system.process
+system.media
+system.power
 network
 office
 process.spawn
@@ -134,6 +143,17 @@ manifest 扫描/验证
 - Provider 健康检查失败；
 - manifest 新增、升级、损坏或删除；
 - Provider 连接失败后的退避重试。
+
+外部 Provider 可以设置 `activation.mode=foreground`。此时 Provider 在匹配的
+应用进入前台前保持 `unknown`，不会连接外部进程或远程端点；前台变化后由
+ProviderManager 重新协调并按需加载。`applications` 匹配窗口标题，`processes`
+匹配进程名，两者为空时表示任意前台窗口均可激活。
+
+当前内置试点：
+
+- `vscode`：打开文件或文件夹，依赖已安装 Visual Studio Code；
+- `browser-debug`：管理标签页，要求
+  `CYRVIS_BROWSER_DEBUG_URL=http://127.0.0.1:9222`，只允许 loopback 地址。
 
 ## 7. 使用统计与审计
 

@@ -53,6 +53,10 @@ export interface PathPolicyInspection {
   reason: string | null;
 }
 
+export interface PathPolicyOptions {
+  allowOutsideRoots?: boolean;
+}
+
 export class PathPolicy {
   private readonly allowedRoots: string[];
   private readonly homeDirectory: string;
@@ -89,7 +93,11 @@ export class PathPolicy {
     return this.canonicalize(this.relocateCurrentUserPath(absolute));
   }
 
-  inspect(paths: string[], allowedRoots: string[] = this.allowedRoots) {
+  inspect(
+    paths: string[],
+    allowedRoots: string[] = this.allowedRoots,
+    options: PathPolicyOptions = {},
+  ) {
     const resolvedPaths = paths.map((entry) => this.resolve(entry));
     const blocked = resolvedPaths.find((entry) =>
       DEFAULT_BLOCKED_PATTERNS.some((pattern) => pattern.test(entry)),
@@ -113,22 +121,24 @@ export class PathPolicy {
       } satisfies PathPolicyInspection;
     }
 
-    const outside = resolvedPaths.find(
-      (entry) =>
-        !allowedRoots.some((root) => {
-          const relative = path.relative(root, entry);
-          return (
-            relative === '' ||
-            (!relative.startsWith('..') && !path.isAbsolute(relative))
-          );
-        }),
-    );
-    if (outside) {
-      return {
-        resolvedPaths,
-        requiresConfirmation: true,
-        reason: `路径在工作区之外：${outside}`,
-      } satisfies PathPolicyInspection;
+    if (!options.allowOutsideRoots) {
+      const outside = resolvedPaths.find(
+        (entry) =>
+          !allowedRoots.some((root) => {
+            const relative = path.relative(root, entry);
+            return (
+              relative === '' ||
+              (!relative.startsWith('..') && !path.isAbsolute(relative))
+            );
+          }),
+      );
+      if (outside) {
+        return {
+          resolvedPaths,
+          requiresConfirmation: true,
+          reason: `路径在工作区之外：${outside}`,
+        } satisfies PathPolicyInspection;
+      }
     }
 
     return {

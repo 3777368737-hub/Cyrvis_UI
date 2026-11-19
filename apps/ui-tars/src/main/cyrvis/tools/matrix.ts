@@ -7,18 +7,33 @@ import os from 'node:os';
 
 import type { SystemStateStore } from '../system/system-state';
 import { createSystemStateTools } from '../system/tools';
+import { createReminderTools } from '../system/reminders';
+import {
+  BrowserPerceptionProvider,
+  createBuiltinProviderBundle,
+  createContextTools,
+  DynamicContextStore,
+  type PerceptionProvider,
+  type BuiltinProviderBundle,
+} from '../context';
 import { CapabilityBroker } from './capability-broker';
 import { CapabilityCatalog } from './capability-catalog';
 import { createCapabilityTools } from './capability-tools';
+import { CONDITION_TOOLS } from './condition-tools';
 import { DESKTOP_TOOLS } from './desktop-tools';
+import { DOCUMENT_TOOLS } from './document-tools';
 import { LocalDesktopHost } from './desktop-host';
+import { EXECUTION_TOOLS } from './execution-tools';
 import { FILESYSTEM_TOOLS } from './filesystem';
+import { NETWORK_TOOLS } from './network-tools';
+import { OBSERVATION_TOOLS } from './observation-tools';
 import { OFFICE_TOOLS } from './office-tools';
 import { PathPolicy } from './path-policy';
 import { ProviderManager } from './provider-manager';
 import { ProviderRegistry } from './provider-registry';
 import { ToolRegistry } from './registry';
 import { FastToolRouter } from './router';
+import { SYSTEM_CONTROL_TOOLS } from './system-control-tools';
 import {
   createDynamicFastToolProviderCatalog,
   type FastToolProviderCatalog,
@@ -29,6 +44,7 @@ import type { DesktopHost, ToolContext, ToolPermission } from './types';
 
 export interface FastToolMatrix {
   context: ToolContext;
+  dynamicContext: DynamicContextStore;
   registry: ToolRegistry;
   router: FastToolRouter;
   providerCatalog: FastToolProviderCatalog;
@@ -44,12 +60,19 @@ export interface FastToolMatrix {
 export interface FastToolMatrixOptions {
   maxVisibleTools?: number;
   activationTtlMs?: number;
+  foregroundRefreshMs?: number;
+  nativeForegroundEvents?: boolean;
+  foregroundScriptPath?: string;
   manifestDirectories?: string[];
   providerPublicKeyPem?: string;
   allowUntrustedProviders?: boolean;
   deniedPermissions?: ToolPermission[];
   usageStateFile?: string;
   usageAuditFile?: string;
+  builtinProviders?: BuiltinProviderBundle;
+  perceptionProviders?: PerceptionProvider[];
+  enableBrowserPerception?: boolean;
+  browserPerceptionIntervalMs?: number;
 }
 
 export const createFastToolContext = (
@@ -82,20 +105,98 @@ export const createFastToolMatrix = (
     auditFile: options.usageAuditFile,
   });
   const registry = new ToolRegistry(context, pathPolicy, usage);
+  const reminders = createReminderTools();
   registry.registerAll([
     ...FILESYSTEM_TOOLS,
     ...DESKTOP_TOOLS,
+    ...DOCUMENT_TOOLS,
+    ...OBSERVATION_TOOLS,
+    ...CONDITION_TOOLS,
+    ...EXECUTION_TOOLS,
+    ...NETWORK_TOOLS,
+    ...SYSTEM_CONTROL_TOOLS,
     ...OFFICE_TOOLS,
+    ...reminders.tools,
     ...(systemState ? createSystemStateTools(systemState) : []),
   ]);
   const providerRegistry = new ProviderRegistry();
+  const builtinProviders =
+    options.builtinProviders || createBuiltinProviderBundle();
+  registry.registerAll(builtinProviders.tools, 'builtin-provider');
+  for (const manifest of builtinProviders.manifests) {
+    providerRegistry.register(manifest, `builtin:${manifest.id}`);
+    providerRegistry.updateStatus(manifest.id, {
+      availability: 'available',
+      unavailableReason: null,
+      toolIds:
+        manifest.transport.type === 'builtin'
+          ? manifest.transport.toolIds || []
+          : [],
+      connectedAt: null,
+      lastHealthCheckAt: Date.now(),
+      lastError: null,
+    });
+  }
   const capabilityCatalog = new CapabilityCatalog(
     registry,
     systemState,
     providerRegistry,
     options.deniedPermissions,
   );
-  const surface = new ToolSurface(registry, capabilityCatalog, options);
+  const browserPerceptionIntervalMs =
+    options.browserPerceptionIntervalMs ??
+    Number(process.env.CYRVIS_BROWSER_STATE_REFRESH_MS);
+  const browserPerceptionEnabled =
+    options.enableBrowserPerception ??
+    Boolean(process.env.CYRVIS_BROWSER_DEBUG_URL);
+  const perceptionProviders =
+    options.perceptionProviders ??
+    (browserPerceptionEnabled
+      ? [
+          new BrowserPerceptionProvider({
+            intervalMs:
+              Number.isFinite(browserPerceptionIntervalMs) &&
+              browserPerceptionIntervalMs >= 500
+                ? browserPerceptionIntervalMs
+                : undefined,
+          }),
+        ]
+      : []);
+  const dynamicContext = new DynamicContextStore({
+    registry,
+    providers: providerRegistry,
+    systemState,
+    desktop,
+    foregroundRefreshMs: options.foregroundRefreshMs,
+    nativeForegroundEvents: options.nativeForegroundEvents,
+    foregroundScriptPath: options.foregroundScriptPath,
+    capabilities: () => capabilityCatalog.list(),
+    perceptionProviders,
+  });
+  capabilityCatalog.setRuntimeAvailabilityProvider((providerId) => {
+    const status = dynamicContext
+      .getPerceptionStatuses()
+      .find((provider) => provider.id === providerId);
+    if (!status) {
+      return null;
+    }
+    if (status.state === 'degraded') {
+      return {
+        availability: status.resourceCount > 0 ? 'degraded' : 'unavailable',
+        reason: status.error || 'Dynamic perception is degraded.',
+      };
+    }
+    if (status.state === 'healthy') {
+      return { availability: 'available', reason: null };
+    }
+    return null;
+  });
+  context.getRecentResources = () => dynamicContext.getRecentResources();
+  registry.registerAll(createContextTools(dynamicContext), 'context');
+  const surface = new ToolSurface(registry, capabilityCatalog, {
+    ...options,
+    context: dynamicContext,
+  });
   const capabilityBroker = new CapabilityBroker(
     registry,
     capabilityCatalog,
@@ -119,6 +220,11 @@ export const createFastToolMatrix = (
       publicKeyPem: options.providerPublicKeyPem,
       allowUntrusted: options.allowUntrustedProviders,
       deniedPermissions: options.deniedPermissions,
+      foregroundWindow: () => {
+        const window =
+          dynamicContext.getSnapshot().user.activeWindow?.value || null;
+        return window ? { ...window, focused: true } : null;
+      },
     },
   );
   const providerCatalog = createDynamicFastToolProviderCatalog(
@@ -130,8 +236,10 @@ export const createFastToolMatrix = (
     capabilityBroker,
   });
   const unsubscribeState = systemState?.onChange(() => surface.refresh());
+  dynamicContext.start();
   return {
     context,
+    dynamicContext,
     registry,
     router,
     providerCatalog,
@@ -147,6 +255,8 @@ export const createFastToolMatrix = (
       unsubscribeRegistry();
       unsubscribeProviders();
       unsubscribeState?.();
+      dynamicContext.dispose();
+      reminders.service.dispose();
     },
   };
 };

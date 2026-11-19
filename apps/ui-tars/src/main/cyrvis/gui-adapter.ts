@@ -1,4 +1,4 @@
-import { desktopGazeHint } from './gaze/context';
+import { desktopGazeExecutionHint } from './gaze/context';
 /*
  * Copyright (c) 2025 Bytedance, Inc. and its affiliates.
  * SPDX-License-Identifier: Apache-2.0
@@ -95,8 +95,9 @@ export class ElectronGUIAdapter implements GUIAdapter {
     instruction: string,
     callbacks: GUIAdapterCallbacks,
   ): Promise<void> {
-    const gaze = desktopGazeHint();
-    if (gaze) instruction += `\n\n[眼动辅助上下文] ${gaze}`;
+    const gaze = desktopGazeExecutionHint();
+    if (gaze && !instruction.includes('[已绑定注视对象]'))
+      instruction += `\n\n[眼动辅助上下文] ${gaze}`;
     if (store.getState().thinking) {
       throw new Error('GUI agent is already running');
     }

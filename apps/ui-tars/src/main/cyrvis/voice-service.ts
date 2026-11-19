@@ -3,6 +3,10 @@ import { gazeInspector } from './gaze/desktop-inspector';
 import { getDesktopGaze, setDesktopGaze } from './gaze/context';
 import { ProactiveGaze } from './gaze/proactive';
 import type { GazeAction } from './gaze/suggestions';
+import {
+  selectGazeActionContext,
+  type GazeActionContext,
+} from './gaze/actions';
 import { GazeObjectTracker } from './gaze/object-tracker';
 import { NativeGazeObjects } from './gaze/native-objects';
 import { showCompanion } from '@main/window';
@@ -2030,6 +2034,35 @@ export const startVoiceService = (): VoiceService | null => {
     },
     {
       requireWakeWord,
+      getGazeActionContext: (text) => {
+        const inspection = gazeInspector.getStatus(),
+          suggestion = proactiveGaze.getStatus().suggestion;
+        const display = screen.getPrimaryDisplay();
+        const history: GazeActionContext[] = [];
+        if (suggestion?.gaze)
+          history.push({
+            gaze: suggestion.gaze,
+            observedAt: suggestion.gaze.at,
+          });
+        if (inspection.gaze && inspection.capturedAt)
+          history.push({
+            gaze: inspection.gaze,
+            observedAt: inspection.capturedAt,
+          });
+        return selectGazeActionContext(
+          text,
+          getDesktopGaze(),
+          history.filter(
+            (item) =>
+              item.gaze.displayId === display.id &&
+              Object.keys(display.bounds).every(
+                (key) =>
+                  item.gaze.bounds[key as keyof typeof display.bounds] ===
+                  display.bounds[key as keyof typeof display.bounds],
+              ),
+          ),
+        );
+      },
       inspectGaze: (question) => {
         proactiveGaze.snooze();
         return gazeInspector.inspect(question);

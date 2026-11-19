@@ -13,6 +13,7 @@ import type {
 } from './voice/provider';
 import { VoiceBrain, type VoiceBrainCallbacks } from './voice-brain';
 import { parseGazeSuggestion } from './gaze/suggestions';
+import type { GazeActionContext } from './gaze/actions';
 
 class FakeGUIAdapter implements GUIAdapter {
   callbacks: GUIAdapterCallbacks | null = null;
@@ -107,6 +108,7 @@ const flush = async () => {
 };
 
 const setup = (options?: {
+  getGazeActionContext?: (text: string) => GazeActionContext | null;
   inspectGaze?: (question: string) => Promise<string>;
   requireWakeWord?: boolean;
   awakeTimeoutMs?: number;
@@ -141,6 +143,7 @@ const setup = (options?: {
       awakeTimeoutMs: options?.awakeTimeoutMs ?? 0,
       rememberFact: options?.rememberFact,
       inspectGaze: options?.inspectGaze,
+      getGazeActionContext: options?.getGazeActionContext,
     },
   );
 
@@ -152,6 +155,139 @@ afterEach(() => {
 });
 
 describe('VoiceBrain', () => {
+  it('supersedes an early read-only gaze tool when ASR confirms the user asked for a GUI action', async () => {
+    let finish!: (value: string) => void;
+    const gaze = {
+      x: 0.5,
+      y: 0.5,
+      at: Date.now(),
+      displayId: 1,
+      bounds: { x: 0, y: 0, width: 1440, height: 900 },
+      target: {
+        id: 'cover',
+        scene: 'music',
+        label: '歌单',
+        role: 'AXImage',
+        source: 'accessibility' as const,
+        bounds: { x: 500, y: 300, width: 180, height: 180 },
+      },
+    };
+    const { brain, provider, adapter } = setup({
+      requireWakeWord: false,
+      getGazeActionContext: () => ({ gaze, observedAt: Date.now() }),
+      inspectGaze: () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    });
+    await brain.start();
+    provider.callbacks.onSpeechStarted?.();
+    provider.emitToolCall({
+      name: 'inspect_gaze_target',
+      args: { question: '看看这个歌单' },
+      callId: 'early',
+    });
+    await flush();
+    provider.emitTranscript('帮我点一下这个歌单然后播放');
+    await flush();
+    expect(adapter.instruction).toContain('[已绑定注视对象]');
+    finish('只读模型不能点击');
+    await flush();
+    expect(provider.spoken.join('')).not.toContain('只读模型不能点击');
+    brain.dispose();
+  });
+  it('routes the suggested playback button through the same GUI path', async () => {
+    const gaze = {
+      x: 0.5,
+      y: 0.5,
+      at: Date.now(),
+      displayId: 1,
+      bounds: { x: 0, y: 0, width: 1440, height: 900 },
+      target: {
+        id: 'cover',
+        scene: 'music',
+        label: '歌单',
+        role: 'AXImage',
+        source: 'accessibility' as const,
+        bounds: { x: 500, y: 300, width: 180, height: 180 },
+      },
+    };
+    const { brain, provider, adapter } = setup({
+      requireWakeWord: false,
+      getGazeActionContext: () => ({ gaze, observedAt: Date.now() }),
+    });
+    await brain.start();
+    const suggestion = {
+      ...parseGazeSuggestion(
+        '{"kind":"music","target":"Demo","description":"音乐作品","identified":true,"confidence":"high"}',
+        Date.now(),
+      )!,
+      gaze,
+    };
+    brain.offerGazeSuggestion(suggestion);
+    expect(brain.followGazeSuggestion(suggestion.id, 'play').ok).toBe(true);
+    await flush();
+    expect(adapter.instruction).toContain('[已绑定注视对象]');
+    expect(provider.submitted).toEqual([]);
+    brain.dispose();
+  });
+  it('routes an explicit click-and-play request to the GUI executor even when the cover has no name', async () => {
+    const context: GazeActionContext = {
+      gaze: {
+        x: 0.4,
+        y: 0.5,
+        at: Date.now(),
+        displayId: 1,
+        bounds: { x: 0, y: 0, width: 1440, height: 900 },
+        target: {
+          id: 'playlist',
+          scene: 'music',
+          label: '图像区域（名称待确认）',
+          role: 'image-region',
+          source: 'vision',
+          bounds: { x: 480, y: 320, width: 180, height: 180 },
+        },
+      },
+      observedAt: Date.now(),
+    };
+    const { brain, provider, adapter, controller, events } = setup({
+      getGazeActionContext: () => context,
+    });
+    await brain.start();
+    expect(
+      provider.emitTranscript('呃你帮我点一下，然后播放这个歌单就行。'),
+    ).toBe(true);
+    await flush();
+    expect(controller.getStatus().status).toBe('executing');
+    expect(adapter.instruction).toContain('[已绑定注视对象]');
+    expect(adapter.instruction).toContain('不要求先从封面认出作品名');
+    expect(adapter.instruction).toContain('确认播放器');
+    expect(provider.submitted).toEqual([]);
+    expect(provider.spoken.join('')).not.toContain('播放成功');
+    provider.emitToolCall({
+      name: 'start_gui_task',
+      args: { instruction: '重复播放' },
+      callId: 'late',
+    });
+    await flush();
+    expect(
+      events.filter((event) => event.type === 'task_started'),
+    ).toHaveLength(1);
+    expect(provider.toolResults.at(-1)?.output).toContain('ALREADY_ROUTED');
+    brain.dispose();
+  });
+  it('asks for an explicit gaze target instead of guessing or claiming GUI capability is absent', async () => {
+    const { brain, provider, adapter } = setup({
+      requireWakeWord: false,
+      getGazeActionContext: () => null,
+    });
+    await brain.start();
+    provider.emitTranscript('播放这个歌单');
+    await flush();
+    expect(adapter.instruction).toBe('');
+    expect(provider.spoken.at(-1)).toContain('绿框锁定');
+    brain.dispose();
+  });
   it('only submits a suggested music action after a clear user choice and preserves its target', async () => {
     const { brain, provider, adapter } = setup({ requireWakeWord: false });
     await brain.start();

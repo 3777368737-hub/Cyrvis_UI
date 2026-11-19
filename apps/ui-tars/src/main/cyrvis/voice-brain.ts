@@ -4,6 +4,12 @@
  */
 import type { CyrvisController } from './controller';
 import {
+  gazeDesktopAction,
+  gazeDesktopInstruction,
+  type GazeActionContext,
+  type GazeDesktopAction,
+} from './gaze/actions';
+import {
   gazeActionRequest,
   resolveGazeReply,
   type GazeAction,
@@ -50,6 +56,7 @@ export interface VoiceBrainCallbacks {
 }
 
 export interface VoiceBrainOptions {
+  getGazeActionContext?: (text: string) => GazeActionContext | null;
   inspectGaze?: (question: string) => Promise<string>;
   snoozeProactiveGaze?: () => void;
   requireWakeWord?: boolean;
@@ -125,6 +132,7 @@ export class VoiceBrain {
   private inspectionGeneration = 0;
   private gazeSuggestion: { value: GazeSuggestion; expiresAt: number } | null =
     null;
+  private gazeActionHandledUntil = 0;
   private speechAwaitingTranscript = false;
   private speechTurn = 0;
   private pendingGazeRequests = 0;
@@ -304,6 +312,21 @@ export class VoiceBrain {
         ok: false,
         message: '这个对象暂不支持该操作，请先确认作品名称。',
       };
+    if (action === 'play' && this.options.getGazeActionContext) {
+      const context =
+        this.options.getGazeActionContext('播放刚才的这个作品') ||
+        (pending.value.gaze
+          ? { gaze: pending.value.gaze, observedAt: pending.value.gaze.at }
+          : null);
+      const started = this.routeGazeDesktopAction(
+        '播放刚才注视的这个作品',
+        'play',
+        context,
+      );
+      return started
+        ? { ok: true }
+        : { ok: false, message: '请重新锁定目标或先处理当前桌面任务。' };
+    }
     const request = gazeActionRequest(pending.value, action);
     this.gazeSuggestion = null;
     this.options.snoozeProactiveGaze?.();
@@ -614,8 +637,15 @@ export class VoiceBrain {
     this.lastFinalTranscript = transcriptKey;
     this.lastFinalAt = now;
     this.navigationExecutions = new Set();
+    const desktopAction = this.options.getGazeActionContext
+      ? gazeDesktopAction(text)
+      : null;
+    // Snapshot the referent before clearing the spoken suggestion/cooldown.
+    const desktopContext = desktopAction
+      ? this.options.getGazeActionContext?.(text)
+      : null;
 
-    if (this.isGazeFollowup(text) && this.gazeSuggestion) {
+    if (!desktopAction && this.isGazeFollowup(text) && this.gazeSuggestion) {
       const pending = this.gazeSuggestion.value;
       const action = resolveGazeReply(text, pending);
       if (action === 'clarify') {
@@ -719,6 +749,7 @@ export class VoiceBrain {
         (decision.kind === 'task' ||
           decision.kind === 'control' ||
           canHandleFastTool ||
+          !!desktopAction ||
           ((voiceIntent.mode === 'search' ||
             voiceIntent.mode === 'compare' ||
             voiceIntent.mode === 'answer') &&
@@ -733,6 +764,12 @@ export class VoiceBrain {
       }
       this.notifyState();
     }
+
+    if (desktopAction) {
+      this.routeGazeDesktopAction(text, desktopAction, desktopContext || null);
+      return true;
+    }
+    this.gazeActionHandledUntil = 0;
 
     if (this.gazeToolTurn?.generation === inspectionGeneration) {
       this.markUserResponseOutput();
@@ -828,6 +865,53 @@ export class VoiceBrain {
     this.resetAwakeTimer();
     this.notifyState();
     return Boolean(bareStop);
+  }
+
+  private routeGazeDesktopAction(
+    text: string,
+    action: GazeDesktopAction,
+    context: GazeActionContext | null,
+  ): boolean {
+    this.provider.cancelResponse();
+    this.markUserResponseOutput();
+    this.inspectionGeneration++;
+    this.gazeActionHandledUntil = Date.now() + 8000;
+    this.options.snoozeProactiveGaze?.();
+    this.gazeSuggestion = null;
+    this.lastActionableUserText = text;
+    this.suppressReplyUntil = 0;
+    this.wake();
+    if (
+      !context ||
+      Date.now() - context.observedAt > 60_000 ||
+      !context.gaze.target
+    ) {
+      this.speak('请先看向要操作的对象，等绿框锁定，或者告诉我歌单名称。');
+      return false;
+    }
+    if (this.controller.isBusy()) {
+      this.speak('桌面任务正在执行。请先停止当前任务，再操作这个对象。');
+      return false;
+    }
+    try {
+      this.controller.startTask(
+        gazeDesktopInstruction(text, action, context),
+        'voice',
+      );
+      this.speak(
+        action === 'click'
+          ? '好，我来点击你刚才选中的对象。'
+          : '好，我来操作你选中的歌单，检查播放结果后告诉你。',
+      );
+      return true;
+    } catch (error) {
+      this.speak(
+        error instanceof Error
+          ? `桌面任务未启动：${error.message}`
+          : '桌面任务未启动，请重试。',
+      );
+      return false;
+    }
   }
 
   private handleTaskStatusQuery(text: string): boolean {
@@ -1027,6 +1111,18 @@ export class VoiceBrain {
     }
 
     this.resetAwakeTimer();
+    if (
+      Date.now() < this.gazeActionHandledUntil &&
+      ['start_gui_task', 'inspect_gaze_target'].includes(call.name)
+    ) {
+      this.provider.sendToolResult(
+        call.callId,
+        this.controller.isBusy()
+          ? 'ALREADY_ROUTED_TO_GUI: 用户确认的注视对象操作已经交给桌面 Agent，等待执行结果，不要重复启动或声称无法操作。'
+          : 'GAZE_ACTION_HANDLED: 该轮已由确定性路径处理，请等待用户明确目标。',
+      );
+      return;
+    }
     const localFastTool = this.options.fastToolRouter?.resolveProviderToolName(
       call.name,
     );

@@ -432,6 +432,9 @@ export default function CyrvisGaze() {
   return (
     <>
       <button
+        className="non-draggable-area"
+        aria-expanded={open}
+        aria-controls="cyrvis-gaze-panel"
         style={{
           position: 'fixed',
           top: 12,
@@ -447,7 +450,11 @@ export default function CyrvisGaze() {
         ◉ 眼动 {stage !== 'off' ? '开启' : ''}
       </button>
       {open && (
-        <div style={panelStyle}>
+        <div
+          id="cyrvis-gaze-panel"
+          className="non-draggable-area"
+          style={panelStyle}
+        >
           <p role="status">{note}</p>
           <p>
             摄像头本地处理，桌面及其他应用均可识别。启用AI看屏后，仅在提问时将注视区域截图发送到
@@ -608,6 +615,7 @@ export default function CyrvisGaze() {
       {(stage === 'loading' || isTarget || stage === 'report') &&
         createPortal(
           <div
+            className="non-draggable-area"
             style={{
               position: 'fixed',
               inset: 0,

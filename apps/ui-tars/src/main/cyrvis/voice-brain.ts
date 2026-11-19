@@ -242,6 +242,13 @@ export class VoiceBrain {
     this.wake();
   }
 
+  /** A button/hotkey is an explicit reply request even when voice is asleep. */
+  speakRequestedReply(text: string): void {
+    this.suppressReplyUntil = 0;
+    this.wake();
+    this.speak(text);
+  }
+
   shouldSuppressReply(): boolean {
     return Date.now() < this.suppressReplyUntil;
   }
@@ -375,7 +382,7 @@ export class VoiceBrain {
       },
       onTranscript: (text, final) => this.handleTranscript(text, final),
       onAssistantText: (text, final) => {
-        if (this.shouldSuppressReply()) {
+        if (!this.awake || this.shouldSuppressReply()) {
           return;
         }
         if (text.trim()) {
@@ -396,7 +403,7 @@ export class VoiceBrain {
         this.callbacks.onAssistantText?.(text, final);
       },
       onSpeechText: (text, final) => {
-        if (!this.shouldSuppressReply()) {
+        if (this.awake && !this.shouldSuppressReply()) {
           if (text.trim()) {
             this.responseHadSpeechOutput = true;
             this.taskConversation.noteAssistantOutput();
@@ -446,6 +453,7 @@ export class VoiceBrain {
       },
       onResponseDone: () => {
         const textOnlyFallback =
+          this.awake &&
           !this.suppressAudioUntilResponseDone &&
           !this.shouldSuppressReply() &&
           this.responseHadText &&
@@ -1890,6 +1898,7 @@ export class VoiceBrain {
   }
 
   private speak(text: string): void {
+    if (!this.awake) return;
     this.taskConversation.noteAssistantOutput();
     this.markUserResponseOutput();
     this.ttsSpeaking = true;

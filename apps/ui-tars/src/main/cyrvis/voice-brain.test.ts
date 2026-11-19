@@ -146,6 +146,30 @@ afterEach(() => {
 });
 
 describe('VoiceBrain', () => {
+  it('wakes for an explicitly requested screen reply and delivers its audio', async () => {
+    const { brain, provider, audioOut } = setup();
+    await brain.start();
+    expect(brain.getState().awake).toBe(false);
+    brain.speakRequestedReply('这片区域是一个歌单。');
+    provider.emitAudio(new Int16Array([10, 20]));
+    expect(brain.getState().awake).toBe(true);
+    expect(provider.spoken).toEqual(['这片区域是一个歌单。']);
+    expect(audioOut).toHaveLength(1);
+    brain.dispose();
+  });
+
+  it('does not manufacture a muted fallback reply for background speech while asleep', async () => {
+    vi.useFakeTimers();
+    const { brain, provider, audioOut } = setup();
+    await brain.start();
+    provider.callbacks.onResponseStarted?.();
+    provider.callbacks.onAssistantText?.('不应显示的后台回答', true);
+    provider.callbacks.onResponseDone?.();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(provider.spoken).toEqual([]);
+    expect(audioOut).toEqual([]);
+    brain.dispose();
+  });
   it('does not invalidate a pending gaze answer for a noise-only speech segment', async () => {
     let resolve!: (value: string) => void;
     const { brain, provider } = setup({

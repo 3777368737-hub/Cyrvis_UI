@@ -151,6 +151,7 @@ const findAudioScript = (): string | null =>
 const switchWindowsDefaultOutput = async (
   kind: 'headset' | 'speaker',
 ): Promise<void> => {
+  if (process.platform !== 'win32') return;
   const script = findAudioScript();
   if (!script) {
     logger.warn('[cyrvis voice] audio endpoint script not found');
@@ -1109,7 +1110,7 @@ const registerVoiceIpc = () => {
   ipcMain.handle('cyrvis:gaze:inspect', async () => {
     try {
       const answer = await gazeInspector.inspect();
-      service?.provider.speak(answer);
+      service?.brain.speakRequestedReply(answer);
     } catch {
       /* Error is displayed in the inspection panel. */
     }
@@ -1119,10 +1120,10 @@ const registerVoiceIpc = () => {
     void gazeInspector
       .inspect()
       .then((answer) => {
-        service?.provider.speak(answer);
+        service?.brain.speakRequestedReply(answer);
       })
       .catch((error) => {
-        service?.provider.speak(
+        service?.brain.speakRequestedReply(
           error instanceof Error ? error.message : '看屏识别失败',
         );
       });

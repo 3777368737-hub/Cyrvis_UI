@@ -15,6 +15,7 @@ const mock = vi.hoisted(() => ({
   skinListeners: new Set<(value: string | undefined) => void>(),
   send: vi.fn(),
   wake: vi.fn(),
+  speakReply: vi.fn(),
   start: vi.fn(async () => undefined),
   captureClose: vi.fn(),
   provider: {
@@ -120,6 +121,7 @@ vi.mock('./voice-brain', () => ({
       factory({});
     }
     forceAwake = mock.wake;
+    speakRequestedReply = mock.speakReply;
     start = mock.start;
     sleep = vi.fn();
     shouldSuppressReply = () => false;
@@ -144,6 +146,18 @@ it('starts with the saved companion voice instead of the default', async () => {
   const { startVoiceService } = await import('./voice-service');
   startVoiceService();
   expect(mock.config!.voice).toBe('Raymond');
+});
+
+it('routes a gaze-button answer through the brain so sleeping voice can speak it', async () => {
+  const { startVoiceService } = await import('./voice-service');
+  const { gazeInspector } = await import('./gaze/desktop-inspector');
+  startVoiceService();
+  const inspect = vi
+    .spyOn(gazeInspector, 'inspect')
+    .mockResolvedValue('看屏结果');
+  await mock.handlers.get('cyrvis:gaze:inspect')!();
+  expect(mock.speakReply).toHaveBeenCalledWith('看屏结果');
+  inspect.mockRestore();
 });
 
 it('prefers QWEN_VOICE over companion skins when configured', async () => {

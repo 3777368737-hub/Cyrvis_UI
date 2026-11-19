@@ -68,23 +68,26 @@ const proactiveGaze = new ProactiveGaze({
     logger.info('[cyrvis gaze proactive]', { event, detail }),
   inspect: () => gazeInspector.suggest(),
   cancel: () => gazeInspector.cancelProactive(),
-  canInspect: () => {
-    if (!service || !captureReady || !gazeInspector.getStatus().enabled)
-      return false;
-    if (service.provider.isReady?.() === false) return false;
-    const phase = gazeInspector.getStatus().phase;
-    return (
-      service.brain.canOfferGazeSuggestion() &&
-      phase !== 'capturing' &&
-      phase !== 'thinking' &&
-      Date.now() - lastGazeVoiceActivityAt >= 3000
-    );
-  },
+  canInspect: () => !proactiveGazeBlockReason(),
+  blockedReason: () => proactiveGazeBlockReason() || '',
   onSuggestion: (suggestion) => {
     service?.brain.offerGazeSuggestion(suggestion);
     emitActivity('speech', suggestion.speech);
   },
 });
+function proactiveGazeBlockReason(): string | undefined {
+  if (!service || !captureReady) return '请先开启语音助手和麦克风。';
+  if (!gazeInspector.getStatus().enabled) return '请先开启 AI 看屏。';
+  if (service.provider.isReady?.() === false)
+    return '语音正在连接，连好后恢复提醒。';
+  const reason = service.brain.gazeSuggestionBlockReason();
+  if (reason) return reason;
+  if (['capturing', 'thinking'].includes(gazeInspector.getStatus().phase))
+    return '正在处理上一张截图，完成后恢复提醒。';
+  if (Date.now() - lastGazeVoiceActivityAt < 3000)
+    return '对话刚结束，稍后恢复注视计时。';
+  return undefined;
+}
 let selectedVoiceEngine: 'cascade' | 'omni' = env.voiceEngine;
 // Hybrid mode: the main Renderer owns the microphone (and its AEC reference),
 // so the hidden capture window must not feed a second copy of the same audio
@@ -1190,7 +1193,11 @@ const registerVoiceIpc = () => {
     return proactiveGaze.configure(enabled, Number(config?.dwellMs) || 4500);
   });
   ipcMain.handle('cyrvis:gaze:proactive-action', (_event, id, action) => {
-    if (!['play', 'explain', 'story', 'dismiss'].includes(action))
+    if (
+      !['play', 'explain', 'story', 'open', 'summarize', 'dismiss'].includes(
+        action,
+      )
+    )
       return { ok: false, message: '无效操作' };
     if (!service) return { ok: false, message: '请先开启语音助手' };
     broadcast('cyrvis:voice:response-stopped');
@@ -2067,7 +2074,7 @@ export const startVoiceService = (): VoiceService | null => {
         proactiveGaze.snooze();
         return gazeInspector.inspect(question);
       },
-      snoozeProactiveGaze: () => proactiveGaze.snooze(),
+      snoozeProactiveGaze: (ms) => proactiveGaze.snooze(ms),
       awakeTimeoutMs: requireWakeWord ? 20_000 : 0,
       wakePatterns,
       proactivity: {

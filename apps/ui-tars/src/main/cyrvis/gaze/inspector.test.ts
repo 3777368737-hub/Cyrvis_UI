@@ -56,7 +56,7 @@ describe('read-only gaze inspection', () => {
       'explain',
       'story',
     ]);
-    expect(inspector.getStatus().answer).toContain('要我播放');
+    expect(inspector.getStatus().answer).toContain('播放、查看作品信息');
   });
   it('allows a manual question to abort a proactive request without corrupting the newer result', async () => {
     const { deps, inspector } = setup();

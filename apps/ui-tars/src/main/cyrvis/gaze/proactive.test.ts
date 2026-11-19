@@ -1,6 +1,12 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ProactiveGaze } from './proactive';
-import { parseGazeSuggestion, resolveGazeReply } from './suggestions';
+import {
+  gazeActionRequest,
+  parseGazeSuggestion,
+  resolveGazeReply,
+} from './suggestions';
+
+afterEach(() => vi.useRealTimers());
 
 const music = () =>
   parseGazeSuggestion(
@@ -132,7 +138,7 @@ describe('proactive gaze', () => {
     }
     expect(deps.inspect).toHaveBeenCalledTimes(2);
     expect(deps.onSuggestion).toHaveBeenCalledOnce();
-    expect(controller.getStatus().detail).toContain('交给语音');
+    expect(controller.getStatus().detail).toContain('刚提醒过');
   });
   it('does no work until enabled, then inspects only after sustained local dwell', async () => {
     const { controller, deps, point, dwell } = setup();
@@ -179,17 +185,101 @@ describe('proactive gaze', () => {
     expect(controller.getStatus().phase).toBe('off');
     expect(deps.cancel).toHaveBeenCalled();
   });
-  it('does not repeatedly inspect the same position or repeat the same target elsewhere', async () => {
+  it('deduplicates the same position and confirmed work for 45 seconds', async () => {
     const { controller, deps, dwell, point } = setup();
     controller.configure(true);
     dwell(0);
     await flush();
-    for (let at = 5000; at <= 70_000; at += 500) point(at);
+    for (let at = 5000; at <= 35_000; at += 500) point(at);
     expect(deps.inspect).toHaveBeenCalledOnce();
-    dwell(71_000, 0.8);
+    dwell(36_000, 0.8);
     await flush();
     expect(deps.inspect).toHaveBeenCalledTimes(2);
     expect(deps.onSuggestion).toHaveBeenCalledOnce();
+  });
+  it('inspects another object before a minute and does not deduplicate generic cover descriptions', async () => {
+    const { controller, deps, dwell } = setup();
+    const unknown = parseGazeSuggestion(
+      JSON.stringify({
+        kind: 'music',
+        description: '唱片封面',
+        candidate: '同一个错误候选',
+        visible: true,
+        confidence: 'high',
+        identified: false,
+      }),
+      0,
+    )!;
+    deps.inspect.mockResolvedValue(unknown);
+    controller.configure(true);
+    dwell(0);
+    await flush();
+    expect(deps.onSuggestion).toHaveBeenCalledOnce();
+    dwell(13_000, 0.8);
+    await flush();
+    expect(deps.inspect).toHaveBeenCalledTimes(2);
+    expect(deps.onSuggestion).toHaveBeenCalledTimes(2);
+    expect(controller.getStatus().suggestion?.gaze?.x).toBe(0.8);
+  });
+  it('recognizes new object content at the same screen position', async () => {
+    const { controller, deps, setNow } = setup();
+    controller.configure(true);
+    deps.inspect.mockImplementation(async () => ({
+      ...music(),
+      target: '',
+      identified: false,
+    }));
+    const object = (at: number, id: string) => {
+      setNow(at);
+      controller.update({
+        x: 0.5,
+        y: 0.5,
+        at,
+        displayId: 1,
+        bounds: { x: 0, y: 0, width: 1440, height: 900 },
+        target: {
+          id,
+          scene: 'music',
+          label: '封面',
+          role: 'AXImage',
+          source: 'vision',
+          bounds: { x: 500, y: 300, width: 180, height: 180 },
+        },
+      });
+    };
+    for (let at = 0; at <= 4500; at += 500) object(at, 'cover-a');
+    await flush();
+    for (let at = 13_000; at <= 17_500; at += 500) object(at, 'cover-b');
+    await flush();
+    expect(deps.onSuggestion).toHaveBeenCalledTimes(2);
+  });
+  it('resumes on the same object after the deduplication window', async () => {
+    const { controller, deps, dwell, point } = setup();
+    controller.configure(true);
+    dwell(0);
+    await flush();
+    for (let at = 5000; at <= 55_000; at += 500) {
+      point(at);
+      await flush();
+    }
+    expect(deps.onSuggestion).toHaveBeenCalledTimes(2);
+  });
+  it('shows remaining cooldown and a busy reason then resumes when idle', async () => {
+    const { controller, deps, dwell, point, setNow } = setup();
+    Object.assign(deps, { blockedReason: () => '桌面任务正在执行' });
+    controller.configure(true);
+    controller.snooze();
+    point(1000);
+    expect(controller.getStatus().retryInMs).toBe(7000);
+    setNow(8000);
+    deps.canInspect.mockReturnValue(false);
+    point(8000);
+    expect(controller.getStatus().detail).toBe('桌面任务正在执行');
+    deps.canInspect.mockReturnValue(true);
+    dwell(8500);
+    await flush();
+    expect(deps.inspect).toHaveBeenCalledOnce();
+    expect(controller.getStatus().error).toBeUndefined();
   });
   it('ignores stale and uncertain observations and backs off after errors', async () => {
     const { controller, deps, dwell, point } = setup();
@@ -197,13 +287,13 @@ describe('proactive gaze', () => {
     controller.configure(true);
     dwell(0);
     await flush();
-    for (let at = 5000; at <= 20_000; at += 500) point(at);
+    for (let at = 5000; at <= 16_000; at += 500) point(at);
     expect(deps.inspect).toHaveBeenCalledOnce();
     expect(controller.getStatus().error).toBe('model unavailable');
   });
 });
 describe('grounded proactive suggestions', () => {
-  it('offers an unverified visual candidate for lookup without authorizing playback', () => {
+  it('offers explicit visual playback or verification without speaking an unverified name', () => {
     const value = parseGazeSuggestion(
       JSON.stringify({
         kind: 'music',
@@ -219,11 +309,12 @@ describe('grounded proactive suggestions', () => {
     )!;
     expect(value.identified).toBe(false);
     expect(value.target).toBe('');
-    expect(value.speech).toContain('待核实');
+    expect(value.speech).toContain('核实作品信息');
+    expect(value.speech).not.toContain(value.description);
     expect(value.speech).not.toContain('示例艺人');
-    expect(value.actions.map((item) => item.kind)).toEqual(['explain']);
+    expect(value.actions.map((item) => item.kind)).toEqual(['play', 'explain']);
     expect(resolveGazeReply('核实一下', value)).toBe('explain');
-    expect(resolveGazeReply('播放它', value)).toBeNull();
+    expect(resolveGazeReply('播放它', value)).toBe('play');
   });
   it('describes a visible unnamed cover even if work identity confidence is low', () => {
     const suggestion = parseGazeSuggestion(
@@ -239,9 +330,37 @@ describe('grounded proactive suggestions', () => {
       }),
       0,
     );
-    expect(suggestion?.speech).toContain('人物照片');
-    expect(suggestion?.speech).toContain('不能确认作品名称');
-    expect(suggestion?.actions.map((item) => item.kind)).toEqual(['explain']);
+    expect(suggestion?.speech).not.toContain('人物照片');
+    expect(suggestion?.speech).toContain('播放它，还是核实作品信息');
+    expect(suggestion?.actions.map((item) => item.kind)).toEqual([
+      'play',
+      'explain',
+    ]);
+  });
+  it('offers supported two-choice menus for text and unknown images', () => {
+    const text = parseGazeSuggestion(
+      JSON.stringify({
+        kind: 'text',
+        description: '一大段文章的内容',
+        confidence: 'high',
+      }),
+      0,
+    )!;
+    expect(text.actions.map((a) => a.kind)).toEqual(['summarize', 'explain']);
+    expect(resolveGazeReply('总结重点', text)).toBe('summarize');
+    expect(gazeActionRequest(text, 'summarize')).toContain('2至3条要点');
+    const image = parseGazeSuggestion(
+      JSON.stringify({
+        kind: 'image',
+        description: '一幅画',
+        confidence: 'high',
+      }),
+      0,
+    )!;
+    expect(image.actions.map((a) => a.kind)).toEqual(['open', 'explain']);
+    expect(resolveGazeReply('打开它', image)).toBe('open');
+    expect(resolveGazeReply('第二个', image)).toBe('explain');
+    expect(image.speech).not.toContain('一幅画');
   });
   it('still stays silent for blank or ambiguous images rather than guessing', () => {
     for (const flags of [
@@ -261,13 +380,18 @@ describe('grounded proactive suggestions', () => {
       ).toBeNull();
     }
   });
-  it('offers music choices only for a clearly identified work and asks before acting', () => {
+  it('offers three concise music choices and resolves both words and option numbers', () => {
     const suggestion = music();
     expect(suggestion.actions.map((item) => item.kind)).toEqual([
       'play',
       'explain',
       'story',
     ]);
+    expect(suggestion.speech.length).toBeLessThan(70);
+    expect(suggestion.speech).not.toContain(suggestion.description);
+    expect(resolveGazeReply('第一个', suggestion)).toBe('play');
+    expect(resolveGazeReply('选2', suggestion)).toBe('explain');
+    expect(resolveGazeReply('第三项', suggestion)).toBe('story');
     expect(resolveGazeReply('播放它', suggestion)).toBe('play');
     expect(resolveGazeReply('讲讲封面背景', suggestion)).toBe('story');
     expect(resolveGazeReply('好', suggestion)).toBe('clarify');
@@ -275,13 +399,17 @@ describe('grounded proactive suggestions', () => {
     expect(resolveGazeReply('播放周杰伦的歌', suggestion)).toBeNull();
     expect(resolveGazeReply('介绍一下北京的历史', suggestion)).toBeNull();
   });
-  it('does not offer playback or invent identity when a cover cannot be identified', () => {
+  it('offers visual playback without inventing a cover identity', () => {
     const suggestion = parseGazeSuggestion(
       '```json\n{"kind":"music","target":"","description":"这是一张音乐封面","identified":false,"confidence":"medium"}\n```',
       0,
     )!;
-    expect(suggestion.actions.map((item) => item.kind)).toEqual(['explain']);
-    expect(resolveGazeReply('播放', suggestion)).toBeNull();
+    expect(suggestion.actions.map((item) => item.kind)).toEqual([
+      'play',
+      'explain',
+    ]);
+    expect(suggestion.target).toBe('');
+    expect(resolveGazeReply('播放', suggestion)).toBe('play');
     expect(
       parseGazeSuggestion(
         '{"kind":"image","description":"无法区分","confidence":"low"}',

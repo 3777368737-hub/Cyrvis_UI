@@ -196,41 +196,64 @@ describe('VoiceBrain', () => {
     expect(provider.spoken.join('')).not.toContain('只读模型不能点击');
     brain.dispose();
   });
-  it('routes the suggested playback button through the same GUI path', async () => {
-    const gaze = {
-      x: 0.5,
-      y: 0.5,
-      at: Date.now(),
-      displayId: 1,
-      bounds: { x: 0, y: 0, width: 1440, height: 900 },
-      target: {
-        id: 'cover',
-        scene: 'music',
-        label: '歌单',
-        role: 'AXImage',
-        source: 'accessibility' as const,
-        bounds: { x: 500, y: 300, width: 180, height: 180 },
-      },
-    };
-    const { brain, provider, adapter } = setup({
-      requireWakeWord: false,
-      getGazeActionContext: () => ({ gaze, observedAt: Date.now() }),
-    });
-    await brain.start();
-    const suggestion = {
-      ...parseGazeSuggestion(
-        '{"kind":"music","target":"Demo","description":"音乐作品","identified":true,"confidence":"high"}',
-        Date.now(),
-      )!,
-      gaze,
-    };
-    brain.offerGazeSuggestion(suggestion);
-    expect(brain.followGazeSuggestion(suggestion.id, 'play').ok).toBe(true);
-    await flush();
-    expect(adapter.instruction).toContain('[已绑定注视对象]');
-    expect(provider.submitted).toEqual([]);
-    brain.dispose();
-  });
+  it.each(['play', 'open'] as const)(
+    'routes the selected %s option to the frozen object even when gaze has moved',
+    async (action) => {
+      const gaze = {
+        x: 0.5,
+        y: 0.5,
+        at: Date.now(),
+        displayId: 1,
+        bounds: { x: 0, y: 0, width: 1440, height: 900 },
+        target: {
+          id: 'cover',
+          scene: 'music',
+          label: '歌单',
+          role: 'AXImage',
+          source: 'accessibility' as const,
+          bounds: { x: 500, y: 300, width: 180, height: 180 },
+        },
+      };
+      const { brain, provider, adapter } = setup({
+        requireWakeWord: false,
+        getGazeActionContext: () => ({
+          gaze: {
+            ...gaze,
+            target: { ...gaze.target, id: 'other', label: '其他对象' },
+          },
+          observedAt: Date.now(),
+        }),
+      });
+      await brain.start();
+      const suggestion = {
+        ...parseGazeSuggestion(
+          JSON.stringify({
+            kind: action === 'play' ? 'music' : 'image',
+            target: '',
+            description: '无名称的封面',
+            visible: true,
+            identified: false,
+            confidence: 'high',
+          }),
+          Date.now(),
+        )!,
+        gaze,
+      };
+      brain.offerGazeSuggestion(suggestion);
+      expect(adapter.instruction).toBe('');
+      provider.emitTranscript('第一个');
+      await flush();
+      expect(adapter.instruction).toContain('[已绑定注视对象]');
+      expect(adapter.instruction).toContain('歌单');
+      expect(adapter.instruction).not.toContain('其他对象');
+      expect(provider.submitted).toEqual([]);
+      expect(brain.gazeSuggestionBlockReason()).toContain('桌面任务');
+      adapter.finish();
+      await flush();
+      expect(brain.canOfferGazeSuggestion()).toBe(true);
+      brain.dispose();
+    },
+  );
   it('routes an explicit click-and-play request to the GUI executor even when the cover has no name', async () => {
     const context: GazeActionContext = {
       gaze: {

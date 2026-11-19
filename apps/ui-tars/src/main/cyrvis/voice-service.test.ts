@@ -148,6 +148,7 @@ vi.mock('./voice-brain', () => ({
     clearGazeSuggestion = vi.fn();
     isGazeFollowup = () => false;
     canOfferGazeSuggestion = () => true;
+    gazeSuggestionBlockReason = () => undefined;
     offerGazeSuggestion = mock.offerSuggestion;
     start = mock.start;
     sleep = vi.fn();

@@ -53,7 +53,7 @@ export function gazeDesktopAction(text: string): GazeDesktopAction | null {
   )
     return null;
   const click =
-    /(点击|点一下|点开|双击|点(?:这个|那个|它|这张|光标|高亮)|click)/i.test(
+    /(打开|点击|点一下|点开|双击|点(?:这个|那个|它|这张|光标|高亮)|click)/i.test(
       text,
     );
   const play =

@@ -58,7 +58,7 @@ export interface VoiceBrainCallbacks {
 export interface VoiceBrainOptions {
   getGazeActionContext?: (text: string) => GazeActionContext | null;
   inspectGaze?: (question: string) => Promise<string>;
-  snoozeProactiveGaze?: () => void;
+  snoozeProactiveGaze?: (ms?: number) => void;
   requireWakeWord?: boolean;
   awakeTimeoutMs?: number;
   wakePatterns?: RegExp[];
@@ -270,13 +270,16 @@ export class VoiceBrain {
     this.gazeSuggestion = null;
   }
   canOfferGazeSuggestion(): boolean {
-    return (
-      !this.userSpeaking &&
-      !this.ttsSpeaking &&
-      !this.waitingForUserResponse &&
-      this.pendingGazeRequests === 0 &&
-      !this.controller.isBusy()
-    );
+    return !this.gazeSuggestionBlockReason();
+  }
+  gazeSuggestionBlockReason(): string | undefined {
+    if (this.controller.isBusy())
+      return '桌面任务正在执行或等待模型，结束后恢复主动提醒。';
+    if (this.userSpeaking) return '正在听你说话，结束后恢复注视计时。';
+    if (this.ttsSpeaking) return '正在播报，播报结束后恢复注视计时。';
+    if (this.waitingForUserResponse || this.pendingGazeRequests > 0)
+      return '正在处理你的请求，完成后恢复主动提醒。';
+    return undefined;
   }
   offerGazeSuggestion(value: GazeSuggestion): void {
     this.gazeSuggestion = { value, expiresAt: Date.now() + 120_000 };
@@ -302,7 +305,7 @@ export class VoiceBrain {
       };
     if (action === 'dismiss') {
       this.gazeSuggestion = null;
-      this.options.snoozeProactiveGaze?.();
+      this.options.snoozeProactiveGaze?.(60_000);
       this.provider.cancelResponse();
       this.speakRequestedReply('好，先不打扰你。');
       return { ok: true };
@@ -312,15 +315,20 @@ export class VoiceBrain {
         ok: false,
         message: '这个对象暂不支持该操作，请先确认作品名称。',
       };
-    if (action === 'play' && this.options.getGazeActionContext) {
-      const context =
-        this.options.getGazeActionContext('播放刚才的这个作品') ||
-        (pending.value.gaze
-          ? { gaze: pending.value.gaze, observedAt: pending.value.gaze.at }
-          : null);
+    if (
+      (action === 'play' || action === 'open') &&
+      (this.options.getGazeActionContext ||
+        action === 'open' ||
+        !pending.value.identified)
+    ) {
+      const context = pending.value.gaze
+        ? { gaze: pending.value.gaze, observedAt: pending.value.gaze.at }
+        : this.options.getGazeActionContext?.('刚才的这个对象') || null;
       const started = this.routeGazeDesktopAction(
-        '播放刚才注视的这个作品',
-        'play',
+        action === 'play'
+          ? '播放刚才注视的这个作品'
+          : '打开刚才注视的这个对象查看详情',
+        action === 'play' ? 'play' : 'click',
         context,
       );
       return started
@@ -396,7 +404,7 @@ export class VoiceBrain {
    * a short window so it cannot answer with "好的，已暂停…".
    */
   markUserStop(): void {
-    this.options.snoozeProactiveGaze?.();
+    this.options.snoozeProactiveGaze?.(60_000);
     if (this.gazeSuggestion) {
       this.gazeSuggestion = null;
     }

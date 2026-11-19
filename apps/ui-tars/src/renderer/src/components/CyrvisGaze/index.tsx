@@ -630,24 +630,28 @@ export default function CyrvisGaze() {
             {proactive.enabled && (
               <div>
                 <p>
-                  注视后描述内容并询问下一步；不会自动播放或点击。成功提醒至少间隔1分钟，同一对象不重复；识别未成功会显示原因并稍后重试。
+                  稳定注视后简短询问下一步，提供 2–3
+                  个选项；你选择后才操作。新对象最短间隔8秒，同一对象45秒内不重复。
                 </p>
                 <p>
-                  触发截图后可以移开视线；助手会完成对当时画面的识别，并在语音空闲后描述“刚才看到的内容”。
+                  触发截图后可以移开视线；助手识别当时的对象，语音空闲时询问你的需求。任务执行期间暂缓提醒，结束后自动恢复。
                 </p>
                 <p role="status">
                   {proactive.phase === 'watching'
-                    ? '等待稳定注视…'
+                    ? proactive.detail || '等待稳定注视…'
                     : proactive.phase === 'waiting'
-                      ? '等待语音空闲或开启语音…'
+                      ? proactive.detail || '等待语音空闲或开启语音…'
                       : proactive.phase === 'inspecting'
                         ? '正在理解你注视的内容…'
                         : proactive.phase === 'cooldown'
                           ? proactive.detail || '暂缓中，稍后继续识别'
                           : proactive.error || ''}
                 </p>
-                {proactive.detail && proactive.phase !== 'cooldown' && (
-                  <p>{proactive.detail}</p>
+                {proactive.phase === 'cooldown' && !!proactive.retryInMs && (
+                  <p>
+                    还需 {Math.ceil(proactive.retryInMs / 1000)}{' '}
+                    秒；眼动仍在运行。
+                  </p>
                 )}
                 <progress
                   aria-label="持续注视进度"

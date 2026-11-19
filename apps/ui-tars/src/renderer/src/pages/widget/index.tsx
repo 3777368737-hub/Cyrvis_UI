@@ -35,7 +35,7 @@ import {
 import { useSetting } from '@renderer/hooks/useSetting';
 import { Operator } from '@main/store/types';
 import type { TaskStatus } from '@shared/cyrvis';
-import logo from '@resources/logo-full.png?url';
+import logo from '@resources/logo-vector.svg?url';
 
 import './widget.css';
 
@@ -297,7 +297,7 @@ const Widget = () => {
       style={{ borderWidth: isWin ? '1px' : '0' }}
     >
       <div className="draggable-area flex shrink-0 items-center gap-2">
-        <img src={logo} alt="logo" className="-ml-2 h-6" draggable={false} />
+        <img src={logo} alt="" className="h-6 w-6 shrink-0" draggable={false} />
         <div className="ml-1 flex min-w-0 items-center gap-2">
           <span
             className={`h-2 w-2 shrink-0 rounded-full ${

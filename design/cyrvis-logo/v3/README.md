@@ -18,9 +18,6 @@
 
 重建：在仓库根目录运行 `node design/cyrvis-logo/v3/build.mjs`，使用现有 sharp。
 
-v3 已用于当前 Cyrvis 桌面应用，v1/v2 作为历史设计保留。
+v3 已作为历史设计保留。当前 Cyrvis 桌面应用使用 [v4 像素街机设计](../v4/README.md)。
 
-同步应用资源：在仓库根目录运行 `node scripts/cyrvis/sync-logo.mjs`。此命令生成
-`apps/ui-tars/resources/` 中的界面 Logo、深色背景字标、favicon、macOS 托盘模板和
-PNG/ICNS/ICO 应用图标。深色背景字标仅将 v3 字标颜色改为白色，图形保持原样。
-修改设计后先运行本目录的 `build.mjs`，再执行同步命令。
+本目录的 `build.mjs` 仅重建 v3 历史资产。`scripts/cyrvis/sync-logo.mjs` 现从 v4 目录同步应用资源。

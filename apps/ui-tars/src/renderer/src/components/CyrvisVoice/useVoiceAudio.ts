@@ -36,6 +36,16 @@ const BARGE_CONFIRMATION_FRAMES = 2;
 // frames. Two AEC frames at 0.04 still reject steady echo but let normal
 // speech start the command capture before the first words are lost.
 const TTS_BARGE_THRESHOLD = 0.04;
+
+// Speaker mode has two phases. The AEC/AGC transient right after playback
+// starts can briefly push residual echo above the steady-state floor, so keep
+// the loud/long confirmation for the first 450ms. After that, use the known
+// 0.05/3 baseline: 0.12/4 made a normal speaking voice sound like a shout.
+const SPEAKER_ONSET_GUARD_MS = 450;
+const SPEAKER_ONSET_BARGE_THRESHOLD = 0.12;
+const SPEAKER_ONSET_BARGE_FRAMES = 4;
+const SPEAKER_TTS_BARGE_THRESHOLD = 0.05;
+const SPEAKER_BARGE_CONFIRMATION_FRAMES = 3;
 const MAX_BARGE_PREROLL_CHUNKS = 8;
 const BARGE_ENDPOINT_SILENCE_MS = MIN_ENDPOINT_SILENCE_MS;
 
@@ -184,6 +194,7 @@ export function useVoiceAudio() {
   const keywordPcmRef = useRef(new Uint8Array());
   const bargePrerollRef = useRef<Float32Array[]>([]);
   const assistantSpeakingRef = useRef(false);
+  const assistantPlaybackStartedAtRef = useRef(0);
   const speechDeltaRef = useRef('');
   const speechDeltaSeenRef = useRef(false);
   const firstAudioPromiseRef = useRef<Promise<boolean> | null>(null);
@@ -196,6 +207,7 @@ export function useVoiceAudio() {
   const noiseFloorRef = useRef(0.006);
   const speechFramesRef = useRef(0);
   const bargeFramesRef = useRef(0);
+  const audioModeRef = useRef<'headset' | 'speaker'>('headset');
   const lastBargeDiagRef = useRef(0);
 
   settingsRef.current = settings;
@@ -211,6 +223,7 @@ export function useVoiceAudio() {
     clearIdleTimer();
     legacyPlayerRef.current = null;
     assistantSpeakingRef.current = false;
+    assistantPlaybackStartedAtRef.current = 0;
     bargeFramesRef.current = 0;
     keywordPcmRef.current = new Uint8Array();
     setPlaybackActive(false);
@@ -227,6 +240,7 @@ export function useVoiceAudio() {
     legacyPlayerRef.current = null;
     legacy?.stop(false);
     assistantSpeakingRef.current = false;
+    assistantPlaybackStartedAtRef.current = 0;
     speechDeltaRef.current = '';
     speechDeltaSeenRef.current = false;
     resolveFirstAudioRef.current?.(false);
@@ -413,26 +427,47 @@ export function useVoiceAudio() {
         for (const chunk of keywordChunks.chunks) {
           window.electron.voice.sendKeywordAudio(chunk.buffer as ArrayBuffer);
         }
-        const threshold = Math.max(
-          TTS_BARGE_THRESHOLD,
-          noiseFloorRef.current * 2.5,
-        );
+        const speakerMode = audioModeRef.current === 'speaker';
         const nowDiag = Date.now();
+        const playbackMs = assistantPlaybackStartedAtRef.current
+          ? nowDiag - assistantPlaybackStartedAtRef.current
+          : Number.POSITIVE_INFINITY;
+        const speakerOnset = speakerMode && playbackMs < SPEAKER_ONSET_GUARD_MS;
+        const threshold = Math.max(
+          speakerMode
+            ? speakerOnset
+              ? SPEAKER_ONSET_BARGE_THRESHOLD
+              : SPEAKER_TTS_BARGE_THRESHOLD
+            : TTS_BARGE_THRESHOLD,
+          noiseFloorRef.current * (speakerMode ? 4 : 2.5),
+        );
+        const confirmationFrames = speakerMode
+          ? speakerOnset
+            ? SPEAKER_ONSET_BARGE_FRAMES
+            : SPEAKER_BARGE_CONFIRMATION_FRAMES
+          : BARGE_CONFIRMATION_FRAMES;
         if (nowDiag - lastBargeDiagRef.current >= 500) {
           lastBargeDiagRef.current = nowDiag;
           console.log(
             '[cyrvis] barge diag',
             JSON.stringify({
+              mode: audioModeRef.current,
+              phase: speakerMode
+                ? speakerOnset
+                  ? 'onset'
+                  : 'steady'
+                : 'headset',
               rms: Number(rms.toFixed(4)),
               threshold: Number(threshold.toFixed(4)),
               frames: bargeFramesRef.current,
+              need: confirmationFrames,
               floor: Number(noiseFloorRef.current.toFixed(4)),
             }),
           );
         }
         bargeFramesRef.current =
           rms >= threshold ? bargeFramesRef.current + 1 : 0;
-        if (bargeFramesRef.current >= BARGE_CONFIRMATION_FRAMES) {
+        if (bargeFramesRef.current >= confirmationFrames) {
           bargeFramesRef.current = 0;
           bargePendingRef.current = true;
           const preRoll = bargePrerollRef.current;
@@ -584,6 +619,8 @@ export function useVoiceAudio() {
 
   const selectAudioMode = useCallback(
     async (mode: 'headset' | 'speaker') => {
+      audioModeRef.current = mode;
+      bargeFramesRef.current = 0;
       setAudioModeState(mode);
       localStorage.setItem('cyrvis.audioMode', mode);
       await window.electron.voice.setAudioMode(mode);
@@ -714,6 +751,8 @@ export function useVoiceAudio() {
       const saved = localStorage.getItem('cyrvis.audioMode');
       const nextMode =
         saved === 'speaker' || saved === 'headset' ? saved : mode;
+      audioModeRef.current = nextMode;
+      bargeFramesRef.current = 0;
       setAudioModeState(nextMode);
       await window.electron.voice.setAudioMode(nextMode);
       const outputs = await refreshOutputDevices();
@@ -749,6 +788,9 @@ export function useVoiceAudio() {
         // response.created event fires before the model has processed the
         // user's own utterance, so arming the barge there cancelled responses
         // while the user was still finishing their sentence.
+        if (!assistantSpeakingRef.current) {
+          assistantPlaybackStartedAtRef.current = Date.now();
+        }
         assistantSpeakingRef.current = true;
         setPlaybackActive(true);
         if (!legacyPlayerRef.current) {
@@ -770,6 +812,7 @@ export function useVoiceAudio() {
         playerEpochRef.current += 1;
         if (settingsRef.current.voiceEngine !== 'omni') {
           assistantSpeakingRef.current = true;
+          assistantPlaybackStartedAtRef.current = Date.now();
         }
         speechDeltaRef.current = '';
         speechDeltaSeenRef.current = false;
@@ -876,6 +919,8 @@ export function useVoiceAudio() {
       }),
       window.electron.voice.onSleep(() => setThinking(false)),
       window.electron.voice.onAudioMode(({ mode }) => {
+        audioModeRef.current = mode;
+        bargeFramesRef.current = 0;
         setAudioModeState(mode);
       }),
       window.electron.voice.onCaptureReady(() => {

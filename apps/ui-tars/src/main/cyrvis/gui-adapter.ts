@@ -14,22 +14,12 @@ import { showCompanion } from '@main/window';
 import { closeOverlay, hideScreenWaterFlow } from '@main/window/ScreenMarker';
 
 import type { GUIAdapter, GUIAdapterCallbacks } from './types';
+import { describeGUIError } from './gui-errors';
 
 const truncate = (text: string, max = 100): string =>
   text.length > max ? `${text.slice(0, max)}...` : text;
 
-const cleanError = (error: unknown): string => {
-  const raw = error instanceof Error ? error.message : String(error);
-  try {
-    const parsed = JSON.parse(raw) as { message?: string };
-    if (parsed?.message) {
-      return truncate(parsed.message);
-    }
-  } catch {
-    // Not JSON, use the raw text.
-  }
-  return truncate(raw);
-};
+const cleanError = describeGUIError;
 
 const DIRECTION_LABEL: Record<string, string> = {
   up: '上',
@@ -227,7 +217,9 @@ export class ElectronGUIAdapter implements GUIAdapter {
         this.emitCancelled();
         break;
       case StatusEnum.ERROR:
-        this.emitFailed(state.errorMsg || 'GUI agent error');
+        this.emitFailed(
+          state.errorMsg || state.restUserData?.error || 'GUI agent error',
+        );
         break;
       default:
         break;
@@ -314,7 +306,9 @@ export class ElectronGUIAdapter implements GUIAdapter {
         this.emitCancelled();
         break;
       case StatusEnum.ERROR:
-        this.emitFailed(state.errorMsg || 'GUI agent error');
+        this.emitFailed(
+          state.errorMsg || state.restUserData?.error || 'GUI agent error',
+        );
         break;
       default:
         this.emitFailed(

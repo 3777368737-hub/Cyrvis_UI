@@ -90,6 +90,35 @@ describe('TaskConversationCoordinator', () => {
     ]);
   });
 
+  it('announces a wait once per unchanged step and resets for a new task', () => {
+    let now = 100_000;
+    const spoken: string[] = [];
+    const coordinator = new TaskConversationCoordinator({
+      speak: (text) => spoken.push(text),
+      getStatus: () => snapshot({ step: 0 }),
+      now: () => now,
+    });
+    for (let i = 0; i < 10; i++) {
+      coordinator.onEvent({ type: 'task_stalled', taskId: 'task-1', step: 0 });
+      now += 20_000;
+    }
+    expect(spoken).toHaveLength(1);
+    expect(spoken[0]).toContain('还没有执行点击');
+    expect(spoken[0]).not.toContain('第 0 步');
+    coordinator.onEvent({ type: 'task_stalled', taskId: 'task-1', step: 1 });
+    expect(spoken).toHaveLength(2);
+    expect(coordinator.describeStatus()).toContain('等待桌面模型');
+    coordinator.onEvent({
+      type: 'task_started',
+      taskId: 'task-2',
+      instruction: '播放',
+      source: 'voice',
+    });
+    coordinator.onEvent({ type: 'task_stalled', taskId: 'task-2', step: 0 });
+    expect(spoken).toHaveLength(3);
+    coordinator.dispose();
+  });
+
   it('describes the latest task status for spoken queries', () => {
     const coordinator = new TaskConversationCoordinator({
       speak: () => undefined,

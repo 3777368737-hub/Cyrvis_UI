@@ -18,7 +18,8 @@ export class TaskConversationCoordinator {
   private startAckTimer: ReturnType<typeof setTimeout> | null = null;
   private lastOutputAt = 0;
   private lastProgressAt = 0;
-  private lastStalledAt = 0;
+  private lastStalledAt = -Infinity;
+  private lastStalledStep: number | null = null;
   private lastStep = 0;
   private readonly startAckDelayMs: number;
   private readonly progressIntervalMs: number;
@@ -43,6 +44,9 @@ export class TaskConversationCoordinator {
       case 'task_started': {
         this.clearStartAck();
         this.lastStep = 0;
+        this.lastStalledAt = -Infinity;
+        this.lastStalledStep = null;
+        this.lastProgressAt = -Infinity;
         this.startAckTimer = setTimeout(() => {
           this.startAckTimer = null;
           if (this.lastOutputAt >= eventAt) {
@@ -65,10 +69,16 @@ export class TaskConversationCoordinator {
         }
         break;
       case 'task_stalled':
-        if (eventAt - this.lastStalledAt >= this.stalledCooldownMs) {
+        if (
+          event.step !== this.lastStalledStep &&
+          eventAt - this.lastStalledAt >= this.stalledCooldownMs
+        ) {
           this.lastStalledAt = eventAt;
+          this.lastStalledStep = event.step;
           this.options.speak(
-            `任务还在处理，目前进行到第 ${event.step} 步，请稍等。`,
+            event.step === 0
+              ? '正在等待桌面模型返回第一个操作，目前还没有执行点击。有结果或失败时我会告诉你。'
+              : `任务暂时停在第 ${event.step} 步，没有新的执行进展。有进展或失败时我会告诉你。`,
           );
         }
         break;
@@ -109,6 +119,8 @@ export class TaskConversationCoordinator {
       case 'starting':
         return '任务正在启动，还没有进入第一个执行步骤。';
       case 'executing':
+        if (task.step === 0)
+          return '正在等待桌面模型返回第一个操作，目前还没有执行点击。';
         return `任务正在执行，第 ${task.step} 步${
           task.lastSummary ? `：${task.lastSummary}` : ''
         }。`;
@@ -133,7 +145,8 @@ export class TaskConversationCoordinator {
     this.clearStartAck();
     this.lastOutputAt = 0;
     this.lastProgressAt = 0;
-    this.lastStalledAt = 0;
+    this.lastStalledAt = -Infinity;
+    this.lastStalledStep = null;
     this.lastStep = 0;
   }
 

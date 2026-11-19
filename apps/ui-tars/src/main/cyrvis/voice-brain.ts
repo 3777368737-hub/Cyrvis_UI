@@ -931,7 +931,7 @@ export class VoiceBrain {
   }
 
   private isTaskStatusQuery(text: string): boolean {
-    return /(?:任务.*(?:进度|状态|到哪|第几步)|(?:进度|第几步|执行到哪|做到哪|现在在做什么)|(?:任务|你).*怎么样了)/i.test(
+    return /(?:任务.*(?:进度|状态|到哪|第几步)|(?:进度|第几步|执行到哪|做到哪|进行.{0,3}哪一步|现在在做什么)|(?:任务|你).*怎么样了)/i.test(
       text,
     );
   }

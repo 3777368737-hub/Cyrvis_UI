@@ -113,9 +113,10 @@ export class GUIAgent<T extends Operator> extends BaseGUIAgent<
       }),
     );
 
-    logger.info(
-      `[GUIAgent] run:\nsystem prompt: ${this.systemPrompt},\nmodel version: ${this.uiTarsVersion},\nmodel config: ${JSON.stringify(this.model)}`,
-    );
+    logger.info('[GUIAgent] run', {
+      modelVersion: this.uiTarsVersion,
+      model: this.model.modelName,
+    });
 
     let loopCnt = 0;
     let snapshotErrCnt = 0;
@@ -287,19 +288,25 @@ export class GUIAgent<T extends Operator> extends BaseGUIAgent<
                 };
               }
 
-              Object.assign(data, {
-                status: StatusEnum.ERROR,
-                error: this.guiAgentErrorParser(
-                  ErrorStatusEnum.INVOKE_RETRY_ERROR,
-                  error as Error,
-                ),
-              });
+              const status = (error as { status?: number })?.status;
+              const code = (error as { code?: string })?.code || '';
+              if (
+                [400, 401, 403, 404, 422].includes(status || 0) ||
+                (status === 429 && /quota|balance|arrear/i.test(code))
+              ) {
+                bail(error as Error);
+                return { prediction: '', parsedPredictions: [] };
+              }
+
+              // A transient attempt failure is not the task's terminal state.
+              // Otherwise a successful retry still ends the loop after its action.
               throw error;
             }
           },
           {
             retries: retry?.model?.maxRetries ?? 0,
-            minTimeout: 1000 * 30,
+            minTimeout: retry?.model?.minTimeoutMs ?? 1000 * 30,
+            maxTimeout: retry?.model?.maxTimeoutMs ?? Infinity,
             onRetry: retry?.model?.onRetry,
           },
         );
@@ -363,9 +370,12 @@ export class GUIAgent<T extends Operator> extends BaseGUIAgent<
           ? parsedPredictions
           : parsedPredictions.slice(0, 1);
         if (parsedPredictions.length > 1 && !batchAllowed) {
-          logger.warn('[GUIAgent] action batching disabled; executing first action only', {
-            parsed: parsedPredictions.length,
-          });
+          logger.warn(
+            '[GUIAgent] action batching disabled; executing first action only',
+            {
+              parsed: parsedPredictions.length,
+            },
+          );
         }
         let actionIndex = 0;
         for (const parsedPrediction of executablePredictions) {

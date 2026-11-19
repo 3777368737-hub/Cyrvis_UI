@@ -81,6 +81,8 @@ export type Logger = Pick<Console, 'log' | 'error' | 'warn' | 'info'>;
 export interface RetryConfig {
   maxRetries: number;
   onRetry?: (error: Error, attempt: number) => void;
+  minTimeoutMs?: number;
+  maxTimeoutMs?: number;
 }
 
 export interface GUIAgentConfig<TOperator> {

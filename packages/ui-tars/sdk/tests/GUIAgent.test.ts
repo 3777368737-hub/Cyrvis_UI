@@ -15,7 +15,8 @@ import { mockOpenAIResponse } from './testKits/index';
 import { DEFAULT_FACTORS } from '../src/constants';
 
 const getContext = vi.fn();
-vi.mock('openai', () => ({
+vi.mock('openai', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('openai')>()),
   default: vi.fn(),
 }));
 
@@ -46,6 +47,98 @@ describe('GUIAgent', () => {
     getContext.mockRestore();
     vi.unstubAllEnvs();
   });
+  it('continues executing after a transient request succeeds on a bounded retry', async () => {
+    const model = new UITarsModel({ apiKey: 'test-key', model: 'test-model' });
+    const invoke = vi
+      .spyOn(model, 'invoke')
+      .mockRejectedValueOnce(new Error('Request timed out.'))
+      .mockResolvedValueOnce({
+        prediction: 'Action: click()',
+        parsedPredictions: [
+          {
+            action_type: 'click',
+            action_inputs: { start_box: '[0.5,0.5,0.5,0.5]' },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        prediction: 'Action: finished()',
+        parsedPredictions: [{ action_type: 'finished', action_inputs: {} }],
+      });
+    const onError = vi.fn();
+    const statuses: StatusEnum[] = [];
+    const operator = new MockOperator();
+    const logger = {
+      info: vi.fn(),
+      log: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const agent = new GUIAgent({
+      model,
+      operator,
+      logger,
+      onError,
+      retry: { model: { maxRetries: 1, minTimeoutMs: 1, maxTimeoutMs: 1 } },
+      onData: ({ data }) => {
+        statuses.push(data.status);
+      },
+    });
+    await agent.run('click then finish');
+    expect(invoke).toHaveBeenCalledTimes(3);
+    expect(statuses).not.toContain(StatusEnum.ERROR);
+    expect(statuses.at(-1)).toBe(StatusEnum.END);
+    expect(onError).not.toHaveBeenCalled();
+    expect(JSON.stringify(logger.info.mock.calls)).not.toContain('test-key');
+  });
+
+  it.each([
+    { status: 403, code: 'Forbidden.AgentPlanDeductNotEnabled' },
+    { status: 429, code: 'QuotaExceeded.AgentPlanQuotaExceeded' },
+  ])(
+    'does not retry a permanent model rejection ($code)',
+    async ({ status, code }) => {
+      const model = new UITarsModel({
+        apiKey: 'test-key',
+        model: 'test-model',
+      });
+      const invoke = vi
+        .spyOn(model, 'invoke')
+        .mockRejectedValue(Object.assign(new Error(code), { status, code }));
+      const operator = new MockOperator();
+      const onError = vi.fn();
+      const agent = new GUIAgent({
+        model,
+        operator,
+        onError,
+        retry: { model: { maxRetries: 5, minTimeoutMs: 1, maxTimeoutMs: 1 } },
+      });
+      await agent.run('click');
+      expect(invoke).toHaveBeenCalledOnce();
+      expect(operator.execute).not.toHaveBeenCalled();
+      expect(onError).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('fails after its retry budget without executing any action', async () => {
+    const model = new UITarsModel({ apiKey: 'test-key', model: 'test-model' });
+    const invoke = vi
+      .spyOn(model, 'invoke')
+      .mockRejectedValue(new Error('Request timed out.'));
+    const operator = new MockOperator();
+    const onError = vi.fn();
+    const agent = new GUIAgent({
+      model,
+      operator,
+      onError,
+      retry: { model: { maxRetries: 1, minTimeoutMs: 1, maxTimeoutMs: 1 } },
+    });
+    await agent.run('click');
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(operator.execute).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledOnce();
+  });
+
   it('normal run', async () => {
     mockOpenAIResponse([
       "Thought: Click on the search bar at the top of the screen\nAction: click(start_box='(72,646)')",
@@ -53,7 +146,7 @@ describe('GUIAgent', () => {
     ]);
     const modelConfig = {
       baseURL: 'http://localhost:3000/v1',
-      apiKey: 'test',
+      apiKey: 'test-key',
       model: 'ui-tars',
     };
     const operator = new MockOperator();
@@ -163,7 +256,7 @@ describe('GUIAgent', () => {
     ]);
     const modelConfig = {
       baseURL: 'http://localhost:3000/v1',
-      apiKey: 'test',
+      apiKey: 'test-key',
       model: 'ui-tars',
     };
     const operator = new MockOperator();
@@ -196,7 +289,7 @@ describe('GUIAgent', () => {
     ]);
     const modelConfig = {
       baseURL: 'http://localhost:3000/v1',
-      apiKey: 'test',
+      apiKey: 'test-key',
       model: 'ui-tars',
     };
     const operator = new MockOperator();
@@ -341,7 +434,7 @@ describe('GUIAgent', () => {
     const agent = new GUIAgent({
       model: {
         baseURL: 'http://localhost:3000/v1',
-        apiKey: 'test',
+        apiKey: 'test-key',
         model: 'ui-tars',
       },
       operator,
@@ -385,7 +478,7 @@ describe('GUIAgent', () => {
     ]);
     const modelConfig = {
       baseURL: 'http://localhost:3000/v1',
-      apiKey: 'test',
+      apiKey: 'test-key',
       model: 'ui-tars',
     };
     class CustomActionSpacesOperator extends Operator {

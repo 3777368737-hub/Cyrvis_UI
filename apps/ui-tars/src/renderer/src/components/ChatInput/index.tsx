@@ -20,7 +20,7 @@ import { Button } from '@renderer/components/ui/button';
 // import { useScreenRecord } from '@renderer/hooks/useScreenRecord';
 import { api } from '@renderer/api';
 
-import { Play, Send, Square, Loader2 } from 'lucide-react';
+import { Play, ArrowUp, Square, Loader2, MessageCircle } from 'lucide-react';
 import { Textarea } from '@renderer/components/ui/textarea';
 import { useSessionStore } from '@renderer/store/session';
 import { toast } from 'sonner';
@@ -157,7 +157,8 @@ const ChatInput = ({
               <Button
                 variant="secondary"
                 size="icon"
-                className="h-8 w-8 bg-pink-100 hover:bg-pink-200 text-pink-500 border-pink-200"
+                className="cyrvis-send-button"
+                aria-label="Resume task"
                 onClick={startRun}
                 disabled={!getInstantInstructions() || disabled || submitting}
               >
@@ -166,8 +167,7 @@ const ChatInput = ({
             </TooltipTrigger>
             <TooltipContent>
               <p className="whitespace-pre-line">
-                send last instructions when you done for ui-tars&apos;s
-                &apos;CALL_USER&apos;
+                Continue after completing the requested action.
               </p>
             </TooltipContent>
           </Tooltip>
@@ -179,43 +179,50 @@ const ChatInput = ({
       <Button
         variant="secondary"
         size="icon"
-        className="h-8 w-8"
+        className="cyrvis-send-button"
         aria-label="Send message"
         onClick={startRun}
         disabled={!getInstantInstructions() || disabled || submitting}
       >
-        <Send className="h-4 w-4" />
+        <ArrowUp className="h-4 w-4" />
       </Button>
     );
   };
 
   return (
-    <div className="px-4 w-full shrink-0">
-      <div className="flex flex-col space-y-4">
-        <div className="relative w-full">
-          <Textarea
-            ref={textareaRef}
-            placeholder={
-              isCallUser && savedInstructions
-                ? `${savedInstructions}`
-                : running && lastHumanMessage && messages?.length > 1
-                  ? lastHumanMessage
-                  : 'What can I do for you today?'
-            }
-            className="min-h-[120px] rounded-2xl resize-none px-4 pb-16" // 调整内边距
-            value={localInstructions}
-            aria-label="Message"
-            disabled={running || disabled || submitting}
-            onChange={(e) => setLocalInstructions(e.target.value)}
-            onKeyDown={handleKeyDown}
-          />
-          <div className="absolute right-4 bottom-4 flex items-center gap-2">
+    <div className="cyrvis-composer">
+      <div className="cyrvis-input-shell">
+        <Textarea
+          ref={textareaRef}
+          placeholder={
+            isCallUser && savedInstructions
+              ? `${savedInstructions}`
+              : running && lastHumanMessage && messages?.length > 1
+                ? lastHumanMessage
+                : 'What can I do for you today?'
+          }
+          className="cyrvis-chat-textarea"
+          value={localInstructions}
+          aria-label="Message"
+          disabled={running || disabled || submitting}
+          onChange={(e) => setLocalInstructions(e.target.value)}
+          onKeyDown={handleKeyDown}
+        />
+        <div className="cyrvis-input-toolbar">
+          <span>
+            <MessageCircle size={14} aria-hidden="true" /> Chat
+          </span>
+          <div className="flex items-center gap-2">
             {running && (
               <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
             )}
             {renderButton()}
           </div>
         </div>
+      </div>
+      <div className="cyrvis-input-hint">
+        <span>Enter to send · Shift + Enter for a new line</span>
+        <span>Check important information</span>
       </div>
     </div>
   );

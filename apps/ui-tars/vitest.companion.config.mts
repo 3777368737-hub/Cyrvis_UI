@@ -15,6 +15,7 @@ export default defineConfig({
     include: [
       'src/shared/companion.test.ts',
       'src/shared/companion-skins.test.ts',
+      'src/shared/conversation-view.test.ts',
       'src/main/cyrvis/voice-service.test.ts',
       'src/main/cyrvis/voice/qwen-omni.test.ts',
       'src/renderer/src/components/CyrvisVoice/pcm-player.test.ts',

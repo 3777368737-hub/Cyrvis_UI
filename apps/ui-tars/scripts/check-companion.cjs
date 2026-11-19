@@ -209,6 +209,16 @@ async function check() {
             throw new Error('Unexpected atlas geometry');
         });
         if (state === 'idle') {
+          if (skin.format === 'svg') {
+            // The bundled SVG must animate as an image, not just decode.
+            const artwork = pet.locator('.companion-artwork');
+            const firstFrame = await artwork.screenshot();
+            await expect
+              .poll(
+                async () => !(await artwork.screenshot()).equals(firstFrame),
+              )
+              .toBe(true);
+          }
           if (skin.format === 'codex') {
             const start = await pet
               .locator('.companion-sprite')
@@ -226,6 +236,48 @@ async function check() {
             omitBackground: true,
           });
         }
+      }
+      if (skin.id === 'clawd') {
+        const button = pet.locator('.companion-button');
+        const bounds = await button.boundingBox();
+        await pet.mouse.move(bounds.x + 100, bounds.y + 180);
+        await pet.mouse.down();
+        // Native dragging polls Electron's screen cursor, not the DOM mouse.
+        const originalPosition = await app.evaluate(
+          ({ BrowserWindow, screen }) => {
+            globalThis.clawdCursor = screen.getCursorScreenPoint;
+            const cursor = screen.getCursorScreenPoint();
+            screen.getCursorScreenPoint = () => ({
+              x: cursor.x - 20,
+              y: cursor.y,
+            });
+            return BrowserWindow.getAllWindows()
+              .find((w) => w.webContents.getURL().includes('/companion'))
+              .getPosition();
+          },
+        );
+        await expect
+          .poll(() =>
+            app.evaluate(
+              ({ BrowserWindow }) =>
+                BrowserWindow.getAllWindows()
+                  .find((w) => w.webContents.getURL().includes('/companion'))
+                  .getPosition()[0],
+            ),
+          )
+          .toBe(originalPosition[0] - 20);
+        await expect(pet.locator('.companion-artwork')).toHaveAttribute(
+          'src',
+          /clawd-dizzy|dizzy-rot/,
+        );
+        await pet.mouse.up();
+        await app.evaluate(({ screen }) => {
+          screen.getCursorScreenPoint = globalThis.clawdCursor;
+        });
+        await expect(pet.locator('.companion-artwork')).not.toHaveAttribute(
+          'src',
+          /clawd-dizzy|dizzy-rot/,
+        );
       }
       await pet.locator('.companion-button').click({ button: 'right' });
       expect(
@@ -251,7 +303,7 @@ async function check() {
       Menu.prototype.popup = globalThis.originalPopup;
     });
     console.log(
-      'PASS — nine right-click skins and voice selections, six states each, local image decoding, animated atlases, checked menu items, stored selection, voice cannot overwrite appearance',
+      'PASS — all right-click skins and voice selections, six states each, local image decoding, animated atlases and SVGs, Clawd drag animation, checked menu items, stored selection, voice cannot overwrite appearance',
     );
     await expect
       .poll(() =>
@@ -369,7 +421,7 @@ async function check() {
     ).toBeVisible();
     if ((await app.evaluate(() => globalThis.clearCount)) !== 0)
       throw new Error('History browsing cleared live task');
-    // Seed two screenshot records in this temporary profile and exercise linkage.
+    // Legacy images remain stored, but only actions and answers appear in chat.
     const recordId = (await record.getAttribute('href')).split('/').pop();
     await main.evaluate(async (id) => {
       const canvas = document.createElement('canvas');
@@ -400,6 +452,26 @@ async function check() {
                 ...read.result,
                 { from: 'human', value: '<image>', screenshotBase64: first },
                 { from: 'human', value: '<image>', screenshotBase64: second },
+                {
+                  from: 'gpt',
+                  value: 'Raw model payload',
+                  predictionParsed: [
+                    {
+                      action_type: 'click',
+                      action_inputs: { start_box: '[0,0]' },
+                      thought: 'INTERNAL_TEST_THOUGHT',
+                      reflection: 'INTERNAL_TEST_REFLECTION',
+                    },
+                    {
+                      action_type: 'finished',
+                      action_inputs: {
+                        content: 'Meeting notes are organized.',
+                      },
+                      thought: '',
+                      reflection: null,
+                    },
+                  ],
+                },
               ],
               id,
             );
@@ -415,32 +487,49 @@ async function check() {
       channel.postMessage({ type: 'changed' });
       channel.close();
     }, recordId);
-    const shots = main.getByRole('button', { name: 'Screenshot', exact: true });
-    await expect(shots).toHaveCount(2);
-    await shots.first().click();
     await expect(
-      main.getByRole('img', { name: 'screenshot from message 3' }),
+      main.getByRole('button', { name: 'Screenshot', exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      main.getByRole('region', { name: 'Screenshots', exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      main.getByText('Meeting notes are organized.', { exact: true }),
     ).toBeVisible();
+    await expect(
+      main.getByText('INTERNAL_TEST_THOUGHT', { exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      main.getByText('Raw model payload', { exact: true }),
+    ).toHaveCount(0);
+    const summary = main.locator('.cyrvis-processing');
+    await expect(summary).not.toHaveAttribute('open', '');
+    await summary.locator('summary').click();
+    await expect(
+      summary.getByRole('listitem').filter({ hasText: 'Click' }),
+    ).toBeVisible();
+    await summary.locator('summary').click();
     await main
-      .getByRole('button', { name: 'Next screenshot', exact: true })
+      .getByRole('button', { name: 'Copy answer', exact: true })
+      .last()
       .click();
-    await expect(
-      main.getByRole('img', { name: 'screenshot from message 4' }),
-    ).toBeVisible();
-    const left = await main
-      .getByRole('region', { name: 'Conversation', exact: true })
-      .boundingBox();
-    const right = await main
-      .getByRole('region', { name: 'Screenshots', exact: true })
-      .boundingBox();
-    if (left.x + left.width > right.x)
-      throw new Error('Conversation and screenshots are not side by side');
+    await expect(main.getByText('Copied', { exact: true })).toBeVisible();
+    expect(
+      await app.evaluate(({ clipboard }) => clipboard.readText()),
+    ).toContain('Meeting notes are organized.');
     await main.screenshot({ path: path.join(temp, 'history.png') });
     await app.evaluate(({ BrowserWindow }) =>
       BrowserWindow.getAllWindows()
         .find((w) => !w.webContents.getURL().includes('/companion'))
         .setSize(640, 480),
     );
+    const overflow = await main
+      .locator('.cyrvis-chat-body')
+      .evaluate((el) => el.scrollWidth > el.clientWidth + 1);
+    if (overflow) throw new Error('Chat overflows the compact window');
+    await expect(
+      main.getByRole('textbox', { name: 'Message', exact: true }),
+    ).toBeVisible();
     await main.screenshot({ path: path.join(temp, 'compact.png') });
     await app.evaluate(({ BrowserWindow }) =>
       BrowserWindow.getAllWindows()
@@ -520,6 +609,9 @@ async function check() {
     await expect(
       main.getByRole('button', { name: 'Stop task', exact: true }),
     ).toBeVisible();
+    await expect(
+      main.getByText('Working on your request…', { exact: true }),
+    ).toBeVisible();
     await main
       .getByRole('link', { name: 'Organize my workspace', exact: true })
       .click();
@@ -552,7 +644,7 @@ async function check() {
     ).toHaveCount(1);
     await expect(
       main.getByRole('button', { name: 'Screenshot', exact: true }),
-    ).toHaveCount(2);
+    ).toHaveCount(0);
     await main
       .getByRole('textbox', { name: 'Message', exact: true })
       .fill('Also assign an owner to each item');
@@ -580,7 +672,7 @@ async function check() {
       recordId,
     );
     if (
-      savedRows.length !== 8 ||
+      savedRows.length !== 9 ||
       savedRows.filter((m) => m.value === 'Add deadlines to those action items')
         .length !== 1
     )
@@ -843,14 +935,14 @@ async function check() {
     if (errors.length)
       throw new Error('Renderer errors: ' + JSON.stringify(errors));
     console.log(
-      'PASS — drag without accidental open, keyboard activation, pet-first startup, six poses, click/open/close, one audio owner, persisted conversation, non-destructive history browsing, continuation with context, persistence across navigation, compact layout, draft-only new chat, repeated clicks and blank input, first-send creation, screenshot selection, cancel/delete and data removal, English UI, settings; zero page errors',
+      'PASS — drag without accidental open, keyboard activation, pet-first startup, six poses, click/open/close, one audio owner, persisted conversation, non-destructive history browsing, continuation with context, persistence across navigation, compact layout, draft-only new chat, repeated clicks and blank input, first-send creation, single-column chat, collapsible action summary, copy answer, cancel/delete and data removal, English UI, settings; zero page errors',
     );
     await app.evaluate(({ Menu }) => {
       Menu.prototype.popup = function () {
         globalThis.petMenu = this;
       };
     });
-    await selectSkin('jarvis');
+    await selectSkin('clawd');
   } finally {
     await app.close();
   }
@@ -866,10 +958,10 @@ async function check() {
     const pet = restarted.windows().find((p) => p.url().includes('/companion'));
     await expect(pet.locator('.companion-artwork')).toHaveAttribute(
       'data-skin',
-      'jarvis',
+      'clawd',
     );
     expect(await restarted.evaluate(() => globalThis.selectedVoice)).toBe(
-      'Raymond',
+      'Ryan',
     );
     console.log(
       'PASS — appearance and voice restored after a full Electron restart',

@@ -1,8 +1,8 @@
 import { copyFile, readFile, writeFile } from 'node:fs/promises';
 import sharp from 'sharp';
 
-// Keep every desktop brand asset derived from the approved v3 artwork.
-const source = new URL('../../design/cyrvis-logo/v3/', import.meta.url);
+// Keep every desktop brand asset derived from the approved v4 arcade artwork.
+const source = new URL('../../design/cyrvis-logo/v4/', import.meta.url);
 const target = new URL('../../apps/ui-tars/resources/', import.meta.url);
 const asset = (name) => new URL(name, target);
 const appIcon = await readFile(new URL('cyrvis-app-icon.png', source));
@@ -80,4 +80,4 @@ header.writeUInt32BE(
   4,
 );
 await writeFile(asset('icon.icns'), Buffer.concat([header, ...chunks]));
-console.log('Synced Cyrvis v3 logos, tray images, favicon, ICO and ICNS.');
+console.log('Synced Cyrvis v4 logos, tray images, favicon, ICO and ICNS.');

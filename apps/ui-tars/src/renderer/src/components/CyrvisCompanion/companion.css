@@ -37,6 +37,12 @@
   filter: drop-shadow(0 0 0.4rem rgb(74 144 226 / 75%));
 }
 
+/* Clawd's SVGs already animate breathing, shadows and expressive gestures. */
+.companion-button img[data-skin='clawd'] {
+  animation: none;
+  image-rendering: pixelated;
+}
+
 .companion-sprite {
   display: inline-block;
   width: 192px;

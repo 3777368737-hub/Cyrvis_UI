@@ -5,16 +5,12 @@ import { sessionManager, type SessionItem } from '@renderer/db/session';
 import type { ConversationWithSoM } from '@main/shared/types';
 import { ConversationMessages } from '@renderer/components/Conversation/ConversationMessages';
 import { NewChatButton } from '@renderer/components/Conversation/NewChatButton';
-import ImageGallery from '@renderer/components/ImageGallery';
 import ChatInput from '@renderer/components/ChatInput';
 import {
   checkVLMSettings,
   LocalSettingsDialog,
 } from '@renderer/components/Settings/local';
-import {
-  ErrorMessage,
-  LoadingText,
-} from '@renderer/components/RunMessages/Messages';
+import { ErrorMessage } from '@renderer/components/RunMessages/Messages';
 import { useStore } from '@renderer/hooks/useStore';
 import { useSessionStore } from '@renderer/store/session';
 import { Operator } from '@main/store/types';
@@ -26,7 +22,6 @@ export default function HistoryPage() {
   const [messages, setMessages] = useState<ConversationWithSoM[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  const [selectedImage, setSelectedImage] = useState<number>();
   const messageScrollRef = useRef<HTMLDivElement>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const { thinking, status, errorMsg } = useStore();
@@ -49,7 +44,6 @@ export default function HistoryPage() {
   useEffect(() => {
     let active = true;
     setLoading(true);
-    setSelectedImage(undefined);
     setRecord(null);
     setMessages([]);
     setError(false);
@@ -97,15 +91,13 @@ export default function HistoryPage() {
     <article className="cyrvis-conversation">
       <header className="cyrvis-conversation-header">
         <div>
-          <p>History · {new Date(record.createdAt).toLocaleString('en-US')}</p>
           <h1>{record.name}</h1>
         </div>
         <NewChatButton />
       </header>
-      <div className="cyrvis-conversation-panes">
-        <section className="cyrvis-text-pane" aria-label="Conversation">
-          <h2>Conversation</h2>
-          <div className="cyrvis-message-scroll" ref={messageScrollRef}>
+      <section className="cyrvis-chat-body" aria-label="Conversation">
+        <div className="cyrvis-message-scroll" ref={messageScrollRef}>
+          <div className="cyrvis-thread">
             {!messages.length && (
               <p className="cyrvis-history-empty">
                 No messages in this chat yet.
@@ -113,35 +105,28 @@ export default function HistoryPage() {
             )}
             <ConversationMessages
               messages={messages}
-              onSelectImage={setSelectedImage}
+              status={
+                ownsRun ? (thinking ? StatusEnum.RUNNING : status) : undefined
+              }
             />
-            {ownsRun && thinking && <LoadingText text="Thinking…" />}
             {ownsRun && errorMsg && <ErrorMessage text={errorMsg} />}
           </div>
-          <div className="mt-4 shrink-0">
-            {busy && !ownsRun && (
-              <p className="mb-2 text-xs text-muted-foreground" role="status">
-                Finish or stop the current task before continuing this chat.
-              </p>
-            )}
-            <ChatInput
-              key={id}
-              sessionId={id}
-              operator={record.meta.operator || Operator.LocalComputer}
-              disabled={Boolean(busy && !ownsRun)}
-              checkBeforeRun={checkBeforeRun}
-            />
-          </div>
-        </section>
-        <section className="cyrvis-screenshot-pane" aria-label="Screenshots">
-          <h2>Screenshots</h2>
-          <ImageGallery
+        </div>
+        <div className="cyrvis-composer-area">
+          {busy && !ownsRun && (
+            <p className="mb-2 text-xs text-muted-foreground" role="status">
+              Finish or stop the current task before continuing this chat.
+            </p>
+          )}
+          <ChatInput
             key={id}
-            messages={messages}
-            selectImgIndex={selectedImage}
+            sessionId={id}
+            operator={record.meta.operator || Operator.LocalComputer}
+            disabled={Boolean(busy && !ownsRun)}
+            checkBeforeRun={checkBeforeRun}
           />
-        </section>
-      </div>
+        </div>
+      </section>
       <LocalSettingsDialog
         isOpen={settingsOpen}
         onClose={() => setSettingsOpen(false)}

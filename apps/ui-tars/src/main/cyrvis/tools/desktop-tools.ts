@@ -4,6 +4,11 @@
  */
 
 import type { ToolDefinition, ToolResult } from './types';
+import {
+  buildSearchUrl,
+  defaultSearchEngine,
+  type SearchEngine,
+} from '../navigation';
 
 const text = (
   input: Record<string, unknown>,
@@ -51,14 +56,34 @@ export const DESKTOP_TOOLS: ToolDefinition[] = [
     risk: 'medium',
     inputSchema: {
       type: 'object',
-      properties: { name: { type: 'string' } },
+      properties: { name: { type: 'string' }, target: { type: 'string' } },
       required: ['name'],
       additionalProperties: false,
     },
-    prepare: (input) => ({ name: text(input, 'name', { required: true }) }),
+    prepare: (input, context) => {
+      const name = text(input, 'name', { required: true });
+      const target = text(input, 'target').trim();
+      return {
+        name,
+        ...(target
+          ? {
+              target: /^https?:\/\//i.test(target)
+                ? normalizeUrl(target)
+                : context.resolvePath(target),
+            }
+          : {}),
+      };
+    },
+    pathArgs: (args) =>
+      args.target && !/^https?:\/\//i.test(String(args.target))
+        ? [String(args.target)]
+        : [],
     async execute(args, context) {
       const name = String(args.name);
-      const launched = await context.desktop.launchApplication(name);
+      const launched = await context.desktop.launchApplication(
+        name,
+        typeof args.target === 'string' ? args.target : undefined,
+      );
       return success('app.launch', `正在打开${launched}。`, { name: launched });
     },
   },
@@ -350,17 +375,31 @@ export const DESKTOP_TOOLS: ToolDefinition[] = [
     risk: 'medium',
     inputSchema: {
       type: 'object',
-      properties: { query: { type: 'string' } },
+      properties: {
+        query: { type: 'string' },
+        engine: { type: 'string', enum: ['bing', 'google', 'baidu'] },
+        site: { type: 'string' },
+      },
       required: ['query'],
       additionalProperties: false,
     },
     prepare: (input) => ({
       query: text(input, 'query', { required: true }),
+      engine: text(input, 'engine', { fallback: defaultSearchEngine() }),
+      site: text(input, 'site'),
     }),
     async execute(args, context) {
       const query = String(args.query);
-      const url = `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
-      await context.desktop.openUrl(url);
+      const engine = String(args.engine);
+      if (!['bing', 'google', 'baidu'].includes(engine))
+        throw new Error('Unsupported search engine');
+      const url = buildSearchUrl(
+        query,
+        engine as SearchEngine,
+        String(args.site || '') || undefined,
+      );
+      if (context.desktop.openSearch) await context.desktop.openSearch(url);
+      else await context.desktop.openUrl(url);
       return success('web.search', `已在浏览器中搜索 ${query}。`, {
         query,
         url,

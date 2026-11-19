@@ -171,7 +171,13 @@ export class LocalDesktopHost implements DesktopHost {
   }
 
   async openUrl(url: string): Promise<void> {
-    await this.openTarget(url);
+    const { openUrl } = await import('../desktop-actions');
+    await openUrl(url);
+  }
+
+  async openSearch(url: string): Promise<void> {
+    const { openSearch } = await import('../desktop-actions');
+    await openSearch(url);
   }
 
   async clipboardRead(): Promise<string> {
@@ -218,7 +224,31 @@ export class LocalDesktopHost implements DesktopHost {
     });
   }
 
-  async launchApplication(name: string): Promise<string> {
+  async launchApplication(name: string, target?: string): Promise<string> {
+    const aliasName = normalizeAlias(name);
+    const canonical =
+      (
+        {
+          记事本: 'notepad',
+          资源管理器: 'explorer',
+          文件资源管理器: 'explorer',
+          code: 'vscode',
+          visualstudiocode: 'vscode',
+          浏览器: 'chrome',
+          谷歌浏览器: 'chrome',
+          chrome浏览器: 'chrome',
+        } as Record<string, string>
+      )[aliasName] || aliasName;
+    if (['vscode', 'chrome', 'explorer', 'notepad'].includes(canonical)) {
+      const { openApp } = await import('../desktop-actions');
+      await openApp(
+        canonical as import('../desktop-actions').AllowedApp,
+        target,
+      );
+      return name.trim();
+    }
+    if (target)
+      throw new Error('This application does not support an opening target');
     const alias = APPLICATION_ALIASES[normalizeAlias(name)];
     if (!alias) {
       throw new Error(`Unsupported application alias: ${name}`);

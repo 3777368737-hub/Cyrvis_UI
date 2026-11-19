@@ -197,6 +197,13 @@ export class FastToolRouter {
     );
   }
 
+  async executeNavigationTool(toolId: string, args: Record<string, unknown>) {
+    return this.executeProviderToolCall('cyrvis_capability_invoke', {
+      toolId,
+      arguments: args,
+    });
+  }
+
   resolveProviderToolName(providerName: string): string | null {
     return this.providerCatalog.resolve(providerName);
   }

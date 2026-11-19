@@ -172,13 +172,12 @@ export const CYRVIS_VOICE_TOOLS: QwenToolDefinition[] = [
     function: {
       name: 'open_app',
       description:
-        'Open an allowlisted desktop app faster than GUI clicking. Use for opening VS Code, Chrome, Explorer, or Notepad. If the user wants work inside the app, set task_instruction so the GUI agent continues after it opens.',
+        'Open a supported desktop app through the local tool registry. Use for opening VS Code, Chrome, Explorer, Notepad, Calculator, Paint or other supported app aliases. If the user wants work inside the app, set task_instruction so the GUI agent continues after it opens.',
       parameters: {
         type: 'object',
         properties: {
           app: {
             type: 'string',
-            enum: ['vscode', 'chrome', 'explorer', 'notepad'],
             description: 'Allowlisted application to open.',
           },
           target: {

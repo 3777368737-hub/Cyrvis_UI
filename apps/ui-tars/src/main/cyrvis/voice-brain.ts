@@ -5,6 +5,9 @@
 import type { CyrvisController } from './controller';
 import { TaskBusyError } from './controller';
 import type { AllowedApp, SearchEngine } from './desktop-actions';
+import { buildSearchUrl, defaultSearchEngine } from './navigation';
+import { resolveSite, buildSiteSearchUrl } from './site-registry';
+import { NAVIGATION_TOOL_ALIASES } from './voice/tool-surface';
 import { classifyIntent, isExplicitChat } from './intent-gate';
 import { ProactivityPolicy, type ProactivityOptions } from './proactivity';
 import { classifyVoiceIntent, type VoiceIntentDecision } from './search-intent';
@@ -13,7 +16,6 @@ import type { ControllerEvent } from './types';
 import {
   SENSITIVE_CONFIRMATION_PROMPT,
   extractBrowserSearchQuery,
-  toFastToolProviderName,
   type FastToolRouter,
 } from './tools';
 import type { CyrvisVoiceState } from '@shared/cyrvis';
@@ -135,6 +137,7 @@ export class VoiceBrain {
   } | null = null;
   private fastToolGuardUntil = 0;
   private deterministicFastToolGuardUntil = 0;
+  private navigationExecutions = new Set<string>();
   private readonly unsubscribeController: () => void;
   private readonly completionClaimPattern =
     /(已经打开|已经输入|已经完成|已完成|完成了|打开了|输入了|opened|typed|completed|finished|done|succeeded)/i;
@@ -501,6 +504,7 @@ export class VoiceBrain {
     }
     this.lastFinalTranscript = transcriptKey;
     this.lastFinalAt = now;
+    this.navigationExecutions = new Set();
 
     const voiceIntent = classifyVoiceIntent(text);
     this.lastVoiceIntent = voiceIntent;
@@ -551,6 +555,7 @@ export class VoiceBrain {
 
     if (!canHandleFastTool) {
       this.deterministicFastToolGuardUntil = 0;
+      this.fastToolGuardUntil = 0;
     }
 
     // After a stop, a real new command should not be delayed by the 3s
@@ -700,6 +705,78 @@ export class VoiceBrain {
     return false;
   }
 
+  private resolveSiteTarget(value: string, query?: string) {
+    const site = resolveSite(value);
+    if (!site) throw new Error('Unknown site: ' + value);
+    return {
+      label: site.label,
+      url: query ? buildSiteSearchUrl(site, query) : site.url,
+    };
+  }
+
+  private async executeNavigation(
+    call: VoiceToolCallWithId,
+    tool: string,
+    args: Record<string, unknown>,
+    fallback: () => Promise<void>,
+  ): Promise<boolean> {
+    const executions = this.navigationExecutions;
+    const key = JSON.stringify([tool, args]);
+    if (executions.has(key)) {
+      this.provider.sendToolResult(
+        call.callId,
+        'ALREADY_HANDLED_BY_FAST_TOOL: this navigation was already requested in this turn.',
+      );
+      return false;
+    }
+    executions.add(key);
+    try {
+      const completed = await this.runNavigation(call, tool, args, fallback);
+      if (!completed) executions.delete(key);
+      return completed;
+    } catch (error) {
+      executions.delete(key);
+      throw error;
+    }
+  }
+
+  private async runNavigation(
+    call: VoiceToolCallWithId,
+    tool: string,
+    args: Record<string, unknown>,
+    fallback: () => Promise<void>,
+  ): Promise<boolean> {
+    const router = this.options.fastToolRouter;
+    if (!router) {
+      await fallback();
+      return true;
+    }
+    if (router.hasPendingConfirmation()) {
+      this.provider.cancelResponse();
+      return false;
+    }
+    const execution = await router.executeNavigationTool(tool, args);
+    const outcome = execution?.outcome;
+    if (outcome?.result?.error?.code === 'CONFIRMATION_REQUIRED') {
+      this.provider.cancelResponse();
+      this.speak(outcome.speech || SENSITIVE_CONFIRMATION_PROMPT);
+      return false;
+    }
+    if (!outcome?.ok) {
+      this.provider.sendToolResult(
+        call.callId,
+        JSON.stringify({
+          ok: false,
+          status: 'failed',
+          error: outcome?.result?.error,
+          message: outcome?.speech || 'Navigation tool unavailable',
+        }),
+      );
+      return false;
+    }
+    return true;
+  }
+
   private async finishFastOpen(
     call: VoiceToolCallWithId,
     target: string,
@@ -766,11 +843,30 @@ export class VoiceBrain {
     const localFastTool = this.options.fastToolRouter?.resolveProviderToolName(
       call.name,
     );
+    const effectiveTool =
+      localFastTool === 'capability.invoke'
+        ? String((call.args as Record<string, unknown>).toolId || '')
+        : localFastTool;
+    const navigationCall = [
+      'search_web',
+      'open_url',
+      'open_app',
+      'open_site',
+    ].includes(call.name);
+    if (
+      Date.now() < this.deterministicFastToolGuardUntil &&
+      (localFastTool || navigationCall || call.name === 'start_gui_task')
+    ) {
+      this.provider.sendToolResult(
+        call.callId,
+        'ALREADY_HANDLED_BY_FAST_TOOL: the deterministic local route already handled this turn. Do not execute it again.',
+      );
+      return;
+    }
     if (
       Date.now() >= this.deterministicFastToolGuardUntil &&
-      (localFastTool === 'web.search' ||
-        localFastTool === 'web.open_url' ||
-        localFastTool === 'app.launch')
+      ((effectiveTool && NAVIGATION_TOOL_ALIASES[effectiveTool]) ||
+        navigationCall)
     ) {
       const mode = this.lastVoiceIntent?.mode;
       if (mode === 'answer') {
@@ -786,7 +882,7 @@ export class VoiceBrain {
         );
         return;
       }
-      if (mode === 'search') {
+      if (mode === 'search' && localFastTool) {
         this.provider.sendToolResult(
           call.callId,
           JSON.stringify({
@@ -798,7 +894,7 @@ export class VoiceBrain {
         );
         return;
       }
-      if (mode === 'navigate') {
+      if (mode === 'navigate' && localFastTool) {
         const target = this.lastVoiceIntent?.target;
         const isApp = this.lastVoiceIntent?.targetKind === 'app';
         this.provider.sendToolResult(
@@ -815,16 +911,6 @@ export class VoiceBrain {
         return;
       }
     }
-    if (
-      Date.now() < this.deterministicFastToolGuardUntil &&
-      (localFastTool || call.name === 'start_gui_task')
-    ) {
-      this.provider.sendToolResult(
-        call.callId,
-        'ALREADY_HANDLED_BY_FAST_TOOL: the deterministic local route already handled this turn. Do not execute it again.',
-      );
-      return;
-    }
     if (localFastTool) {
       if (this.options.fastToolRouter?.hasPendingConfirmation()) {
         this.provider.cancelResponse();
@@ -832,6 +918,26 @@ export class VoiceBrain {
           providerTool: call.name,
           tool: localFastTool,
         });
+        return;
+      }
+      const canonical = effectiveTool && NAVIGATION_TOOL_ALIASES[effectiveTool];
+      if (canonical) {
+        const args =
+          localFastTool === 'capability.invoke'
+            ? (call.args as Record<string, unknown>).arguments
+            : call.args;
+        const input =
+          args && typeof args === 'object' && !Array.isArray(args)
+            ? (args as Record<string, unknown>)
+            : {};
+        await this.handleToolCall({
+          ...call,
+          name: canonical,
+          args: {
+            ...input,
+            ...(canonical === 'open_app' ? { app: input.name } : {}),
+          },
+        } as VoiceToolCallWithId);
         return;
       }
       await this.handleFastProviderToolCall(call, localFastTool);
@@ -899,14 +1005,11 @@ export class VoiceBrain {
           call.args.instruction || '',
         );
         if (searchQuery && this.options.fastToolRouter) {
-          await this.handleFastProviderToolCall(
-            {
-              ...call,
-              name: toFastToolProviderName('web.search'),
-              args: { query: searchQuery },
-            },
-            'web.search',
-          );
+          await this.handleToolCall({
+            ...call,
+            name: 'search_web',
+            args: { query: searchQuery },
+          });
           return;
         }
         if (Date.now() < this.fastToolGuardUntil) {
@@ -1046,8 +1149,6 @@ export class VoiceBrain {
           );
           return;
         }
-        const { buildSearchUrl, defaultSearchEngine, openSearch, openSite } =
-          await import('./desktop-actions');
         const query = String(call.args.query || '').trim();
 
         // "打开B站搜一下猫": keep the search inside Bilibili instead of
@@ -1060,7 +1161,19 @@ export class VoiceBrain {
           const siteQuery = query || intent.query;
           if (siteQuery) {
             try {
-              const result = await openSite(intent.target, siteQuery);
+              const result = this.resolveSiteTarget(intent.target, siteQuery);
+              if (
+                !(await this.executeNavigation(
+                  call,
+                  'web.open_url',
+                  { url: result.url },
+                  async () => {
+                    const { openUrl } = await import('./desktop-actions');
+                    await openUrl(result.url);
+                  },
+                ))
+              )
+                return;
               await this.finishFastOpen(
                 call,
                 `${result.label}: ${result.url}`,
@@ -1091,7 +1204,18 @@ export class VoiceBrain {
           typeof call.args.site === 'string' ? call.args.site : undefined;
         try {
           const url = buildSearchUrl(query, engine, site);
-          await openSearch(url);
+          if (
+            !(await this.executeNavigation(
+              call,
+              'web.search',
+              { query, engine, site },
+              async () => {
+                const { openSearch } = await import('./desktop-actions');
+                await openSearch(url);
+              },
+            ))
+          )
+            return;
           await this.finishFastOpen(
             call,
             url,
@@ -1108,7 +1232,6 @@ export class VoiceBrain {
         break;
       }
       case 'open_url': {
-        const { openUrl } = await import('./desktop-actions');
         const url = String(call.args.url || '').trim();
         if (!url) {
           this.provider.sendToolResult(
@@ -1118,7 +1241,19 @@ export class VoiceBrain {
           return;
         }
         try {
-          const opened = await openUrl(url);
+          const opened = url;
+          if (
+            !(await this.executeNavigation(
+              call,
+              'web.open_url',
+              { url },
+              async () => {
+                const { openUrl } = await import('./desktop-actions');
+                await openUrl(url);
+              },
+            ))
+          )
+            return;
           await this.finishFastOpen(
             call,
             opened,
@@ -1151,7 +1286,6 @@ export class VoiceBrain {
           );
           return;
         }
-        const { openApp } = await import('./desktop-actions');
         const appValue = String(call.args.app || '');
         const allowedApps: AllowedApp[] = [
           'vscode',
@@ -1159,7 +1293,10 @@ export class VoiceBrain {
           'explorer',
           'notepad',
         ];
-        if (!allowedApps.includes(appValue as AllowedApp)) {
+        if (
+          !this.options.fastToolRouter &&
+          !allowedApps.includes(appValue as AllowedApp)
+        ) {
           this.provider.sendToolResult(
             call.callId,
             `ERROR: unsupported app. Allowed: ${allowedApps.join(', ')}.`,
@@ -1169,10 +1306,19 @@ export class VoiceBrain {
         const target =
           typeof call.args.target === 'string' ? call.args.target : undefined;
         try {
-          const result = await openApp(appValue as AllowedApp, target);
-          const label = result.target
-            ? `${result.app}:${result.target}`
-            : result.app;
+          if (
+            !(await this.executeNavigation(
+              call,
+              'app.launch',
+              { name: appValue, target },
+              async () => {
+                const { openApp } = await import('./desktop-actions');
+                await openApp(appValue as AllowedApp, target);
+              },
+            ))
+          )
+            return;
+          const label = target ? `${appValue}:${target}` : appValue;
           await this.finishFastOpen(
             call,
             label,
@@ -1204,7 +1350,6 @@ export class VoiceBrain {
           );
           return;
         }
-        const { openSite } = await import('./desktop-actions');
         const siteValue = String(call.args.site || '').trim();
         if (!siteValue) {
           this.provider.sendToolResult(
@@ -1216,7 +1361,19 @@ export class VoiceBrain {
         const query =
           typeof call.args.query === 'string' ? call.args.query.trim() : '';
         try {
-          const result = await openSite(siteValue, query || undefined);
+          const result = this.resolveSiteTarget(siteValue, query || undefined);
+          if (
+            !(await this.executeNavigation(
+              call,
+              'web.open_url',
+              { url: result.url },
+              async () => {
+                const { openUrl } = await import('./desktop-actions');
+                await openUrl(result.url);
+              },
+            ))
+          )
+            return;
           await this.finishFastOpen(
             call,
             `${result.label}: ${result.url}`,

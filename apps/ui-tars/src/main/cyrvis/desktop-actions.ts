@@ -9,50 +9,12 @@ import { logger } from '@main/logger';
 
 import { buildSiteSearchUrl, resolveSite } from './site-registry';
 
-export type SearchEngine = 'bing' | 'baidu' | 'google';
+import { assertHttpUrl } from './navigation';
+export { buildSearchUrl, defaultSearchEngine } from './navigation';
+export type { SearchEngine } from './navigation';
 export type AllowedApp = 'vscode' | 'chrome' | 'explorer' | 'notepad';
 
 const execFileAsync = promisify(execFile);
-
-const SEARCH_ENDPOINTS: Record<SearchEngine, string> = {
-  bing: 'https://www.bing.com/search?q=',
-  baidu: 'https://www.baidu.com/s?wd=',
-  google: 'https://www.google.com/search?q=',
-};
-
-const assertHttpUrl = (value: string): URL => {
-  const url = new URL(value);
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error('Only http/https URLs are allowed');
-  }
-  return url;
-};
-
-export const buildSearchUrl = (
-  query: string,
-  engine: SearchEngine = 'bing',
-  site?: string,
-): string => {
-  const trimmed = query.trim();
-  if (!trimmed) {
-    throw new Error('search query is empty');
-  }
-  const normalizedSite = site?.trim().replace(/^https?:\/\//i, '');
-  if (normalizedSite && !/^[A-Za-z0-9.-]+$/.test(normalizedSite)) {
-    throw new Error(`invalid site filter: ${site}`);
-  }
-  const fullQuery = normalizedSite
-    ? `${trimmed} site:${normalizedSite}`
-    : trimmed;
-  return `${SEARCH_ENDPOINTS[engine]}${encodeURIComponent(fullQuery)}`;
-};
-
-/**
- * Windows uses Bing; macOS uses Safari's default search engine. The caller can
- * still override the engine explicitly.
- */
-export const defaultSearchEngine = (): SearchEngine =>
-  process.platform === 'darwin' ? 'google' : 'bing';
 
 export const openUrl = async (value: string): Promise<string> => {
   const url = assertHttpUrl(value.trim());
@@ -235,10 +197,15 @@ const spawnDetached = (executable: string, args: string[]) => {
   const child = spawn(executable, args, {
     detached: true,
     stdio: 'ignore',
-    windowsHide: false,
+    windowsHide: true,
   });
-  child.unref();
-  return child.pid;
+  return new Promise<number | undefined>((resolve, reject) => {
+    child.once('spawn', () => {
+      child.unref();
+      resolve(child.pid);
+    });
+    child.once('error', reject);
+  });
 };
 
 export const openApp = async (
@@ -252,7 +219,7 @@ export const openApp = async (
       if (!executable) {
         throw new Error('VS Code executable was not found');
       }
-      const pid = spawnDetached(
+      const pid = await spawnDetached(
         executable,
         trimmedTarget ? [trimmedTarget] : [],
       );
@@ -261,7 +228,7 @@ export const openApp = async (
     case 'chrome': {
       const executable = findChrome();
       if (executable) {
-        const pid = spawnDetached(executable, [
+        const pid = await spawnDetached(executable, [
           '--new-tab',
           trimmedTarget || 'about:blank',
         ]);
@@ -274,14 +241,14 @@ export const openApp = async (
       return { app, target: url };
     }
     case 'explorer': {
-      const pid = spawnDetached(
+      const pid = await spawnDetached(
         'explorer.exe',
         trimmedTarget ? [trimmedTarget] : [],
       );
       return { app, target: trimmedTarget || null, pid };
     }
     case 'notepad': {
-      const pid = spawnDetached(
+      const pid = await spawnDetached(
         'notepad.exe',
         trimmedTarget ? [trimmedTarget] : [],
       );

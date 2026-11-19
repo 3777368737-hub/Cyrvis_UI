@@ -38,7 +38,7 @@ import { SystemStateStore } from './system/system-state';
 import { CascadeVoiceProvider } from './voice/cascade-provider';
 import { QwenOmniProvider } from './voice/qwen-omni';
 import type { InteractiveVoiceProvider } from './voice/provider';
-import { CYRVIS_VOICE_TOOLS } from './voice/tools';
+import { buildVoiceToolSurface } from './voice/tool-surface';
 import { VoiceBrain, type VoiceBrainState } from './voice-brain';
 import type { ControllerEvent } from './types';
 
@@ -1568,10 +1568,8 @@ export const startVoiceService = (): VoiceService | null => {
             'cyrvis-tool-audit.jsonl',
           ),
         });
-  const buildVoiceTools = () => [
-    ...(fastToolMatrix?.providerCatalog.tools ?? []),
-    ...CYRVIS_VOICE_TOOLS,
-  ];
+  const buildVoiceTools = () =>
+    buildVoiceToolSurface(fastToolMatrix?.providerCatalog.tools);
   const voiceTools = buildVoiceTools();
   if (fastToolMatrix) {
     logger.info('[cyrvis fast-tools] ready', {

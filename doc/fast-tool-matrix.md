@@ -355,6 +355,23 @@ GUI 或后续复杂 Router。
 
 ## 6. MCP 复用
 
+### 语音导航入口（2026-11-19）
+
+语音模型保留功能较完整的 `search_web`、`open_url`、`open_app`、`open_site`。
+`voice/tool-surface.ts` 在初次连接和动态刷新时过滤重复的
+`cyrvis_web_search`、`cyrvis_web_open_url`、`cyrvis_app_launch`；这些底层能力
+仍存在于 Registry/MCP 中。旧动态名字和 broker 间接调用在 VoiceBrain 中按
+实际目标进行意图检查，再转到同一个语义入口。
+
+语义入口负责站点别名、站内搜索、静默打开和 `task_instruction`；执行通过
+`FastToolRouter.executeNavigationTool` → capability broker → Registry，应用
+目标路径也接受路径确认策略。`web.search` 支持 `engine` / `site`，`app.launch`
+支持 `target`。LocalDesktopHost 复用已有浏览器前台化和已知应用启动实现。
+
+确定性命令执行后，旧语音入口也受防重复保护；同回合相同导航调用在执行前
+去重。新用户回合清除导航去重状态。关闭 `CYRVIS_FAST_TOOLS` 时，语义入口仍
+保留原有直接执行回退。
+
 `createFastToolMcpServer(registry)` 使用与语音 Router 完全相同的 Registry，
 通过 MCP `tools/list` 和 `tools/call` 暴露能力，避免两套工具定义漂移。
 

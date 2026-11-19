@@ -77,9 +77,10 @@ export interface ToolResult {
 export interface DesktopHost {
   openPath(path: string): Promise<void>;
   openUrl(url: string): Promise<void>;
+  openSearch?(url: string): Promise<void>;
   clipboardRead(): Promise<string>;
   clipboardWrite(text: string): Promise<void>;
-  launchApplication(name: string): Promise<string>;
+  launchApplication(name: string, target?: string): Promise<string>;
   closeApplication(name: string): Promise<string>;
   listProcesses(): Promise<ProcessInfo[]>;
   listWindows(): Promise<WindowInfo[]>;

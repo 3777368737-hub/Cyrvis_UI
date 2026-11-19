@@ -75,6 +75,7 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
   private activeResponseId: string | null = null;
   private pendingToolResults: Array<{ callId: string; output: string }> = [];
   private pendingSpeak: string | null = null;
+  private pendingUserText: string | null = null;
   private toolResultFallback: ReturnType<typeof setTimeout> | null = null;
   private playbackFallback: ReturnType<typeof setTimeout> | null = null;
   // True from the first audio delta until the renderer reports that the WAV
@@ -184,6 +185,7 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
     this.activeResponseId = null;
     this.pendingToolResults = [];
     this.pendingSpeak = null;
+    this.pendingUserText = null;
     this.playbackBusy = false;
     this.clearToolResultFallback();
     this.clearPlaybackFallback();
@@ -414,6 +416,7 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
     this.awaitingResponse = false;
     this.activeResponseId = null;
     this.pendingSpeak = null;
+    this.pendingUserText = null;
     this.pendingToolResults = [];
     this.playbackBusy = false;
     this.clearToolResultFallback();
@@ -454,6 +457,13 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
     this.sendProactiveSpeak(text);
   }
 
+  submitText(text: string): boolean {
+    if (!this.connected || !text.trim()) return false;
+    this.pendingUserText = text;
+    this.pumpResponseQueue();
+    return true;
+  }
+
   private sendToolResultNow(callId: string, output: string): void {
     this.awaitingResponse = true;
     this.activeResponseId = null;
@@ -492,7 +502,49 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
   }
 
   private pumpResponseQueue(): void {
-    if (!this.connected || this.awaitingResponse || this.playbackBusy) {
+    if (
+      !this.connected ||
+      this.cancelRequested ||
+      this.awaitingResponse ||
+      this.playbackBusy
+    ) {
+      return;
+    }
+
+    if (this.pendingUserText) {
+      const text = this.pendingUserText;
+      this.pendingUserText = null;
+      this.restoreInstructionsIfNeeded();
+      this.awaitingResponse = true;
+      this.activeResponseId = null;
+      if (
+        this.model.startsWith('qwen-audio-') ||
+        this.endpoint.includes('token-plan.')
+      ) {
+        this.send({
+          type: 'conversation.item.create',
+          event_id: eventId('event_text'),
+          item: {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text }],
+          },
+        });
+      } else {
+        // Omni exposes partial instructions rather than user text items.
+        this.proactivePending = true;
+        this.send({
+          type: 'session.update',
+          event_id: eventId('event_confirmed_request'),
+          session: {
+            instructions: `${this.instructions}\n\n[用户已明确选择的本轮请求] ${text}\n按正常工具流程处理并回复，不要仅复述这条请求。`,
+          },
+        });
+      }
+      this.send({
+        type: 'response.create',
+        event_id: eventId('event_response'),
+      });
       return;
     }
 
@@ -570,6 +622,7 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
     this.activeResponseId = null;
     this.pendingToolResults = [];
     this.pendingSpeak = null;
+    this.pendingUserText = null;
     this.playbackBusy = false;
     this.clearToolResultFallback();
     this.clearPlaybackFallback();

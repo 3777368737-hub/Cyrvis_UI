@@ -3,6 +3,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import type { CyrvisController } from './controller';
+import {
+  gazeActionRequest,
+  resolveGazeReply,
+  type GazeAction,
+  type GazeSuggestion,
+} from './gaze/suggestions';
 import { TaskBusyError } from './controller';
 import type { AllowedApp, SearchEngine } from './desktop-actions';
 import { buildSearchUrl, defaultSearchEngine } from './navigation';
@@ -45,6 +51,7 @@ export interface VoiceBrainCallbacks {
 
 export interface VoiceBrainOptions {
   inspectGaze?: (question: string) => Promise<string>;
+  snoozeProactiveGaze?: () => void;
   requireWakeWord?: boolean;
   awakeTimeoutMs?: number;
   wakePatterns?: RegExp[];
@@ -116,6 +123,8 @@ export class VoiceBrain {
   private lastFinalTranscript = '';
   private lastFinalAt = 0;
   private inspectionGeneration = 0;
+  private gazeSuggestion: { value: GazeSuggestion; expiresAt: number } | null =
+    null;
   private speechAwaitingTranscript = false;
   private speechTurn = 0;
   private pendingGazeRequests = 0;
@@ -249,6 +258,72 @@ export class VoiceBrain {
     this.speak(text);
   }
 
+  clearGazeSuggestion(): void {
+    this.gazeSuggestion = null;
+  }
+  canOfferGazeSuggestion(): boolean {
+    return (
+      !this.userSpeaking &&
+      !this.ttsSpeaking &&
+      !this.waitingForUserResponse &&
+      this.pendingGazeRequests === 0 &&
+      !this.controller.isBusy()
+    );
+  }
+  offerGazeSuggestion(value: GazeSuggestion): void {
+    this.gazeSuggestion = { value, expiresAt: Date.now() + 120_000 };
+    this.speakRequestedReply(value.speech);
+  }
+  isGazeFollowup(text: string): boolean {
+    const pending = this.gazeSuggestion;
+    return (
+      !!pending &&
+      Date.now() < pending.expiresAt &&
+      resolveGazeReply(text, pending.value) !== null
+    );
+  }
+  followGazeSuggestion(
+    id: string,
+    action: GazeAction | 'dismiss',
+  ): { ok: boolean; message?: string } {
+    const pending = this.gazeSuggestion;
+    if (!pending || pending.value.id !== id || Date.now() >= pending.expiresAt)
+      return {
+        ok: false,
+        message: '这条建议已过期，请重新看向目标或直接说出完整请求。',
+      };
+    if (action === 'dismiss') {
+      this.gazeSuggestion = null;
+      this.options.snoozeProactiveGaze?.();
+      this.provider.cancelResponse();
+      this.speakRequestedReply('好，先不打扰你。');
+      return { ok: true };
+    }
+    if (!pending.value.actions.some((item) => item.kind === action))
+      return {
+        ok: false,
+        message: '这个对象暂不支持该操作，请先确认作品名称。',
+      };
+    const request = gazeActionRequest(pending.value, action);
+    this.gazeSuggestion = null;
+    this.options.snoozeProactiveGaze?.();
+    this.inspectionGeneration++;
+    this.lastUserText = request;
+    this.lastActionableUserText = request;
+    this.lastVoiceIntent = classifyVoiceIntent(request);
+    this.suppressReplyUntil = 0;
+    this.wake();
+    this.provider.cancelResponse();
+    this.armUserResponseWatchdog();
+    if (this.provider.submitText?.(request) !== true) {
+      this.speak(
+        '当前语音引擎无法接收这条上下文请求，请直接说出作品名称和要做的操作。',
+      );
+      return { ok: false, message: '当前语音引擎不支持上下文请求' };
+    }
+    return { ok: true };
+  }
+
   shouldSuppressReply(): boolean {
     return Date.now() < this.suppressReplyUntil;
   }
@@ -298,6 +373,10 @@ export class VoiceBrain {
    * a short window so it cannot answer with "好的，已暂停…".
    */
   markUserStop(): void {
+    if (this.gazeSuggestion) {
+      this.gazeSuggestion = null;
+      this.options.snoozeProactiveGaze?.();
+    }
     // Qwen can start a follow-up response 2-3s after the barge audio was
     // cancelled. 3s covers the observed 2.3s follow-up while still allowing
     // a real new command to clear the window immediately.
@@ -536,6 +615,22 @@ export class VoiceBrain {
     this.lastFinalAt = now;
     this.navigationExecutions = new Set();
 
+    if (this.isGazeFollowup(text) && this.gazeSuggestion) {
+      const pending = this.gazeSuggestion.value;
+      const action = resolveGazeReply(text, pending);
+      if (action === 'clarify') {
+        this.provider.cancelResponse();
+        this.speakRequestedReply(
+          `你想选择哪一项：${pending.actions.map((item) => item.label).join('，')}？`,
+        );
+      } else if (action) this.followGazeSuggestion(pending.id, action);
+      return true;
+    }
+
+    if (this.gazeSuggestion) {
+      this.clearGazeSuggestion();
+      this.options.snoozeProactiveGaze?.();
+    }
     const voiceIntent = classifyVoiceIntent(text);
     this.lastVoiceIntent = voiceIntent;
     const semanticMode =

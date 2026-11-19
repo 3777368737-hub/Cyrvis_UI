@@ -91,6 +91,39 @@ const sent = (socket: FakeWebSocket) =>
   socket.send.mock.calls.map(([data]) => JSON.parse(data));
 
 describe('Qwen companion voices', () => {
+  it('queues a confirmed contextual request until cancellation finishes', async () => {
+    const { provider } = setup('qwen-audio-3.0-realtime-plus');
+    const connected = provider.connect();
+    sockets[0].ready();
+    await connected;
+    provider.cancelResponse();
+    expect(provider.submitText('请查证 Day One 的封面背景')).toBe(true);
+    expect(
+      sent(sockets[0]).some((item) => item.type === 'conversation.item.create'),
+    ).toBe(false);
+    await vi.advanceTimersByTimeAsync(401);
+    const user = sent(sockets[0]).find(
+      (item) => item.type === 'conversation.item.create',
+    );
+    expect(user.item.role).toBe('user');
+    expect(user.item.content[0].text).toContain('封面背景');
+    expect(sent(sockets[0]).at(-1).type).toBe('response.create');
+  });
+  it('uses a partial instruction update for confirmed requests on Omni', async () => {
+    const { provider } = setup('qwen3.8-omni-flash-realtime');
+    const connected = provider.connect();
+    sockets[0].ready();
+    await connected;
+    provider.submitText('请介绍刚才确认的作品');
+    const update = sent(sockets[0]).find(
+      (item) =>
+        item.type === 'session.update' &&
+        item.session.instructions?.includes('用户已明确选择'),
+    );
+    expect(update.session.instructions).toContain('用户已明确选择');
+    expect(update.session.turn_detection).toBeUndefined();
+    expect(sent(sockets[0]).at(-1).type).toBe('response.create');
+  });
   it('uses the flat PCM handshake for existing Token Plan configurations', async () => {
     const { provider } = setup(
       'qwen-audio-3.0-realtime-plus',

@@ -16,6 +16,7 @@ const mock = vi.hoisted(() => ({
   send: vi.fn(),
   wake: vi.fn(),
   speakReply: vi.fn(),
+  offerSuggestion: vi.fn(),
   start: vi.fn(async () => undefined),
   captureClose: vi.fn(),
   provider: {
@@ -100,7 +101,11 @@ vi.mock('./capture-service', () => ({
     return { close: mock.captureClose };
   },
 }));
-vi.mock('./controller', () => ({ CyrvisController: class {} }));
+vi.mock('./controller', () => ({
+  CyrvisController: class {
+    isBusy = () => false;
+  },
+}));
 vi.mock('./gui-adapter', () => ({ ElectronGUIAdapter: class {} }));
 vi.mock('./voice/qwen-omni', () => ({
   QwenOmniProvider: class {
@@ -122,6 +127,10 @@ vi.mock('./voice-brain', () => ({
     }
     forceAwake = mock.wake;
     speakRequestedReply = mock.speakReply;
+    clearGazeSuggestion = vi.fn();
+    isGazeFollowup = () => false;
+    canOfferGazeSuggestion = () => true;
+    offerGazeSuggestion = mock.offerSuggestion;
     start = mock.start;
     sleep = vi.fn();
     shouldSuppressReply = () => false;
@@ -169,6 +178,56 @@ it('prefers QWEN_VOICE over companion skins when configured', async () => {
   expect(mock.config!.voice).toBe('longanqian');
   getCompanionStore().set('skinId', 'awesome-agumon--legeling');
   expect(mock.provider.setVoice).not.toHaveBeenCalled();
+});
+
+it('turns sustained desktop gaze into one voice suggestion only after opt-in', async () => {
+  const { startVoiceService } = await import('./voice-service');
+  const { gazeInspector } = await import('./gaze/desktop-inspector');
+  const { parseGazeSuggestion } = await import('./gaze/suggestions');
+  startVoiceService();
+  await mock.handlers.get('cyrvis:voice:start')!();
+  mock.events.get('cyrvis:voice:renderer-capture-ready')!(
+    undefined,
+    'Built-in microphone',
+  );
+  mock.handlers.get('cyrvis:gaze:inspect-enabled')!(undefined, true);
+  const suggestion = parseGazeSuggestion(
+    '{"kind":"music","target":"Day One","description":"你似乎在看 Day One 的封面","identified":true,"confidence":"high"}',
+    Date.now(),
+  )!;
+  const suggest = vi
+    .spyOn(gazeInspector, 'suggest')
+    .mockResolvedValue(suggestion);
+  const sample = () =>
+    mock.handlers.get('cyrvis:gaze:update')!(undefined, {
+      x: 0.5,
+      y: 0.5,
+      timestamp: Date.now(),
+    });
+  for (let i = 0; i < 12; i++) {
+    sample();
+    await vi.advanceTimersByTimeAsync(500);
+  }
+  expect(suggest).not.toHaveBeenCalled();
+  mock.handlers.get('cyrvis:gaze:proactive-configure')!(undefined, {
+    enabled: true,
+  });
+  for (let i = 0; i < 12; i++) {
+    sample();
+    await vi.advanceTimersByTimeAsync(500);
+  }
+  expect(suggest).toHaveBeenCalledOnce();
+  expect(mock.offerSuggestion).toHaveBeenCalledWith(
+    expect.objectContaining({
+      target: 'Day One',
+      gaze: expect.objectContaining({ x: 0.5 }),
+    }),
+  );
+  mock.handlers.get('cyrvis:gaze:inspect-enabled')!(undefined, false);
+  expect(mock.handlers.get('cyrvis:gaze:proactive-status')!()).toMatchObject({
+    enabled: false,
+  });
+  suggest.mockRestore();
 });
 
 it('switches voice from the shared appearance selection and clears old playback without starting capture', async () => {

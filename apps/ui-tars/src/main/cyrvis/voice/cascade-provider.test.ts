@@ -74,6 +74,21 @@ type ProviderInternals = {
 };
 
 describe('CascadeVoiceProvider turn ownership', () => {
+  it('routes a confirmed text request through the normal conversation pipeline', async () => {
+    const provider = new CascadeVoiceProvider({});
+    const internals = provider as unknown as ProviderInternals;
+    const ask = vi
+      .spyOn(internals.conversation, 'ask')
+      .mockResolvedValue({ text: '已收到请求' } as any);
+    expect(provider.submitText('查证刚才作品的封面背景')).toBe(true);
+    await vi.waitFor(() =>
+      expect(ask).toHaveBeenCalledWith(
+        '查证刚才作品的封面背景',
+        expect.anything(),
+      ),
+    );
+    provider.close();
+  });
   it('does not start an LLM turn when the final transcript is consumed', async () => {
     const onTranscript = vi.fn(() => true);
     const provider = new CascadeVoiceProvider({ onTranscript });

@@ -40,6 +40,8 @@ export interface VoiceProvider {
   setContext?(context: string): void;
   sendAudio(pcm16: Int16Array): void;
   sendToolResult(callId: string, output: string): void;
+  /** A user-confirmed contextual request, without another microphone turn. */
+  submitText?(text: string): boolean;
   cancelResponse(): void;
   /** Ask the voice to speak a short proactive line. */
   speak(text: string): void;

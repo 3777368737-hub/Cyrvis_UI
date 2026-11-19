@@ -33,6 +33,53 @@ function setup() {
   return { deps, inspector: new GazeInspector(deps) };
 }
 describe('read-only gaze inspection', () => {
+  it('turns a visual observation into an actionable question without executing tools', async () => {
+    const { deps, inspector } = setup();
+    inspector.setEnabled(true);
+    deps.fetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  '{"kind":"music","target":"Day One","description":"音乐封面","identified":true,"confidence":"high"}',
+              },
+            },
+          ],
+        }),
+      ),
+    );
+    const suggestion = await inspector.suggest();
+    expect(suggestion?.actions.map((item) => item.kind)).toEqual([
+      'play',
+      'explain',
+      'story',
+    ]);
+    expect(inspector.getStatus().answer).toContain('要我播放');
+  });
+  it('allows a manual question to abort a proactive request without corrupting the newer result', async () => {
+    const { deps, inspector } = setup();
+    inspector.setEnabled(true);
+    deps.fetch.mockImplementationOnce(async (_url?: any, request?: any) => {
+      await new Promise((_, reject) =>
+        request.signal.addEventListener('abort', () =>
+          reject(new Error('cancelled')),
+        ),
+      );
+      return new Response();
+    });
+    const proactive = inspector.suggest();
+    const rejection = expect(proactive).rejects.toThrow();
+    await vi.waitFor(() => expect(deps.fetch).toHaveBeenCalledOnce());
+    expect(await inspector.inspect('读一下这里')).toContain('歌曲列表');
+    await rejection;
+    expect(inspector.getStatus()).toMatchObject({
+      phase: 'done',
+      question: '读一下这里',
+    });
+    expect(inspector.getStatus().error).toBeUndefined();
+  });
   it('maps normalized gaze to actual screenshot pixels and clips all screen edges', () => {
     for (const [x, y] of [
       [0, 0],

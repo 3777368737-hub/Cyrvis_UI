@@ -1,6 +1,7 @@
 import { createPortal } from 'react-dom';
 import { useEffect, useRef, useState } from 'react';
 import type { GazeInspection } from '@main/cyrvis/gaze/inspector';
+import type { ProactiveGazeStatus } from '@main/cyrvis/gaze/proactive';
 import {
   AdaptiveGazeFilter,
   FaceGate,
@@ -82,6 +83,12 @@ export default function CyrvisGaze() {
       phase: 'idle',
     }),
     [countdown, setCountdown] = useState(false);
+  const [proactive, setProactive] = useState<ProactiveGazeStatus>({
+    enabled: false,
+    phase: 'off',
+    dwellMs: 4500,
+    progress: 0,
+  });
   const session = useRef(0),
     state = useRef<Stage>('off'),
     targetIndex = useRef(0),
@@ -156,9 +163,15 @@ export default function CyrvisGaze() {
     if (!open) return;
     let active = true;
     const refresh = () =>
-      void invoke('inspection-status')
-        .then((result) => {
-          if (active) setInspection(result);
+      void Promise.all([
+        invoke('inspection-status'),
+        invoke('proactive-status'),
+      ])
+        .then(([result, nextProactive]) => {
+          if (active) {
+            setInspection(result);
+            setProactive(nextProactive);
+          }
         })
         .catch(() => {});
     refresh();
@@ -332,7 +345,7 @@ export default function CyrvisGaze() {
       ...recent.current.filter((v) => now - v.at < 450),
       { point: adjusted, at: now },
     ];
-    if (!sharing.current || now - lastContext.current < 1500) return;
+    if (!sharing.current || now - lastContext.current < 500) return;
     lastContext.current = now;
     const points = recent.current;
     if (points.length < 3) {
@@ -457,8 +470,8 @@ export default function CyrvisGaze() {
         >
           <p role="status">{note}</p>
           <p>
-            摄像头本地处理，桌面及其他应用均可识别。启用AI看屏后，仅在提问时将注视区域截图发送到
-            Settings 配置的视觉模型。低精度也可演示。
+            摄像头本地处理，桌面及其他应用均可识别。手动看屏在提问时发送区域截图；开启主动提醒后，稳定注视也会触发区域截图，发送到
+            Settings 配置的视觉模型。
           </p>
           <p>
             眼动独立运行：“停止任务”仅停止桌面操作，不关闭眼动。点击“关闭摄像头与共享”才结束眼动。
@@ -514,6 +527,115 @@ export default function CyrvisGaze() {
           >
             测试桌面光标（居中5秒，非眼动）
           </button>
+          <section aria-label="注视主动提醒设置">
+            {stage !== 'tracking' && (
+              <p>完成上面的九点采样后，可在这里开启注视主动提醒。</p>
+            )}
+            <p>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={proactive.enabled}
+                  disabled={stage !== 'tracking' || !inspection.enabled}
+                  onChange={async (e) => {
+                    try {
+                      setProactive(
+                        await invoke('proactive-configure', {
+                          enabled: e.target.checked,
+                          dwellMs: proactive.dwellMs,
+                        }),
+                      );
+                    } catch (error) {
+                      setNote(String(error));
+                    }
+                  }}
+                />{' '}
+                注视主动提醒
+              </label>{' '}
+              <select
+                aria-label="主动提醒注视时长"
+                value={proactive.dwellMs}
+                onChange={async (e) => {
+                  try {
+                    setProactive(
+                      await invoke('proactive-configure', {
+                        enabled: proactive.enabled,
+                        dwellMs: Number(e.target.value),
+                      }),
+                    );
+                  } catch (error) {
+                    setNote(String(error));
+                  }
+                }}
+              >
+                <option value={4500}>约4.5秒</option>
+                <option value={6000}>约6秒</option>
+                <option value={9000}>约9秒</option>
+              </select>
+            </p>
+            {proactive.enabled && (
+              <div>
+                <p>
+                  注视后描述内容并询问下一步；不会自动播放或点击。语音忙碌时暂缓，提醒至少间隔1分钟，同一区域3分钟内不重复。
+                </p>
+                <p role="status">
+                  {proactive.phase === 'watching'
+                    ? '等待稳定注视…'
+                    : proactive.phase === 'waiting'
+                      ? '等待语音空闲或开启语音…'
+                      : proactive.phase === 'inspecting'
+                        ? '正在理解你注视的内容…'
+                        : proactive.phase === 'cooldown'
+                          ? '已提醒，暂不打扰'
+                          : proactive.error || ''}
+                </p>
+                <progress
+                  aria-label="持续注视进度"
+                  max={1}
+                  value={proactive.progress}
+                />
+                {proactive.error && <p>{proactive.error}</p>}
+                {proactive.suggestion && (
+                  <div>
+                    <p>{proactive.suggestion.speech}</p>
+                    {[
+                      ...proactive.suggestion.actions,
+                      { kind: 'dismiss', label: '暂时不要' },
+                    ].map((action) => (
+                      <button
+                        key={action.kind}
+                        style={{
+                          border: '1px solid #bcc',
+                          borderRadius: 8,
+                          padding: '6px 8px',
+                          margin: 3,
+                        }}
+                        onClick={async () => {
+                          try {
+                            const result = await invoke(
+                              'proactive-action',
+                              proactive.suggestion!.id,
+                              action.kind,
+                            );
+                            setNote(
+                              result.ok
+                                ? '已收到你的选择，交给助手处理。'
+                                : result.message,
+                            );
+                            setProactive(await invoke('proactive-status'));
+                          } catch (error) {
+                            setNote(String(error));
+                          }
+                        }}
+                      >
+                        {action.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
           {stage === 'tracking' && (
             <>
               <p>
@@ -527,7 +649,7 @@ export default function CyrvisGaze() {
                       setInspection(await invoke('inspect-enabled', enabled));
                     }}
                   />{' '}
-                  AI看屏（单次提问发送区域截图）
+                  AI看屏（允许发送区域截图）
                 </label>
               </p>
               <p>

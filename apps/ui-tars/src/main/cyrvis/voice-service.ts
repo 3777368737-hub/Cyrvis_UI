@@ -1,6 +1,8 @@
 import { DesktopGazeCursor } from './gaze/cursor';
 import { gazeInspector } from './gaze/desktop-inspector';
-import { setDesktopGaze } from './gaze/context';
+import { getDesktopGaze, setDesktopGaze } from './gaze/context';
+import { ProactiveGaze } from './gaze/proactive';
+import type { GazeAction } from './gaze/suggestions';
 /*
  * Copyright (c) 2025 Bytedance, Inc. and its affiliates.
  * SPDX-License-Identifier: Apache-2.0
@@ -53,6 +55,26 @@ interface VoiceService {
 }
 
 let service: VoiceService | null = null;
+let lastGazeVoiceActivityAt = 0;
+const proactiveGaze = new ProactiveGaze({
+  inspect: () => gazeInspector.suggest(),
+  cancel: () => gazeInspector.cancelProactive(),
+  canInspect: () => {
+    if (!service || !captureReady || !gazeInspector.getStatus().enabled)
+      return false;
+    const phase = gazeInspector.getStatus().phase;
+    return (
+      service.brain.canOfferGazeSuggestion() &&
+      phase !== 'capturing' &&
+      phase !== 'thinking' &&
+      Date.now() - lastGazeVoiceActivityAt >= 3000
+    );
+  },
+  onSuggestion: (suggestion) => {
+    service?.brain.offerGazeSuggestion(suggestion);
+    emitActivity('speech', suggestion.speech);
+  },
+});
 let selectedVoiceEngine: 'cascade' | 'omni' = env.voiceEngine;
 // Hybrid mode: the main Renderer owns the microphone (and its AEC reference),
 // so the hidden capture window must not feed a second copy of the same audio
@@ -1101,13 +1123,38 @@ const registerVoiceIpc = () => {
   ipcRegistered = true;
 
   const desktopCursor = new DesktopGazeCursor();
-  ipcMain.handle('cyrvis:gaze:inspect-enabled', (_event, enabled) =>
-    gazeInspector.setEnabled(enabled === true),
+  ipcMain.handle('cyrvis:gaze:inspect-enabled', (_event, enabled) => {
+    if (enabled !== true) {
+      proactiveGaze.configure(false);
+      service?.brain.clearGazeSuggestion();
+    }
+    return gazeInspector.setEnabled(enabled === true);
+  });
+  ipcMain.handle('cyrvis:gaze:proactive-status', () =>
+    proactiveGaze.getStatus(),
   );
+  ipcMain.handle('cyrvis:gaze:proactive-configure', (_event, config) => {
+    const enabled =
+      config?.enabled === true && gazeInspector.getStatus().enabled;
+    if (!enabled) service?.brain.clearGazeSuggestion();
+    return proactiveGaze.configure(enabled, Number(config?.dwellMs) || 4500);
+  });
+  ipcMain.handle('cyrvis:gaze:proactive-action', (_event, id, action) => {
+    if (!['play', 'explain', 'story', 'dismiss'].includes(action))
+      return { ok: false, message: '无效操作' };
+    if (!service) return { ok: false, message: '请先开启语音助手' };
+    broadcast('cyrvis:voice:response-stopped');
+    return service.brain.followGazeSuggestion(
+      String(id),
+      action as GazeAction | 'dismiss',
+    );
+  });
   ipcMain.handle('cyrvis:gaze:inspection-status', () =>
     gazeInspector.getStatus(),
   );
   ipcMain.handle('cyrvis:gaze:inspect', async () => {
+    proactiveGaze.snooze();
+    service?.brain.clearGazeSuggestion();
     try {
       const answer = await gazeInspector.inspect();
       service?.brain.speakRequestedReply(answer);
@@ -1117,6 +1164,8 @@ const registerVoiceIpc = () => {
     return gazeInspector.getStatus();
   });
   globalShortcut.register('CommandOrControl+Alt+I', () => {
+    proactiveGaze.snooze();
+    service?.brain.clearGazeSuggestion();
     void gazeInspector
       .inspect()
       .then((answer) => {
@@ -1144,10 +1193,12 @@ const registerVoiceIpc = () => {
     desktopCursor.toggle(),
   );
   screen.on('display-metrics-changed', () => {
+    proactiveGaze.update(null);
     desktopCursor.hide();
     setDesktopGaze(null);
   });
   screen.on('display-removed', () => {
+    proactiveGaze.update(null);
     desktopCursor.hide();
     setDesktopGaze(null);
   });
@@ -1173,6 +1224,7 @@ const registerVoiceIpc = () => {
   ipcMain.handle('cyrvis:gaze:update', (_event, sample) => {
     if (!sample) {
       setDesktopGaze(null);
+      proactiveGaze.update(null);
       return;
     }
     if (
@@ -1186,6 +1238,7 @@ const registerVoiceIpc = () => {
     )
       return;
     setDesktopGaze({ x: sample.x, y: sample.y });
+    proactiveGaze.update(getDesktopGaze());
     // Read the current sample at tool invocation. Repeated session.update calls
     // can overwrite the voice provider's in-flight speech instructions.
   });
@@ -1702,10 +1755,12 @@ export const startVoiceService = (): VoiceService | null => {
         broadcast('cyrvis:voice:audio', copy.buffer);
       },
       onSpeechStarted: () => {
+        lastGazeVoiceActivityAt = Date.now();
         logger.info('[cyrvis voice] speech started');
         broadcast('cyrvis:voice:speech-started');
       },
       onSpeechStopped: () => {
+        lastGazeVoiceActivityAt = Date.now();
         logger.info('[cyrvis voice] speech stopped');
         broadcast('cyrvis:voice:speech-stopped');
       },
@@ -1716,6 +1771,7 @@ export const startVoiceService = (): VoiceService | null => {
         }
       },
       onAssistantText: (text, final) => {
+        lastGazeVoiceActivityAt = Date.now();
         logger.info('[cyrvis voice] assistant text', { text, final });
         broadcast('cyrvis:voice:assistant', { text, final });
         lastAssistantAt = Date.now();
@@ -1768,6 +1824,11 @@ export const startVoiceService = (): VoiceService | null => {
             fastToolMatrix?.router.isPendingConfirmationReply(text) === true;
           const explicitConfirmation =
             final && fastToolMatrix?.router.isConfirmationIntent(text) === true;
+          const gazeConfirmation =
+            final &&
+            !assistantPlaybackActive &&
+            Date.now() >= speakerGuardUntil &&
+            service?.brain.isGazeFollowup(text) === true;
           if (final && deferredBargeGuiStop) {
             deferredBargeGuiStop = false;
             const keepGuiRunning =
@@ -1782,6 +1843,7 @@ export const startVoiceService = (): VoiceService | null => {
             final &&
             !pendingConfirmationReply &&
             !explicitConfirmation &&
+            !gazeConfirmation &&
             isLikelySpeakerEcho(
               text,
               lastAssistantText,
@@ -1912,7 +1974,11 @@ export const startVoiceService = (): VoiceService | null => {
     },
     {
       requireWakeWord,
-      inspectGaze: (question) => gazeInspector.inspect(question),
+      inspectGaze: (question) => {
+        proactiveGaze.snooze();
+        return gazeInspector.inspect(question);
+      },
+      snoozeProactiveGaze: () => proactiveGaze.snooze(),
       awakeTimeoutMs: requireWakeWord ? 20_000 : 0,
       wakePatterns,
       proactivity: {

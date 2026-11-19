@@ -1,4 +1,9 @@
 import type { DesktopGaze } from './context';
+import {
+  parseGazeSuggestion,
+  SUGGESTION_QUESTION,
+  type GazeSuggestion,
+} from './suggestions';
 
 export function gazeCrop(x: number, y: number, width: number, height: number) {
   if (
@@ -45,10 +50,11 @@ interface Dependencies {
   fetch: typeof fetch;
 }
 
-/** One user question => one crop upload. No continuous screen transmission. */
+/** One explicit question or opted-in dwell trigger => one regional upload. */
 export class GazeInspector {
   private state: GazeInspection = { enabled: false, phase: 'idle' };
   private pending: Promise<string> | null = null;
+  private pendingIntent: 'manual' | 'proactive' | null = null;
   private abort: AbortController | null = null;
   constructor(private readonly deps: Dependencies) {}
   getStatus() {
@@ -61,16 +67,42 @@ export class GazeInspector {
     } else this.state = { ...this.state, enabled: true };
     return this.getStatus();
   }
-  inspect(question = '我在看什么？'): Promise<string> {
-    if (this.pending) return this.pending;
+  cancelProactive(): void {
+    if (this.pendingIntent === 'proactive') this.abort?.abort();
+  }
+  async suggest(): Promise<GazeSuggestion | null> {
+    const text = await this.inspect(SUGGESTION_QUESTION, 'proactive');
+    const suggestion = parseGazeSuggestion(text, Date.now());
+    if (this.state.question === SUGGESTION_QUESTION)
+      this.state = {
+        ...this.state,
+        answer:
+          suggestion?.speech || '这片区域的对象还不够明确，暂不主动打扰。',
+      };
+    return suggestion;
+  }
+  inspect(
+    question = '我在看什么？',
+    intent: 'manual' | 'proactive' = 'manual',
+  ): Promise<string> {
+    if (this.pending) {
+      if (intent === this.pendingIntent) return this.pending;
+      if (intent === 'proactive')
+        return Promise.reject(
+          new Error('正在处理你的看屏提问，主动识别暂缓。'),
+        );
+      this.abort?.abort(); // Explicit questions always take priority.
+    }
     const abort = new AbortController();
     this.abort = abort;
+    this.pendingIntent = intent;
     const request = this.run(question.slice(0, 600), abort);
     this.pending = request;
     const clear = () => {
       if (this.pending === request) {
         this.pending = null;
         this.abort = null;
+        this.pendingIntent = null;
       }
     };
     void request.then(clear, clear);
@@ -154,7 +186,7 @@ export class GazeInspector {
         : error instanceof Error
           ? error.message
           : '看屏识别失败，请重试。';
-      if (this.state.enabled)
+      if (this.state.enabled && this.abort === abort)
         this.state = { ...this.state, phase: 'error', error: message };
       throw new Error(message);
     } finally {

@@ -12,6 +12,7 @@ import type {
   VoiceToolCallWithId,
 } from './voice/provider';
 import { VoiceBrain, type VoiceBrainCallbacks } from './voice-brain';
+import { parseGazeSuggestion } from './gaze/suggestions';
 
 class FakeGUIAdapter implements GUIAdapter {
   callbacks: GUIAdapterCallbacks | null = null;
@@ -48,6 +49,7 @@ class FakeGUIAdapter implements GUIAdapter {
 class FakeProvider implements VoiceProvider {
   readonly toolResults: Array<{ callId: string; output: string }> = [];
   readonly spoken: string[] = [];
+  readonly submitted: string[] = [];
   readonly audio: Int16Array[] = [];
   canceled = 0;
   connected = false;
@@ -77,6 +79,10 @@ class FakeProvider implements VoiceProvider {
     this.spoken.push(text);
     this.callbacks.onResponseStarted?.();
     this.callbacks.onResponseDone?.();
+  }
+  submitText(text: string): boolean {
+    this.submitted.push(text);
+    return true;
   }
 
   close(): void {
@@ -146,6 +152,44 @@ afterEach(() => {
 });
 
 describe('VoiceBrain', () => {
+  it('only submits a suggested music action after a clear user choice and preserves its target', async () => {
+    const { brain, provider, adapter } = setup({ requireWakeWord: false });
+    await brain.start();
+    const suggestion = parseGazeSuggestion(
+      '{"kind":"music","target":"Day One","description":"你在看一个音乐封面","identified":true,"confidence":"high"}',
+      Date.now(),
+    )!;
+    brain.offerGazeSuggestion(suggestion);
+    expect(provider.submitted).toEqual([]);
+    expect(adapter.instruction).toBe('');
+    provider.emitTranscript('好');
+    await flush();
+    expect(provider.submitted).toEqual([]);
+    expect(provider.spoken.at(-1)).toContain('选择哪一项');
+    provider.emitTranscript('播放它');
+    await flush();
+    expect(provider.submitted).toHaveLength(1);
+    expect(provider.submitted[0]).toContain('Day One');
+    expect(provider.submitted[0]).toContain('确认播放器状态');
+    brain.dispose();
+  });
+  it('expires and dismisses proactive suggestions without executing anything', async () => {
+    vi.useFakeTimers();
+    const { brain, provider } = setup({ requireWakeWord: false });
+    await brain.start();
+    const suggestion = parseGazeSuggestion(
+      '{"kind":"music","target":"Day One","description":"音乐封面","identified":true,"confidence":"high"}',
+      Date.now(),
+    )!;
+    brain.offerGazeSuggestion(suggestion);
+    provider.emitTranscript('不用了');
+    expect(provider.submitted).toEqual([]);
+    expect(brain.followGazeSuggestion(suggestion.id, 'play').ok).toBe(false);
+    brain.offerGazeSuggestion(suggestion);
+    await vi.advanceTimersByTimeAsync(121_000);
+    expect(brain.followGazeSuggestion(suggestion.id, 'play').ok).toBe(false);
+    brain.dispose();
+  });
   it('wakes for an explicitly requested screen reply and delivers its audio', async () => {
     const { brain, provider, audioOut } = setup();
     await brain.start();

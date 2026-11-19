@@ -503,6 +503,12 @@ export class CascadeVoiceProvider implements InteractiveVoiceProvider {
     this.conversation.sendToolResult(callId, output);
   }
 
+  submitText(text: string): boolean {
+    if (!text.trim()) return false;
+    void this.runConversationTurn(text, this.generation);
+    return true;
+  }
+
   cancelResponse(): void {
     this.generation += 1;
     this.conversationAbort?.abort();

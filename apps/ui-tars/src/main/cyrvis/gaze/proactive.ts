@@ -20,6 +20,10 @@ const RADIUS = 0.085;
 const MAX_GAP = 2200;
 const distance = (a: DesktopGaze, b: DesktopGaze) =>
   Math.hypot(a.x - b.x, a.y - b.y);
+const sameTarget = (a: DesktopGaze, b: DesktopGaze) =>
+  a.target || b.target
+    ? a.target?.id === b.target?.id
+    : distance(a, b) <= RADIUS;
 
 /** Local dwell gating; no camera frames or periodic screenshots are uploaded. */
 export class ProactiveGaze {
@@ -96,7 +100,7 @@ export class ProactiveGaze {
       !previous ||
       now - previous.at > MAX_GAP ||
       this.anchor.displayId !== sample.displayId ||
-      distance(this.anchor, sample) > RADIUS
+      !sameTarget(this.anchor, sample)
     ) {
       this.invalidate();
       this.anchor = { ...sample };
@@ -121,7 +125,7 @@ export class ProactiveGaze {
       this.seenPositions.some(
         (item) =>
           item.gaze.displayId === sample.displayId &&
-          distance(item.gaze, sample) <= RADIUS,
+          sameTarget(item.gaze, sample),
       )
     ) {
       this.status.phase = 'cooldown';
@@ -147,7 +151,7 @@ export class ProactiveGaze {
           !this.latest ||
           this.now() - this.latest.at > MAX_GAP ||
           this.latest.displayId !== frozen.displayId ||
-          distance(this.latest, frozen) > RADIUS ||
+          !sameTarget(this.latest, frozen) ||
           !this.deps.canInspect()
         )
           return;

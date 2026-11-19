@@ -10,11 +10,14 @@ vi.mock('electron', async () => {
     visible = false;
     webContents = Object.assign(new EventEmitter(), {
       setWindowOpenHandler: vi.fn(),
+      executeJavaScript: vi.fn(async () => undefined),
     });
     setIgnoreMouseEvents = vi.fn();
     setAlwaysOnTop = vi.fn();
     setVisibleOnAllWorkspaces = vi.fn();
     setPosition = vi.fn();
+    setSize = vi.fn();
+    setBounds = vi.fn();
     loadURL = vi.fn(() => Promise.resolve());
     showInactive = vi.fn(() => {
       this.visible = true;
@@ -113,6 +116,46 @@ describe('desktop gaze cursor', () => {
     win.webContents.emit('did-finish-load');
     expect(win.visible).toBe(true);
     cursor.toggle();
+    expect(win.visible).toBe(false);
+    cursor.destroy();
+  });
+  it('highlights an object without moving the system pointer or exposing click targets', () => {
+    const cursor = new DesktopGazeCursor();
+    cursor.updateTarget({
+      phase: 'locked',
+      progress: 1,
+      target: {
+        id: 'cover',
+        scene: 'test',
+        label: '音乐封面',
+        role: 'AXImage',
+        source: 'accessibility',
+        bounds: { x: -1000, y: 200, width: 180, height: 180 },
+      },
+    });
+    const win = state.windows[0];
+    win.webContents.emit('did-finish-load');
+    expect(win.setBounds).toHaveBeenLastCalledWith(
+      { x: -1005, y: 172, width: 190, height: 214 },
+      false,
+    );
+    expect(win.webContents.executeJavaScript.mock.calls[0][0]).toContain(
+      '已锁定',
+    );
+    expect(win.setIgnoreMouseEvents).toHaveBeenCalledWith(true);
+    cursor.destroy();
+  });
+  it('does not restore a stale highlight after local capture finishes', async () => {
+    const cursor = new DesktopGazeCursor();
+    cursor.update(sample());
+    const win = state.windows[0];
+    win.webContents.emit('did-finish-load');
+    const capture = cursor.withHiddenOverlay(async () => {
+      cursor.hide();
+      return 'frame';
+    });
+    await vi.advanceTimersByTimeAsync(60);
+    expect(await capture).toBe('frame');
     expect(win.visible).toBe(false);
     cursor.destroy();
   });

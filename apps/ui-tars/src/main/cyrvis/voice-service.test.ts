@@ -17,6 +17,7 @@ const mock = vi.hoisted(() => ({
   wake: vi.fn(),
   speakReply: vi.fn(),
   offerSuggestion: vi.fn(),
+  objectScan: vi.fn(async () => ({ scene: 'test', objects: [] as any[] })),
   start: vi.fn(async () => undefined),
   captureClose: vi.fn(),
   provider: {
@@ -94,6 +95,23 @@ vi.mock('./memory', () => ({
 vi.mock('@main/logger', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
 }));
+vi.mock('@main/window', () => ({ showCompanion: vi.fn() }));
+vi.mock('./gaze/native-objects', () => ({
+  NativeGazeObjects: class {
+    scan = mock.objectScan;
+  },
+}));
+vi.mock('./gaze/cursor', () => ({
+  DesktopGazeCursor: class {
+    update = vi.fn();
+    updateTarget = vi.fn();
+    hide = vi.fn();
+    setEnabled = vi.fn();
+    toggle = vi.fn();
+    isVisible = () => true;
+    withHiddenOverlay = <T>(capture: () => Promise<T>) => capture();
+  },
+}));
 vi.mock('./capture-service', () => ({
   startCaptureService: async (callbacks: CaptureServiceHandlers) => {
     mock.capture = callbacks;
@@ -145,6 +163,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mock.skinId = undefined;
   mock.capture = null;
+  mock.objectScan.mockResolvedValue({ scene: 'test', objects: [] });
   mock.skinListeners.clear();
   vi.useFakeTimers();
   vi.stubEnv('QWEN_API_KEY', 'test');
@@ -186,6 +205,7 @@ it('turns sustained desktop gaze into one voice suggestion only after opt-in', a
   const { parseGazeSuggestion } = await import('./gaze/suggestions');
   startVoiceService();
   await mock.handlers.get('cyrvis:voice:start')!();
+  mock.handlers.get('cyrvis:gaze:object-configure')!(undefined, false);
   mock.events.get('cyrvis:voice:renderer-capture-ready')!(
     undefined,
     'Built-in microphone',
@@ -275,6 +295,53 @@ it('uses renderer-owned capture without starting a second microphone', async () 
   expect(mock.handlers.get('cyrvis:voice:get-capture-ready')!()).toEqual({
     ready: false,
   });
+});
+
+it('feeds locked object context into proactive recognition instead of raw jitter', async () => {
+  const { startVoiceService } = await import('./voice-service');
+  const { gazeInspector } = await import('./gaze/desktop-inspector');
+  const { getDesktopGaze } = await import('./gaze/context');
+  startVoiceService();
+  await mock.handlers.get('cyrvis:voice:start')!();
+  mock.events.get('cyrvis:voice:renderer-capture-ready')!(
+    undefined,
+    'Built-in microphone',
+  );
+  mock.handlers.get('cyrvis:gaze:inspect-enabled')!(undefined, true);
+  mock.handlers.get('cyrvis:gaze:proactive-configure')!(undefined, {
+    enabled: true,
+  });
+  mock.objectScan.mockResolvedValue({
+    scene: 'test',
+    objects: [
+      {
+        id: 'cover',
+        scene: 'test',
+        label: '测试封面',
+        role: 'AXImage',
+        source: 'accessibility',
+        bounds: { x: 630, y: 360, width: 180, height: 180 },
+      },
+    ],
+  });
+  const suggest = vi.spyOn(gazeInspector, 'suggest').mockResolvedValue(null);
+  for (let i = 0; i < 65; i++) {
+    mock.handlers.get('cyrvis:gaze:cursor')!(undefined, {
+      x: i % 2 ? 0.49 : 0.51,
+      y: 0.5,
+      timestamp: Date.now(),
+    });
+    await vi.advanceTimersByTimeAsync(100);
+  }
+  expect(getDesktopGaze()).toMatchObject({
+    x: 0.5,
+    y: 0.5,
+    target: { id: 'cover' },
+  });
+  expect(suggest).toHaveBeenCalledOnce();
+  mock.handlers.get('cyrvis:gaze:cursor')!(undefined, null);
+  expect(getDesktopGaze()).toBeNull();
+  suggest.mockRestore();
 });
 
 it('keeps voice paused when the companion is changed', async () => {

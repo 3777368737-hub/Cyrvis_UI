@@ -2,6 +2,7 @@ import { createPortal } from 'react-dom';
 import { useEffect, useRef, useState } from 'react';
 import type { GazeInspection } from '@main/cyrvis/gaze/inspector';
 import type { ProactiveGazeStatus } from '@main/cyrvis/gaze/proactive';
+import type { GazeObjectStatus } from '@main/cyrvis/gaze/object-tracker';
 import {
   AdaptiveGazeFilter,
   FaceGate,
@@ -89,6 +90,12 @@ export default function CyrvisGaze() {
     dwellMs: 4500,
     progress: 0,
   });
+  const [objects, setObjects] = useState<GazeObjectStatus>({
+    enabled: true,
+    phase: 'searching',
+    progress: 0,
+    objects: 0,
+  });
   const session = useRef(0),
     state = useRef<Stage>('off'),
     targetIndex = useRef(0),
@@ -166,11 +173,13 @@ export default function CyrvisGaze() {
       void Promise.all([
         invoke('inspection-status'),
         invoke('proactive-status'),
+        invoke('object-status'),
       ])
-        .then(([result, nextProactive]) => {
+        .then(([result, nextProactive, nextObjects]) => {
           if (active) {
             setInspection(result);
             setProactive(nextProactive);
+            setObjects(nextObjects);
           }
         })
         .catch(() => {});
@@ -506,7 +515,7 @@ export default function CyrvisGaze() {
                   void invoke('cursor-enabled', e.target.checked);
                 }}
               />{' '}
-              桌面透明光标
+              桌面对象高亮 / 光标
             </label>
             （⌘/Ctrl+Alt+G 隐藏/显示）
           </p>
@@ -527,6 +536,51 @@ export default function CyrvisGaze() {
           >
             测试桌面光标（居中5秒，非眼动）
           </button>
+          <section aria-label="对象吸附设置">
+            <p>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={objects.enabled}
+                  onChange={async (e) => {
+                    try {
+                      setObjects(
+                        await invoke('object-configure', e.target.checked),
+                      );
+                    } catch (error) {
+                      setNote(String(error));
+                    }
+                  }}
+                />{' '}
+                对象吸附（本地识别）
+              </label>
+            </p>
+            <p>
+              黄色框表示候选对象，持续注视后变为绿色锁定框；小幅抖动不会跳到旁边。选错时移开视线，再看向目标中央。不会自动点击。
+            </p>
+            <p>
+              识别在本机完成；应用对象不可读时，本地截图检测图像区域和文字，不发送到模型。AI看屏与主动提醒需另行开启。
+            </p>
+            {objects.enabled && stage === 'tracking' && (
+              <>
+                <p role="status">
+                  {objects.phase === 'locked'
+                    ? `已锁定：${objects.target?.label || '界面对象'}`
+                    : objects.phase === 'candidate'
+                      ? `候选：${objects.target?.label || '界面对象'}`
+                      : objects.phase === 'ambiguous'
+                        ? '附近有多个候选，请看向目标中央'
+                        : '寻找附近的界面对象…'}
+                </p>
+                <progress
+                  aria-label="对象注视锁定进度"
+                  max={1}
+                  value={objects.progress}
+                />
+                {objects.error && <p>{objects.error}</p>}
+              </>
+            )}
+          </section>
           <section aria-label="注视主动提醒设置">
             {stage !== 'tracking' && (
               <p>完成上面的九点采样后，可在这里开启注视主动提醒。</p>

@@ -3,6 +3,9 @@ import { gazeInspector } from './gaze/desktop-inspector';
 import { getDesktopGaze, setDesktopGaze } from './gaze/context';
 import { ProactiveGaze } from './gaze/proactive';
 import type { GazeAction } from './gaze/suggestions';
+import { GazeObjectTracker } from './gaze/object-tracker';
+import { NativeGazeObjects } from './gaze/native-objects';
+import { showCompanion } from '@main/window';
 /*
  * Copyright (c) 2025 Bytedance, Inc. and its affiliates.
  * SPDX-License-Identifier: Apache-2.0
@@ -1123,6 +1126,46 @@ const registerVoiceIpc = () => {
   ipcRegistered = true;
 
   const desktopCursor = new DesktopGazeCursor();
+  const nativeObjects = new NativeGazeObjects((capture) =>
+    desktopCursor.withHiddenOverlay(capture),
+  );
+  const objectTracker = new GazeObjectTracker({
+    scan: (gaze) => nativeObjects.scan(gaze),
+    render: (state) => desktopCursor.updateTarget(state),
+    onGaze: (gaze) => {
+      const value = gazeInspector.getStatus().enabled ? gaze : null;
+      setDesktopGaze(value);
+      proactiveGaze.update(value);
+    },
+  });
+  const rawGaze = (
+    sample: { x: number; y: number; timestamp: number } | null,
+  ) => {
+    if (
+      !sample ||
+      !Number.isFinite(sample.x) ||
+      !Number.isFinite(sample.y) ||
+      !Number.isFinite(sample.timestamp) ||
+      sample.x < 0 ||
+      sample.x > 1 ||
+      sample.y < 0 ||
+      sample.y > 1 ||
+      Math.abs(Date.now() - sample.timestamp) > 800
+    )
+      return null;
+    const display = screen.getPrimaryDisplay();
+    return {
+      x: sample.x,
+      y: sample.y,
+      at: sample.timestamp,
+      displayId: display.id,
+      bounds: { ...display.bounds },
+    };
+  };
+  ipcMain.handle('cyrvis:gaze:object-status', () => objectTracker.getStatus());
+  ipcMain.handle('cyrvis:gaze:object-configure', (_event, enabled) =>
+    objectTracker.configure(enabled !== false),
+  );
   ipcMain.handle('cyrvis:gaze:inspect-enabled', (_event, enabled) => {
     if (enabled !== true) {
       proactiveGaze.configure(false);
@@ -1177,9 +1220,11 @@ const registerVoiceIpc = () => {
         );
       });
   });
-  ipcMain.handle('cyrvis:gaze:cursor', (_event, sample) =>
-    desktopCursor.update(sample),
-  );
+  ipcMain.handle('cyrvis:gaze:cursor', (_event, sample) => {
+    if (objectTracker.getStatus().enabled)
+      objectTracker.update(rawGaze(sample));
+    else desktopCursor.update(sample);
+  });
   ipcMain.handle('cyrvis:gaze:cursor-enabled', (_event, enabled) =>
     desktopCursor.setEnabled(enabled === true),
   );
@@ -1193,11 +1238,13 @@ const registerVoiceIpc = () => {
     desktopCursor.toggle(),
   );
   screen.on('display-metrics-changed', () => {
+    objectTracker.clear();
     proactiveGaze.update(null);
     desktopCursor.hide();
     setDesktopGaze(null);
   });
   screen.on('display-removed', () => {
+    objectTracker.clear();
     proactiveGaze.update(null);
     desktopCursor.hide();
     setDesktopGaze(null);
@@ -1205,6 +1252,7 @@ const registerVoiceIpc = () => {
   ipcMain.handle('cyrvis:gaze:calibrate-screen', (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win) return;
+    objectTracker.clear();
     desktopCursor.hide();
     // Transparent/vibrant windows can become blank in macOS simple fullscreen.
     // Cover the primary screen with a normal opaque window instead.
@@ -1218,10 +1266,15 @@ const registerVoiceIpc = () => {
     win.focus();
     win.webContents.invalidate();
   });
-  ipcMain.handle('cyrvis:gaze:hide', (event) =>
-    BrowserWindow.fromWebContents(event.sender)?.hide(),
-  );
+  ipcMain.handle('cyrvis:gaze:hide', (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.hide();
+    showCompanion();
+  });
   ipcMain.handle('cyrvis:gaze:update', (_event, sample) => {
+    if (objectTracker.getStatus().enabled) {
+      objectTracker.update(rawGaze(sample));
+      return;
+    }
     if (!sample) {
       setDesktopGaze(null);
       proactiveGaze.update(null);

@@ -1,7 +1,7 @@
 import { desktopCapturer, screen } from 'electron';
 import { SettingStore } from '@main/store/setting';
 import { getDesktopGaze } from './context';
-import { gazeCrop, GazeInspector } from './inspector';
+import { objectCrop, GazeInspector } from './inspector';
 
 export const gazeInspector = new GazeInspector({
   getGaze: getDesktopGaze,
@@ -24,7 +24,7 @@ export const gazeInspector = new GazeInspector({
       );
     // Map against actual screenshot pixels, independent of Retina scaling.
     const { width, height } = source.thumbnail.getSize();
-    const crop = gazeCrop(gaze.x, gaze.y, width, height);
+    const crop = objectCrop(gaze, width, height);
     const jpeg = source.thumbnail.crop(crop).toJPEG(80);
     return {
       preview: `data:image/jpeg;base64,${jpeg.toString('base64')}`,

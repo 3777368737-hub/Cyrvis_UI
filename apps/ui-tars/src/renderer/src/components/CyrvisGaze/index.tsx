@@ -630,7 +630,7 @@ export default function CyrvisGaze() {
             {proactive.enabled && (
               <div>
                 <p>
-                  注视后描述内容并询问下一步；不会自动播放或点击。语音忙碌时暂缓，提醒至少间隔1分钟，同一区域3分钟内不重复。
+                  注视后描述内容并询问下一步；不会自动播放或点击。成功提醒至少间隔1分钟，同一对象不重复；识别未成功会显示原因并稍后重试。
                 </p>
                 <p role="status">
                   {proactive.phase === 'watching'
@@ -640,9 +640,12 @@ export default function CyrvisGaze() {
                       : proactive.phase === 'inspecting'
                         ? '正在理解你注视的内容…'
                         : proactive.phase === 'cooldown'
-                          ? '已提醒，暂不打扰'
+                          ? proactive.detail || '暂缓中，稍后继续识别'
                           : proactive.error || ''}
                 </p>
+                {proactive.detail && proactive.phase !== 'cooldown' && (
+                  <p>{proactive.detail}</p>
+                )}
                 <progress
                   aria-label="持续注视进度"
                   max={1}

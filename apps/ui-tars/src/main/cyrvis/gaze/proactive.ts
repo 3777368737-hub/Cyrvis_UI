@@ -8,6 +8,8 @@ export interface ProactiveGazeStatus {
   progress: number;
   suggestion?: GazeSuggestion;
   error?: string;
+  detail?: string;
+  retryAt?: number;
 }
 interface Dependencies {
   inspect: () => Promise<GazeSuggestion | null>;
@@ -15,6 +17,7 @@ interface Dependencies {
   canInspect: () => boolean;
   onSuggestion: (suggestion: GazeSuggestion) => void;
   now?: () => number;
+  onEvent?: (event: string, detail?: string) => void;
 }
 const RADIUS = 0.085;
 const MAX_GAP = 2200;
@@ -60,6 +63,9 @@ export class ProactiveGaze {
     );
     this.invalidate();
     this.anchor = null;
+    this.nextAt = 0;
+    this.seenPositions = [];
+    this.seenTargets.clear();
     this.status = {
       enabled,
       dwellMs: next,
@@ -77,6 +83,8 @@ export class ProactiveGaze {
       phase: this.status.enabled ? 'cooldown' : 'off',
       progress: 0,
       suggestion: undefined,
+      detail: '已暂缓主动提醒。',
+      retryAt: this.nextAt,
     };
   }
   private invalidate() {
@@ -140,8 +148,17 @@ export class ProactiveGaze {
     const generation = this.generation;
     const frozen = { ...sample, bounds: { ...sample.bounds } };
     this.busy = true;
-    this.status = { ...this.status, phase: 'inspecting', error: undefined };
-    this.nextAt = now + 60_000;
+    this.status = {
+      ...this.status,
+      phase: 'inspecting',
+      error: undefined,
+      detail: undefined,
+      retryAt: undefined,
+    };
+    // Back off briefly while a request is pending. The full reminder cooldown
+    // and seen-object cache apply only to a result actually announced.
+    this.nextAt = now + 20_000;
+    this.deps.onEvent?.('trigger');
     void this.deps
       .inspect()
       .then((suggestion) => {
@@ -153,30 +170,53 @@ export class ProactiveGaze {
           this.latest.displayId !== frozen.displayId ||
           !sameTarget(this.latest, frozen) ||
           !this.deps.canInspect()
-        )
+        ) {
+          this.deps.onEvent?.('discarded', '目标或语音状态已改变，未播报');
           return;
-        this.seenPositions.push({ gaze: frozen, at: this.now() });
-        if (!suggestion) return;
+        }
+        if (!suggestion) {
+          this.nextAt = this.now() + 20_000;
+          this.status.detail = '画面为空或目标不明确，尚未播报；稍后重试。';
+          this.status.retryAt = this.nextAt;
+          this.deps.onEvent?.('uncertain', this.status.detail);
+          return;
+        }
         const key =
           `${suggestion.kind}:${suggestion.target || suggestion.description}`
             .toLowerCase()
             .replace(/\s/g, '');
-        if (this.now() - (this.seenTargets.get(key) ?? -Infinity) < 300_000)
+        if (this.now() - (this.seenTargets.get(key) ?? -Infinity) < 300_000) {
+          this.seenPositions.push({ gaze: frozen, at: this.now() });
+          this.status.detail = '这个对象已提醒过，暂不重复。';
           return;
+        }
+        this.seenPositions.push({ gaze: frozen, at: this.now() });
+        this.nextAt = this.now() + 60_000;
         this.seenTargets.set(key, this.now());
         if (this.seenTargets.size > 100)
           this.seenTargets.delete(this.seenTargets.keys().next().value!);
         suggestion = { ...suggestion, gaze: frozen };
         this.status.suggestion = suggestion;
+        this.status.detail = '已生成描述并交给语音助手播报。';
+        this.status.retryAt = this.nextAt;
         this.deps.onSuggestion(suggestion);
+        this.deps.onEvent?.('announced');
       })
       .catch((error) => {
-        if (generation === this.generation && this.status.enabled)
+        if (generation === this.generation && this.status.enabled) {
+          this.nextAt = this.now() + 20_000;
           this.status = {
             ...this.status,
             phase: 'error',
             error: error instanceof Error ? error.message : '主动识别失败',
+            detail: '本次识别失败，尚未播报；稍后重试。',
+            retryAt: this.nextAt,
           };
+        }
+        this.deps.onEvent?.(
+          'failed',
+          error instanceof Error ? error.message : '主动识别失败',
+        );
       })
       .finally(() => {
         this.busy = false;

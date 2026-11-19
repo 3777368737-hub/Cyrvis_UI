@@ -60,6 +60,8 @@ interface VoiceService {
 let service: VoiceService | null = null;
 let lastGazeVoiceActivityAt = 0;
 const proactiveGaze = new ProactiveGaze({
+  onEvent: (event, detail) =>
+    logger.info('[cyrvis gaze proactive]', { event, detail }),
   inspect: () => gazeInspector.suggest(),
   cancel: () => gazeInspector.cancelProactive(),
   canInspect: () => {

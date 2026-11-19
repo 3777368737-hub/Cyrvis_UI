@@ -67,6 +67,7 @@ const setup = (model?: string, endpoint?: string) => {
     onClose: vi.fn(),
     onReady: vi.fn(),
     onAudio: vi.fn(),
+    onToolCall: vi.fn(),
   };
   const provider = new QwenOmniProvider({
     apiKey: 'test-key',
@@ -91,6 +92,43 @@ const sent = (socket: FakeWebSocket) =>
   socket.send.mock.calls.map(([data]) => JSON.parse(data));
 
 describe('Qwen companion voices', () => {
+  it('can speak first in a fresh Audio session by creating a read-only input before response.create', async () => {
+    const { provider } = setup('qwen-audio-3.0-realtime-plus');
+    const connected = provider.connect();
+    sockets[0].ready();
+    await connected;
+    provider.speak('这是一张封面，暂时不能确认作品名称。');
+    const messages = sent(sockets[0]);
+    const index = messages.findIndex(
+      (item) => item.type === 'conversation.item.create',
+    );
+    expect(index).toBeGreaterThanOrEqual(0);
+    expect(messages[index].item).toMatchObject({
+      type: 'message',
+      role: 'user',
+      content: [
+        { type: 'input_text', text: expect.stringContaining('只朗读') },
+      ],
+    });
+    expect(messages[index + 1].type).toBe('response.create');
+  });
+  it('does not execute tools requested while only reading a proactive reminder', async () => {
+    const { provider, callbacks } = setup('qwen-audio-3.0-realtime-plus');
+    const connected = provider.connect();
+    sockets[0].ready();
+    await connected;
+    provider.speak('需要播放它吗？');
+    receive(sockets[0], {
+      type: 'response.function_call_arguments.done',
+      name: 'start_gui_task',
+      call_id: 'unexpected',
+      arguments: '{"instruction":"play"}',
+    });
+    expect(callbacks.onToolCall).not.toHaveBeenCalled();
+    expect(callbacks.onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('只读播报') }),
+    );
+  });
   it('queues a confirmed contextual request until cancellation finishes', async () => {
     const { provider } = setup('qwen-audio-3.0-realtime-plus');
     const connected = provider.connect();

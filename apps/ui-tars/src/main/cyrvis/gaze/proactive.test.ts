@@ -50,6 +50,24 @@ function setup() {
   };
 }
 describe('proactive gaze', () => {
+  it('retries an unannounced result on the same object instead of caching it as already reminded', async () => {
+    const { controller, deps, dwell, point } = setup();
+    deps.inspect
+      .mockResolvedValueOnce(null as any)
+      .mockResolvedValueOnce(music());
+    controller.configure(true);
+    dwell(0);
+    await flush();
+    expect(controller.getStatus().detail).toContain('尚未播报');
+    expect(deps.onSuggestion).not.toHaveBeenCalled();
+    for (let at = 5000; at <= 26000; at += 500) {
+      point(at);
+      await flush();
+    }
+    expect(deps.inspect).toHaveBeenCalledTimes(2);
+    expect(deps.onSuggestion).toHaveBeenCalledOnce();
+    expect(controller.getStatus().detail).toContain('交给语音');
+  });
   it('does no work until enabled, then inspects only after sustained local dwell', async () => {
     const { controller, deps, point, dwell } = setup();
     dwell(0);
@@ -119,6 +137,42 @@ describe('proactive gaze', () => {
   });
 });
 describe('grounded proactive suggestions', () => {
+  it('describes a visible unnamed cover even if work identity confidence is low', () => {
+    const suggestion = parseGazeSuggestion(
+      JSON.stringify({
+        kind: 'music',
+        target: '',
+        description: '一张唱片封面，中间有一张人物照片',
+        visible: true,
+        ambiguous: false,
+        identified: false,
+        confidence: 'low',
+        identityConfidence: 'low',
+      }),
+      0,
+    );
+    expect(suggestion?.speech).toContain('人物照片');
+    expect(suggestion?.speech).toContain('不能确认作品名称');
+    expect(suggestion?.actions.map((item) => item.kind)).toEqual(['explain']);
+  });
+  it('still stays silent for blank or ambiguous images rather than guessing', () => {
+    for (const flags of [
+      { visible: false, ambiguous: false },
+      { visible: true, ambiguous: true },
+    ]) {
+      expect(
+        parseGazeSuggestion(
+          JSON.stringify({
+            kind: 'image',
+            description: '无法确认',
+            confidence: 'low',
+            ...flags,
+          }),
+          0,
+        ),
+      ).toBeNull();
+    }
+  });
   it('offers music choices only for a clearly identified work and asks before acting', () => {
     const suggestion = music();
     expect(suggestion.actions.map((item) => item.kind)).toEqual([

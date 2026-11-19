@@ -102,7 +102,8 @@ export class GazeInspector {
       this.state = {
         ...this.state,
         answer:
-          suggestion?.speech || '这片区域的对象还不够明确，暂不主动打扰。',
+          suggestion?.speech ||
+          '当前画面为空或有多个对象无法区分，尚未播报；稍后会重新尝试。',
       };
     return suggestion;
   }

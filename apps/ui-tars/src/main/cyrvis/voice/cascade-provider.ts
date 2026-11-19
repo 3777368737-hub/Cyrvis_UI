@@ -508,6 +508,9 @@ export class CascadeVoiceProvider implements InteractiveVoiceProvider {
     void this.runConversationTurn(text, this.generation);
     return true;
   }
+  isReady(): boolean {
+    return this.connected;
+  }
 
   cancelResponse(): void {
     this.generation += 1;

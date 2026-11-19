@@ -42,6 +42,13 @@ export class ProactiveGaze {
   private nextAt = 0;
   private generation = 0;
   private busy = false;
+  private pending: {
+    suggestion: GazeSuggestion;
+    gaze: DesktopGaze;
+    generation: number;
+    expiresAt: number;
+  } | null = null;
+  private deliveryTimer: ReturnType<typeof setTimeout> | null = null;
   private seenPositions: { gaze: DesktopGaze; at: number }[] = [];
   private seenTargets = new Map<string, number>();
   private readonly now: () => number;
@@ -61,7 +68,7 @@ export class ProactiveGaze {
       3000,
       Math.min(12000, Number.isFinite(dwellMs) ? dwellMs : 4500),
     );
-    this.invalidate();
+    this.invalidate(enabled ? '重新设置主动提醒' : '关闭主动提醒');
     this.anchor = null;
     this.nextAt = 0;
     this.seenPositions = [];
@@ -76,7 +83,7 @@ export class ProactiveGaze {
   }
   snooze(ms = 60_000) {
     this.nextAt = this.now() + ms;
-    this.invalidate();
+    this.invalidate('用户主动提问或暂缓提醒');
     this.anchor = null;
     this.status = {
       ...this.status,
@@ -87,17 +94,29 @@ export class ProactiveGaze {
       retryAt: this.nextAt,
     };
   }
-  private invalidate() {
+  private invalidate(reason: string) {
+    if (this.busy || this.pending) this.deps.onEvent?.('cancelled', reason);
     this.generation++;
+    this.pending = null;
+    if (this.deliveryTimer) clearTimeout(this.deliveryTimer);
+    this.deliveryTimer = null;
     this.deps.cancel();
+  }
+  resetObservation() {
+    this.invalidate('显示器状态变化');
+    this.anchor = null;
+    this.latest = null;
+    this.status.progress = 0;
   }
   update(sample: DesktopGaze | null): void {
     const previous = this.latest;
     this.latest = sample;
     if (!this.status.enabled) return;
     const now = this.now();
+    // Dwell authorizes one frozen screenshot. Normal gaze movement, blinks or
+    // local object-ID jitter after capture must not abort that read-only call.
+    if (this.busy || this.pending) return;
     if (!sample || now - sample.at > MAX_GAP) {
-      this.invalidate();
       this.anchor = null;
       this.status.progress = 0;
       this.status.phase = 'watching';
@@ -110,12 +129,10 @@ export class ProactiveGaze {
       this.anchor.displayId !== sample.displayId ||
       !sameTarget(this.anchor, sample)
     ) {
-      this.invalidate();
       this.anchor = { ...sample };
       this.startedAt = now;
       this.status.progress = 0;
     }
-    if (this.busy) return;
     if (now < this.nextAt) {
       this.status.phase = 'cooldown';
       return;
@@ -165,13 +182,12 @@ export class ProactiveGaze {
         if (
           generation !== this.generation ||
           !this.status.enabled ||
-          !this.latest ||
-          this.now() - this.latest.at > MAX_GAP ||
-          this.latest.displayId !== frozen.displayId ||
-          !sameTarget(this.latest, frozen) ||
-          !this.deps.canInspect()
+          (this.latest && this.latest.displayId !== frozen.displayId)
         ) {
-          this.deps.onEvent?.('discarded', '目标或语音状态已改变，未播报');
+          this.deps.onEvent?.(
+            'discarded',
+            '已关闭主动提醒或屏幕已改变，未播报',
+          );
           return;
         }
         if (!suggestion) {
@@ -181,26 +197,13 @@ export class ProactiveGaze {
           this.deps.onEvent?.('uncertain', this.status.detail);
           return;
         }
-        const key =
-          `${suggestion.kind}:${suggestion.target || suggestion.description}`
-            .toLowerCase()
-            .replace(/\s/g, '');
-        if (this.now() - (this.seenTargets.get(key) ?? -Infinity) < 300_000) {
-          this.seenPositions.push({ gaze: frozen, at: this.now() });
-          this.status.detail = '这个对象已提醒过，暂不重复。';
-          return;
-        }
-        this.seenPositions.push({ gaze: frozen, at: this.now() });
-        this.nextAt = this.now() + 60_000;
-        this.seenTargets.set(key, this.now());
-        if (this.seenTargets.size > 100)
-          this.seenTargets.delete(this.seenTargets.keys().next().value!);
-        suggestion = { ...suggestion, gaze: frozen };
-        this.status.suggestion = suggestion;
-        this.status.detail = '已生成描述并交给语音助手播报。';
-        this.status.retryAt = this.nextAt;
-        this.deps.onSuggestion(suggestion);
-        this.deps.onEvent?.('announced');
+        this.pending = {
+          suggestion,
+          gaze: frozen,
+          generation,
+          expiresAt: Math.min(frozen.at + 60_000, this.now() + 25_000),
+        };
+        this.deliver();
       })
       .catch((error) => {
         if (generation === this.generation && this.status.enabled) {
@@ -224,5 +227,57 @@ export class ProactiveGaze {
           this.status.phase = 'cooldown';
         this.status.progress = 0;
       });
+  }
+  private deliver(): void {
+    const pending = this.pending;
+    if (!pending) return;
+    if (pending.generation !== this.generation || !this.status.enabled) {
+      this.pending = null;
+      return;
+    }
+    if (this.now() >= pending.expiresAt) {
+      this.pending = null;
+      this.status.phase = 'cooldown';
+      this.status.detail = '语音持续繁忙，刚才的识别结果已过期，未播报。';
+      this.deps.onEvent?.('discarded', this.status.detail);
+      return;
+    }
+    if (!this.deps.canInspect()) {
+      this.status.phase = 'waiting';
+      this.status.detail = '截图已识别完成，等待语音连接或空闲后播报。';
+      this.deliveryTimer = setTimeout(() => {
+        this.deliveryTimer = null;
+        this.deliver();
+      }, 250);
+      return;
+    }
+    const { suggestion, gaze } = pending;
+    this.pending = null;
+    const key =
+      `${suggestion.kind}:${suggestion.target || suggestion.candidate || suggestion.description}`
+        .toLowerCase()
+        .replace(/\s/g, '');
+    if (this.now() - (this.seenTargets.get(key) ?? -Infinity) < 300_000) {
+      this.seenPositions.push({ gaze, at: this.now() });
+      this.status.phase = 'cooldown';
+      this.status.detail = '这个对象已提醒过，暂不重复。';
+      return;
+    }
+    const spoken = {
+      ...suggestion,
+      gaze,
+      speech: `刚才你注视的区域里：${suggestion.speech}`,
+    };
+    this.deps.onSuggestion(spoken);
+    this.seenPositions.push({ gaze, at: this.now() });
+    this.seenTargets.set(key, this.now());
+    if (this.seenTargets.size > 100)
+      this.seenTargets.delete(this.seenTargets.keys().next().value!);
+    this.nextAt = this.now() + 60_000;
+    this.status.phase = 'cooldown';
+    this.status.suggestion = spoken;
+    this.status.detail = '已生成描述并交给语音助手播报。';
+    this.status.retryAt = this.nextAt;
+    this.deps.onEvent?.('announced');
   }
 }

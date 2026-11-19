@@ -67,6 +67,7 @@ const proactiveGaze = new ProactiveGaze({
   canInspect: () => {
     if (!service || !captureReady || !gazeInspector.getStatus().enabled)
       return false;
+    if (service.provider.isReady?.() === false) return false;
     const phase = gazeInspector.getStatus().phase;
     return (
       service.brain.canOfferGazeSuggestion() &&
@@ -1241,13 +1242,13 @@ const registerVoiceIpc = () => {
   );
   screen.on('display-metrics-changed', () => {
     objectTracker.clear();
-    proactiveGaze.update(null);
+    proactiveGaze.resetObservation();
     desktopCursor.hide();
     setDesktopGaze(null);
   });
   screen.on('display-removed', () => {
     objectTracker.clear();
-    proactiveGaze.update(null);
+    proactiveGaze.resetObservation();
     desktopCursor.hide();
     setDesktopGaze(null);
   });

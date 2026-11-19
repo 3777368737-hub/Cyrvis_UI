@@ -87,13 +87,14 @@ export class GazeInspector {
   }
   setEnabled(enabled: boolean) {
     if (!enabled) {
-      this.abort?.abort();
+      this.abort?.abort('disabled');
       this.state = { enabled: false, phase: 'idle' };
     } else this.state = { ...this.state, enabled: true };
     return this.getStatus();
   }
   cancelProactive(): void {
-    if (this.pendingIntent === 'proactive') this.abort?.abort();
+    if (this.pendingIntent === 'proactive')
+      this.abort?.abort('proactive-cancelled');
   }
   async suggest(): Promise<GazeSuggestion | null> {
     const text = await this.inspect(SUGGESTION_QUESTION, 'proactive');
@@ -117,12 +118,15 @@ export class GazeInspector {
         return Promise.reject(
           new Error('正在处理你的看屏提问，主动识别暂缓。'),
         );
-      this.abort?.abort(); // Explicit questions always take priority.
+      this.abort?.abort('manual-priority'); // Explicit questions always take priority.
     }
     const abort = new AbortController();
     this.abort = abort;
     this.pendingIntent = intent;
-    const request = this.run(question.slice(0, 600), abort);
+    const request = this.run(
+      intent === 'proactive' ? question : question.slice(0, 600),
+      abort,
+    );
     this.pending = request;
     const clear = () => {
       if (this.pending === request) {
@@ -135,7 +139,7 @@ export class GazeInspector {
     return request;
   }
   private async run(question: string, abort: AbortController): Promise<string> {
-    const timeout = setTimeout(() => abort.abort(), 45_000);
+    const timeout = setTimeout(() => abort.abort('timeout'), 45_000);
     try {
       if (!this.state.enabled)
         throw new Error('请在眼动面板启用“AI看屏”，再询问我在看什么。');
@@ -207,7 +211,9 @@ export class GazeInspector {
     } catch (error) {
       const message = abort.signal.aborted
         ? this.state.enabled
-          ? '看屏识别已取消或超过45秒，请重试。'
+          ? abort.signal.reason === 'timeout'
+            ? '视觉模型响应超过45秒，请重试。'
+            : '本次主动看屏已取消（已关闭提醒或手动提问优先）。'
           : 'AI看屏已关闭。'
         : error instanceof Error
           ? error.message

@@ -459,6 +459,9 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
 
     this.sendProactiveSpeak(text);
   }
+  isReady(): boolean {
+    return this.connected;
+  }
 
   submitText(text: string): boolean {
     if (!this.connected || !text.trim()) return false;

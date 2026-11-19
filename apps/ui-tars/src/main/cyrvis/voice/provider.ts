@@ -42,6 +42,7 @@ export interface VoiceProvider {
   sendToolResult(callId: string, output: string): void;
   /** A user-confirmed contextual request, without another microphone turn. */
   submitText?(text: string): boolean;
+  isReady?(): boolean;
   cancelResponse(): void;
   /** Ask the voice to speak a short proactive line. */
   speak(text: string): void;

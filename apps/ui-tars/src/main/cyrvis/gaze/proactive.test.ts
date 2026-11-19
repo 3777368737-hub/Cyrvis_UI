@@ -50,6 +50,72 @@ function setup() {
   };
 }
 describe('proactive gaze', () => {
+  it('finishes a captured observation despite a blink or a later target change', async () => {
+    const { controller, deps, dwell, point } = setup();
+    let finish!: (value: ReturnType<typeof music>) => void;
+    deps.inspect.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    controller.configure(true);
+    dwell(0);
+    const cancellations = deps.cancel.mock.calls.length;
+    controller.update(null);
+    point(10_000, 0.9);
+    finish(music());
+    await flush();
+    expect(deps.cancel).toHaveBeenCalledTimes(cancellations);
+    expect(deps.onSuggestion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        speech: expect.stringContaining('刚才'),
+        gaze: expect.objectContaining({ x: 0.5 }),
+      }),
+    );
+  });
+  it('queues a completed result while voice is busy and delivers after it becomes ready', async () => {
+    vi.useFakeTimers();
+    const { controller, deps, dwell } = setup();
+    let finish!: (value: ReturnType<typeof music>) => void;
+    deps.inspect.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    controller.configure(true);
+    dwell(0);
+    deps.canInspect.mockReturnValue(false);
+    finish(music());
+    await flush();
+    expect(deps.onSuggestion).not.toHaveBeenCalled();
+    expect(controller.getStatus().detail).toContain('等待语音');
+    deps.canInspect.mockReturnValue(true);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(deps.onSuggestion).toHaveBeenCalledOnce();
+  });
+  it('still cancels a queued result when the user explicitly disables reminders', async () => {
+    vi.useFakeTimers();
+    const { controller, deps, dwell } = setup();
+    let finish!: (value: ReturnType<typeof music>) => void;
+    deps.inspect.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    controller.configure(true);
+    dwell(0);
+    deps.canInspect.mockReturnValue(false);
+    finish(music());
+    await flush();
+    controller.configure(false);
+    deps.canInspect.mockReturnValue(true);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(deps.onSuggestion).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
   it('retries an unannounced result on the same object instead of caching it as already reminded', async () => {
     const { controller, deps, dwell, point } = setup();
     deps.inspect
@@ -137,6 +203,28 @@ describe('proactive gaze', () => {
   });
 });
 describe('grounded proactive suggestions', () => {
+  it('offers an unverified visual candidate for lookup without authorizing playback', () => {
+    const value = parseGazeSuggestion(
+      JSON.stringify({
+        kind: 'music',
+        target: '',
+        candidate: '示例艺人的示例专辑',
+        description: '一张没有文字的唱片封面',
+        visible: true,
+        identified: false,
+        confidence: 'high',
+        identityConfidence: 'low',
+      }),
+      0,
+    )!;
+    expect(value.identified).toBe(false);
+    expect(value.target).toBe('');
+    expect(value.speech).toContain('待核实');
+    expect(value.speech).not.toContain('示例艺人');
+    expect(value.actions.map((item) => item.kind)).toEqual(['explain']);
+    expect(resolveGazeReply('核实一下', value)).toBe('explain');
+    expect(resolveGazeReply('播放它', value)).toBeNull();
+  });
   it('describes a visible unnamed cover even if work identity confidence is low', () => {
     const suggestion = parseGazeSuggestion(
       JSON.stringify({

@@ -373,9 +373,9 @@ export class VoiceBrain {
    * a short window so it cannot answer with "好的，已暂停…".
    */
   markUserStop(): void {
+    this.options.snoozeProactiveGaze?.();
     if (this.gazeSuggestion) {
       this.gazeSuggestion = null;
-      this.options.snoozeProactiveGaze?.();
     }
     // Qwen can start a follow-up response 2-3s after the barge audio was
     // cancelled. 3s covers the observed 2.3s follow-up while still allowing

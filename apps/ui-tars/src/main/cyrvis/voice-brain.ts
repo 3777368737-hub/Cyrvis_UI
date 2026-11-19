@@ -116,6 +116,14 @@ export class VoiceBrain {
   private lastFinalTranscript = '';
   private lastFinalAt = 0;
   private inspectionGeneration = 0;
+  private speechAwaitingTranscript = false;
+  private speechTurn = 0;
+  private pendingGazeRequests = 0;
+  private gazeToolTurn: {
+    generation: number;
+    speechTurn: number;
+    awaitingTranscript: boolean;
+  } | null = null;
   private lastInspection: {
     question: string;
     at: number;
@@ -347,6 +355,10 @@ export class VoiceBrain {
         this.notifyState();
       },
       onSpeechStarted: () => {
+        if (!this.userSpeaking) {
+          this.speechTurn++;
+          this.speechAwaitingTranscript = true;
+        }
         this.userSpeaking = true;
         this.ttsSpeaking = false;
         this.clearPlaybackWatchdog();
@@ -485,6 +497,11 @@ export class VoiceBrain {
   }
 
   private handleTranscript(text: string, final: boolean): boolean {
+    if (final && !text.trim()) {
+      // Buffer clear/trim acknowledgements can arrive while an earlier tool
+      // result is being spoken. Silence is not an explicit user stop.
+      return true;
+    }
     this.callbacks.onTranscript?.(text, final);
 
     if (!final) {
@@ -496,15 +513,6 @@ export class VoiceBrain {
     }
 
     this.partialUserText = '';
-
-    if (!text.trim()) {
-      // Qwen sometimes commits silence/noise and still generates a reply.
-      // Treat it like a stop for a short window; an unrecognized "停" often
-      // arrives here as an empty transcript and must not produce "好的，请问…".
-      this.markUserStop();
-      this.provider.cancelResponse();
-      return true;
-    }
 
     const now = Date.now();
     const transcriptKey = normalizeTranscriptDedupeKey(text);
@@ -551,7 +559,16 @@ export class VoiceBrain {
     }
 
     this.lastUserText = text;
-    const inspectionGeneration = ++this.inspectionGeneration;
+    // Realtime tools can precede the final ASR event for the same speech.
+    // Keep that turn's generation instead of invalidating its pending result.
+    const joinsEarlyGazeTool =
+      this.speechAwaitingTranscript &&
+      this.gazeToolTurn?.awaitingTranscript &&
+      this.gazeToolTurn.speechTurn === this.speechTurn;
+    if (joinsEarlyGazeTool) this.gazeToolTurn!.awaitingTranscript = false;
+    else this.inspectionGeneration++;
+    this.speechAwaitingTranscript = false;
+    const inspectionGeneration = this.inspectionGeneration;
     if (voiceIntent.mode !== 'chat') {
       console.log(
         '[cyrvis intent]',
@@ -612,6 +629,13 @@ export class VoiceBrain {
         return true;
       }
       this.notifyState();
+    }
+
+    if (this.gazeToolTurn?.generation === inspectionGeneration) {
+      this.markUserResponseOutput();
+      this.resetAwakeTimer();
+      this.notifyState();
+      return true;
     }
 
     if (!bareStop) {
@@ -1018,6 +1042,13 @@ export class VoiceBrain {
           return;
         }
         if (deterministic) deterministic.toolReply = true;
+        const turn = {
+          generation,
+          speechTurn: this.speechTurn,
+          awaitingTranscript: this.speechAwaitingTranscript,
+        };
+        this.gazeToolTurn = turn;
+        this.markUserResponseOutput();
         try {
           const answer = await (deterministic && this.lastInspection
             ? this.lastInspection.result
@@ -1038,6 +1069,9 @@ export class VoiceBrain {
                 error: error instanceof Error ? error.message : '看屏识别失败',
               }),
             );
+        } finally {
+          if (this.gazeToolTurn === turn) this.gazeToolTurn = null;
+          this.resetAwakeTimer();
         }
         break;
       }
@@ -1732,7 +1766,17 @@ export class VoiceBrain {
   private inspectGaze(question: string): Promise<string> {
     if (!this.options.inspectGaze)
       return Promise.reject(new Error('当前未配置AI看屏功能。'));
-    const result = this.options.inspectGaze(question);
+    this.pendingGazeRequests++;
+    let operation: Promise<string>;
+    try {
+      operation = this.options.inspectGaze(question);
+    } catch (error) {
+      operation = Promise.reject(error);
+    }
+    const result = operation.finally(() => {
+      this.pendingGazeRequests--;
+      this.resetAwakeTimer();
+    });
     this.lastInspection = { question, at: Date.now(), result };
     return result;
   }
@@ -1887,6 +1931,14 @@ export class VoiceBrain {
       return;
     }
     this.awakeTimer = setTimeout(() => {
+      if (
+        this.pendingGazeRequests > 0 ||
+        this.ttsSpeaking ||
+        this.controller.isBusy()
+      ) {
+        this.resetAwakeTimer();
+        return;
+      }
       this.sleep();
     }, this.awakeTimeoutMs);
   }

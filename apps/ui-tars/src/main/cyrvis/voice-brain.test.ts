@@ -97,8 +97,7 @@ class FakeProvider implements VoiceProvider {
 }
 
 const flush = async () => {
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let i = 0; i < 8; i++) await Promise.resolve();
 };
 
 const setup = (options?: {
@@ -147,6 +146,106 @@ afterEach(() => {
 });
 
 describe('VoiceBrain', () => {
+  it('does not invalidate a pending gaze answer for a noise-only speech segment', async () => {
+    let resolve!: (value: string) => void;
+    const { brain, provider } = setup({
+      requireWakeWord: false,
+      inspectGaze: () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    });
+    await brain.start();
+    provider.emitTranscript('我在看什么');
+    provider.callbacks.onSpeechStarted?.();
+    provider.callbacks.onSpeechStopped?.();
+    provider.emitTranscript('');
+    resolve('注视区域里的歌单');
+    await flush();
+    expect(provider.spoken).toEqual(['注视区域里的歌单']);
+    brain.dispose();
+  });
+  it('ignores blank ASR while a valid answer is being delivered', async () => {
+    const { brain, provider, audioOut } = setup({ requireWakeWord: false });
+    await brain.start();
+    provider.callbacks.onResponseStarted?.();
+    provider.callbacks.onAssistantText?.('这片区域里', false);
+    expect(provider.emitTranscript('   ')).toBe(true);
+    provider.callbacks.onAssistantText?.('这片区域里有一个歌单。', true);
+    provider.emitAudio(new Int16Array([1, 2]));
+    expect(provider.canceled).toBe(0);
+    expect(brain.shouldSuppressReply()).toBe(false);
+    expect(audioOut).toHaveLength(1);
+    brain.dispose();
+  });
+
+  it.each(['播放我正在看着的这个歌单。', '我在看什么？'])(
+    'keeps an early gaze tool result for its later ASR turn: %s',
+    async (text) => {
+      vi.useFakeTimers();
+      let resolve!: (value: string) => void;
+      const inspectGaze = vi.fn(
+        () =>
+          new Promise<string>((done) => {
+            resolve = done;
+          }),
+      );
+      const { brain, provider } = setup({
+        requireWakeWord: false,
+        awakeTimeoutMs: 1000,
+        inspectGaze,
+      });
+      await brain.start();
+      provider.callbacks.onSpeechStarted?.();
+      provider.callbacks.onSpeechStopped?.();
+      provider.emitToolCall({
+        name: 'inspect_gaze_target',
+        callId: 'early-gaze',
+        args: { question: '正在看什么歌单？' },
+      });
+      provider.emitTranscript(text);
+      provider.emitTranscript('');
+      await vi.advanceTimersByTimeAsync(25_000);
+      expect(brain.getState().awake).toBe(true);
+      expect(provider.spoken).toEqual([]);
+      expect(inspectGaze).toHaveBeenCalledOnce();
+      resolve('当前区域是滑板时听的歌1');
+      await flush();
+      expect(provider.toolResults).toHaveLength(1);
+      expect(provider.toolResults[0].output).toContain('滑板时听的歌1');
+      expect(provider.canceled).toBe(0);
+      brain.dispose();
+    },
+  );
+
+  it('still discards a gaze result after an explicit new stop turn', async () => {
+    let resolve!: (value: string) => void;
+    const { brain, provider } = setup({
+      requireWakeWord: false,
+      inspectGaze: () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    });
+    await brain.start();
+    provider.callbacks.onSpeechStarted?.();
+    provider.callbacks.onSpeechStopped?.();
+    provider.emitToolCall({
+      name: 'inspect_gaze_target',
+      callId: 'old-gaze',
+      args: {},
+    });
+    provider.emitTranscript('我在看什么');
+    provider.callbacks.onSpeechStarted?.();
+    provider.callbacks.onSpeechStopped?.();
+    provider.emitTranscript('停止');
+    resolve('不应该继续播报的旧画面');
+    await flush();
+    expect(provider.toolResults).toEqual([]);
+    expect(provider.spoken).toEqual([]);
+    expect(provider.canceled).toBeGreaterThan(0);
+    brain.dispose();
+  });
   it('keeps gaze inspection available after a spoken stop task command', async () => {
     const inspectGaze = vi.fn(async () => '仍能识别注视区域');
     const { brain, provider, controller } = setup({

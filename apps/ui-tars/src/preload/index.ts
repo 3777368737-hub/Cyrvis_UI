@@ -12,6 +12,7 @@ import type { AppState, LocalStore } from '@main/store/types';
 import type {
   ControllerEvent,
   CyrvisActivityEvent,
+  CyrvisContextSnapshot,
   CyrvisMemorySnapshot,
   CyrvisVoiceState,
   TaskSnapshot,
@@ -184,6 +185,22 @@ const electronHandler = {
       ipcRenderer.invoke(
         'cyrvis:voice:get-memory',
       ) as Promise<CyrvisMemorySnapshot>,
+    getContext: () =>
+      ipcRenderer.invoke(
+        'cyrvis:voice:get-context',
+      ) as Promise<CyrvisContextSnapshot | null>,
+    clearContext: () =>
+      ipcRenderer.invoke(
+        'cyrvis:voice:clear-context',
+      ) as Promise<CyrvisContextSnapshot | null>,
+    onContext: (callback: (snapshot: CyrvisContextSnapshot) => void) => {
+      const listener = (
+        _event: IpcRendererEvent,
+        snapshot: CyrvisContextSnapshot,
+      ) => callback(snapshot);
+      ipcRenderer.on('cyrvis:voice:context', listener);
+      return () => ipcRenderer.removeListener('cyrvis:voice:context', listener);
+    },
     cancelTask: () => ipcRenderer.invoke('cyrvis:voice:cancel-task'),
     pauseTask: () =>
       ipcRenderer.invoke(

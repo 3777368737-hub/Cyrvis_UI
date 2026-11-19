@@ -34,12 +34,14 @@ import { KeywordGate } from './keyword-gate';
 import { voiceMemoryService } from './memory';
 import { SpeakerEchoDetector, type SpeakerEchoAnalysis } from './speaker-barge';
 import { isLikelySpeakerEcho } from './speaker-echo';
+import { composeContextSections, type DynamicContextStore } from './context';
 import { LocalDesktopHost } from './tools/desktop-host';
 import { createFastToolMatrix } from './tools';
 import { SystemStateStore } from './system/system-state';
 import { CascadeVoiceProvider } from './voice/cascade-provider';
 import { QwenOmniProvider } from './voice/qwen-omni';
 import type { InteractiveVoiceProvider } from './voice/provider';
+import { createPendingIntentClassifier } from './voice/pending-intent-classifier';
 import { buildVoiceToolSurface } from './voice/tool-surface';
 import { VoiceBrain, type VoiceBrainState } from './voice-brain';
 import type { ControllerEvent } from './types';
@@ -49,9 +51,14 @@ interface VoiceService {
   provider: InteractiveVoiceProvider;
   controller: CyrvisController;
   systemState: SystemStateStore;
+  dynamicContext?: DynamicContextStore;
 }
 
 let service: VoiceService | null = null;
+const providerContextMaxChars = (() => {
+  const value = Number(process.env.CYRVIS_CONTEXT_MAX_CHARS);
+  return Number.isFinite(value) && value >= 2_000 ? value : 12_000;
+})();
 let selectedVoiceEngine: 'cascade' | 'omni' = env.voiceEngine;
 // Hybrid mode: the main Renderer owns the microphone (and its AEC reference),
 // so the hidden capture window must not feed a second copy of the same audio
@@ -1039,7 +1046,14 @@ const syncProviderMemoryContext = async (): Promise<void> => {
     return;
   }
   service.provider.setContext?.(
-    `${await voiceMemoryService.getContext()}\n\n${service.systemState.getContext()}`,
+    composeContextSections(
+      [
+        service.dynamicContext?.getContext(),
+        await voiceMemoryService.getContext(),
+        service.systemState.getContext(40),
+      ],
+      providerContextMaxChars,
+    ),
   );
 };
 
@@ -1152,6 +1166,15 @@ const registerVoiceIpc = () => {
 
   ipcMain.handle('cyrvis:voice:get-memory', () => {
     return voiceMemoryService.getSnapshot();
+  });
+
+  ipcMain.handle('cyrvis:voice:get-context', () => {
+    return service?.dynamicContext?.getPublicSnapshot() ?? null;
+  });
+
+  ipcMain.handle('cyrvis:voice:clear-context', () => {
+    service?.dynamicContext?.clearUserContext();
+    return service?.dynamicContext?.getPublicSnapshot() ?? null;
   });
 
   ipcMain.handle('cyrvis:voice:get-capture-ready', () => ({
@@ -1577,6 +1600,26 @@ export const startVoiceService = (): VoiceService | null => {
     );
     return null;
   }
+  // secretlint-disable @secretlint/secretlint-rule-pattern
+  const pendingIntentClassifier = createPendingIntentClassifier({
+    apiKey:
+      process.env.CYRVIS_PENDING_INTENT_LLM === '0'
+        ? ''
+        : settings.conversationApiKey ||
+          process.env.CONVERSATION_API_KEY ||
+          process.env.QWEN_API_KEY ||
+          '',
+    baseUrl:
+      settings.conversationBaseUrl ||
+      process.env.CONVERSATION_BASE_URL ||
+      'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    model:
+      process.env.CYRVIS_PENDING_INTENT_MODEL?.trim() ||
+      settings.conversationModelName ||
+      process.env.CONVERSATION_MODEL_NAME ||
+      'qwen-plus',
+  });
+  // secretlint-enable @secretlint/secretlint-rule-pattern
 
   const controller = new CyrvisController(new ElectronGUIAdapter());
   const codingAgent = new CodingAgentService({
@@ -1592,6 +1635,11 @@ export const startVoiceService = (): VoiceService | null => {
   const desktopHost = new LocalDesktopHost();
   const runtimeRefreshMs = Number(process.env.CYRVIS_SYSTEM_RUNTIME_REFRESH_MS);
   const fullRefreshMs = Number(process.env.CYRVIS_SYSTEM_FULL_REFRESH_MS);
+  const foregroundRefreshMs = Number(process.env.CYRVIS_FOREGROUND_REFRESH_MS);
+  const nativeForegroundEvents =
+    process.platform === 'win32' &&
+    process.env.CYRVIS_VOICE_TEST !== '1' &&
+    process.env.CYRVIS_NATIVE_FOREGROUND_EVENTS !== '0';
   const systemState = new SystemStateStore(desktopHost, {
     runtimeRefreshMs:
       Number.isFinite(runtimeRefreshMs) && runtimeRefreshMs >= 1_000
@@ -1615,6 +1663,13 @@ export const startVoiceService = (): VoiceService | null => {
     process.env.CYRVIS_FAST_TOOLS === '0'
       ? null
       : createFastToolMatrix(desktopHost, process.cwd(), systemState, {
+          foregroundRefreshMs:
+            Number.isFinite(foregroundRefreshMs) && foregroundRefreshMs >= 500
+              ? foregroundRefreshMs
+              : undefined,
+          nativeForegroundEvents,
+          foregroundScriptPath:
+            process.env.CYRVIS_FOREGROUND_EVENT_SCRIPT?.trim() || undefined,
           manifestDirectories: [
             path.join(userDataDirectory, 'cyrvis', 'providers'),
             ...(process.resourcesPath
@@ -1643,6 +1698,8 @@ export const startVoiceService = (): VoiceService | null => {
   }
   let provider!: InteractiveVoiceProvider;
   let unsubscribeFastToolUpdates: (() => void) | null = null;
+  let unsubscribeContextEvents: (() => void) | null = null;
+  let unsubscribeContextSnapshots: (() => void) | null = null;
   const requireWakeWord = settings.voiceRequireWakeWord ?? true;
   const configuredWakeWord = settings.voiceWakeWord?.trim();
   const escapeRegExp = (value: string) =>
@@ -1677,6 +1734,7 @@ export const startVoiceService = (): VoiceService | null => {
       onTranscript: (text, final) => {
         broadcast('cyrvis:voice:transcript', { text, final });
         if (final) {
+          fastToolMatrix?.dynamicContext.recordUserText(text);
           recordTurn('user', text);
         }
       },
@@ -1705,6 +1763,8 @@ export const startVoiceService = (): VoiceService | null => {
         emitActivity('session', '语音会话已休眠');
       },
       onTaskEvent: (event: ControllerEvent) => {
+        fastToolMatrix?.dynamicContext.recordTaskEvent(event);
+        void syncProviderMemoryContext();
         broadcast('cyrvis:voice:task-event', event);
         const text = describeControllerEvent(event);
         if (text) {
@@ -1904,9 +1964,19 @@ export const startVoiceService = (): VoiceService | null => {
         progressCooldownMs: 30000,
       },
       memoryContextProvider: async () =>
-        `${await voiceMemoryService.getContext()}\n\n${systemState.getContext()}`,
+        composeContextSections(
+          [
+            fastToolMatrix?.dynamicContext.getContext(),
+            await voiceMemoryService.getContext(),
+            systemState.getContext(40),
+          ],
+          providerContextMaxChars,
+        ),
       fastToolRouter: fastToolMatrix?.router,
       codingAgent,
+      classifyPendingIntent: pendingIntentClassifier
+        ? (input) => pendingIntentClassifier.classify(input)
+        : undefined,
       rememberFact: async (text) => {
         const remembered = await voiceMemoryService.rememberFact(text);
         if (remembered) {
@@ -1936,7 +2006,13 @@ export const startVoiceService = (): VoiceService | null => {
     }
   });
 
-  service = { brain, provider, controller, systemState };
+  service = {
+    brain,
+    provider,
+    controller,
+    systemState,
+    dynamicContext: fastToolMatrix?.dynamicContext,
+  };
   const unsubscribeSkin = companionStore.onDidChange('skinId', (skinId) => {
     // Companion voices apply to Omni; cascade retains its configured TTS voice.
     if (!(provider instanceof QwenOmniProvider)) return;
@@ -1987,6 +2063,21 @@ export const startVoiceService = (): VoiceService | null => {
         logger.warn('[cyrvis providers] start failed', error);
       });
   }
+  unsubscribeContextEvents =
+    fastToolMatrix?.dynamicContext.subscribeEvents((event) => {
+      if (event.type === 'foreground_changed') {
+        void fastToolMatrix?.providerManager.refresh().catch((error) => {
+          logger.warn('[cyrvis providers] foreground refresh failed', error);
+        });
+      }
+    }) ?? null;
+  unsubscribeContextSnapshots =
+    fastToolMatrix?.dynamicContext.subscribe(() => {
+      broadcast(
+        'cyrvis:voice:context',
+        fastToolMatrix.dynamicContext.getPublicSnapshot(),
+      );
+    }) ?? null;
   let lastSystemContextSyncAt = 0;
   systemState.onChange(() => {
     const now = Date.now();
@@ -2078,6 +2169,10 @@ export const startVoiceService = (): VoiceService | null => {
     keywordGate = null;
     unsubscribeFastToolUpdates?.();
     unsubscribeFastToolUpdates = null;
+    unsubscribeContextEvents?.();
+    unsubscribeContextEvents = null;
+    unsubscribeContextSnapshots?.();
+    unsubscribeContextSnapshots = null;
     fastToolMatrix?.dispose();
     systemState.stop();
     brain.dispose();

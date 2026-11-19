@@ -28,6 +28,11 @@ interface CapabilityPolicy {
   tags: string[];
 }
 
+interface RuntimeProviderAvailability {
+  availability: CapabilityAvailability;
+  reason?: string | null;
+}
+
 const DEFAULT_POLICY: CapabilityPolicy = {
   providerId: 'builtin',
   tier: 1,
@@ -48,6 +53,7 @@ const PROVIDER_PREFIXES: Array<[string, string]> = [
   ['software.', 'software'],
   ['system.', 'system'],
   ['process.', 'system'],
+  ['context.', 'context'],
 ];
 
 const TIER_OVERRIDES: Record<
@@ -96,8 +102,8 @@ const TIER_OVERRIDES: Record<
   'system.refresh': { tier: 2, activation: 'state', priority: 44 },
   'software.list_installed': { tier: 2, activation: 'state', priority: 64 },
   'steam.list_games': { tier: 2, activation: 'state', priority: 68 },
-  'steam.launch_game': { tier: 2, activation: 'state', priority: 67 },
-  'office.create_presentation': { tier: 2, activation: 'state', priority: 66 },
+  'steam.launch_game': { tier: 2, activation: 'state', priority: 75 },
+  'office.create_presentation': { tier: 2, activation: 'state', priority: 73 },
 
   'fs.copy': { tier: 3, activation: 'on-demand', priority: 35 },
   'fs.move': { tier: 3, activation: 'on-demand', priority: 34 },
@@ -116,6 +122,7 @@ const TAGS: Record<string, string[]> = {
   steam: ['steam', 'game', '游戏'],
   software: ['software', 'application', '软件', '应用'],
   system: ['system', 'process', '系统', '进程', '服务'],
+  context: ['context', 'resource', 'user', 'state', '上下文', '资源', '状态'],
   capability: ['capability', 'tool', '能力', '工具'],
   builtin: ['builtin'],
 };
@@ -174,6 +181,9 @@ const normalize = (value: string): string =>
 
 export class CapabilityCatalog {
   private readonly deniedPermissions: ToolPermission[];
+  private runtimeAvailabilityProvider:
+    | ((providerId: string) => RuntimeProviderAvailability | null)
+    | null = null;
 
   constructor(
     private readonly registry: ToolRegistry,
@@ -187,6 +197,12 @@ export class CapabilityCatalog {
       .filter(Boolean) as ToolPermission[],
   ) {
     this.deniedPermissions = deniedPermissions;
+  }
+
+  setRuntimeAvailabilityProvider(
+    provider: (providerId: string) => RuntimeProviderAvailability | null,
+  ): void {
+    this.runtimeAvailabilityProvider = provider;
   }
 
   list(): CapabilityDescriptor[] {
@@ -335,6 +351,16 @@ export class CapabilityCatalog {
     reason: string | null;
   } {
     const provider = this.providers.get(providerId);
+    const runtimeAvailability =
+      this.runtimeAvailabilityProvider?.(providerId) || null;
+    if (runtimeAvailability?.availability === 'unavailable') {
+      return {
+        availability: 'unavailable',
+        reason:
+          runtimeAvailability.reason ||
+          `Provider ${providerId} 的动态感知当前不可用。`,
+      };
+    }
     if (provider && provider.availability !== 'available') {
       return {
         availability: provider.availability,
@@ -369,6 +395,14 @@ export class CapabilityCatalog {
       return {
         availability: snapshot?.capturedAt ? 'unavailable' : 'unknown',
         reason: evaluated.reason,
+      };
+    }
+    if (runtimeAvailability?.availability === 'degraded') {
+      return {
+        availability: 'degraded',
+        reason:
+          runtimeAvailability.reason ||
+          `Provider ${providerId} 当前处于降级状态。`,
       };
     }
     return { availability: 'available', reason: null };

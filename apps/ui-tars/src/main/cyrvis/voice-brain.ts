@@ -27,6 +27,10 @@ import type {
   VoiceProviderCallbacks,
   VoiceToolCallWithId,
 } from './voice/provider';
+import type {
+  PendingIntentDecision,
+  PendingIntentInput,
+} from './voice/pending-intent-classifier';
 
 export type VoiceBrainState = CyrvisVoiceState;
 
@@ -58,6 +62,9 @@ export interface VoiceBrainOptions {
   rememberFact?: (text: string) => Promise<string | null>;
   fastToolRouter?: FastToolRouter;
   codingAgent?: CodingAgentService;
+  classifyPendingIntent?: (
+    input: PendingIntentInput,
+  ) => Promise<PendingIntentDecision>;
 }
 
 const DEFAULT_WAKE_PATTERNS: RegExp[] = [
@@ -93,6 +100,16 @@ const GUI_INTERACTION_PATTERNS: RegExp[] = [
   /(点击|点一下|双击|选择|预订|下单|填写|登录|滚动|比较|对比|查看页面|截图|截屏|加入购物车|支付|购买|提交|确认订单)/,
   /\b(click|select|book|order|fill|login|scroll|compare|screenshot|add to cart|pay|purchase|submit)\b/i,
 ];
+
+const shouldClassifyPendingReply = (text: string): boolean => {
+  const trimmed = text.trim();
+  if (!trimmed || Array.from(trimmed).length > 40) {
+    return false;
+  }
+  return /(?:对|是|好|行|嗯|可以|确认|执行|删|取消|不要|不是|别|yes|no|ok|continue)/i.test(
+    trimmed,
+  );
+};
 
 /**
  * The conversational brain.
@@ -589,6 +606,20 @@ export class VoiceBrain {
     this.lastFinalTranscript = transcriptKey;
     this.lastFinalAt = now;
     this.navigationExecutions = new Set();
+
+    const pending = this.options.fastToolRouter?.getPendingConfirmation();
+    if (
+      pending &&
+      this.options.classifyPendingIntent &&
+      this.options.fastToolRouter?.canHandle(text) !== true &&
+      shouldClassifyPendingReply(text)
+    ) {
+      this.lastUserText = text;
+      this.armUserResponseWatchdog();
+      this.notifyState();
+      this.handleSemanticPendingReply(text, pending);
+      return true;
+    }
 
     const voiceIntent = classifyVoiceIntent(text);
     this.lastVoiceIntent = voiceIntent;
@@ -1945,6 +1976,7 @@ export class VoiceBrain {
           return null;
         }
         console.info('[cyrvis fast-tools] route', {
+          kind: route.kind,
           tool: route.tool,
           domain: route.domain,
           risk: route.risk,
@@ -1963,6 +1995,7 @@ export class VoiceBrain {
           this.conversationConfirmationUntil = 0;
         }
         console.info('[cyrvis fast-tools] result', {
+          kind: outcome.route?.kind,
           tool: outcome.route?.tool,
           ok: outcome.ok,
           confirmationRequired: outcome.route?.requiresConfirmation === true,
@@ -1981,6 +2014,72 @@ export class VoiceBrain {
         this.speak(`操作失败：${normalized.message}`);
       });
     return true;
+  }
+
+  private handleSemanticPendingReply(
+    text: string,
+    pending: NonNullable<ReturnType<FastToolRouter['getPendingConfirmation']>>,
+  ): void {
+    const router = this.options.fastToolRouter;
+    const classify = this.options.classifyPendingIntent;
+    if (!router || !classify) {
+      return;
+    }
+    this.fastToolGuardUntil = Date.now() + 8_000;
+    this.deterministicFastToolGuardUntil = Date.now() + 8_000;
+    this.provider.cancelResponse();
+    const context = [
+      this.lastActionableUserText,
+      this.taskConversation.describeStatus(),
+    ]
+      .filter(Boolean)
+      .join('\n');
+    void classify({ text, pending, context })
+      .then(async (decision) => {
+        const threshold = pending.risk === 'high' ? 0.9 : 0.82;
+        if (decision.intent === 'confirm' && decision.confidence >= threshold) {
+          const outcome = await router.confirmPending();
+          this.markUserResponseOutput();
+          this.speak(outcome.speech || '操作已执行。');
+          console.info('[cyrvis intent-arbiter] confirmed', {
+            tool: pending.tool,
+            confidence: decision.confidence,
+            reason: decision.reason,
+          });
+          return;
+        }
+        if (decision.intent === 'cancel' && decision.confidence >= 0.82) {
+          const outcome = await router.cancelPending();
+          this.markUserResponseOutput();
+          this.speak(outcome.speech || '已取消。');
+          console.info('[cyrvis intent-arbiter] cancelled', {
+            tool: pending.tool,
+            confidence: decision.confidence,
+            reason: decision.reason,
+          });
+          return;
+        }
+        this.markUserResponseOutput();
+        this.speak('待确认操作尚未执行。请明确说“执行”或“取消”。');
+        console.info('[cyrvis intent-arbiter] ambiguous pending reply', {
+          tool: pending.tool,
+          intent: decision.intent,
+          confidence: decision.confidence,
+          reason: decision.reason,
+        });
+      })
+      .catch((error: unknown) => {
+        const normalized =
+          error instanceof Error ? error : new Error(String(error));
+        this.callbacks.onError?.(normalized);
+        this.markUserResponseOutput();
+        this.speak('没有判断出是否确认。请说“执行”或“取消”。');
+      })
+      .finally(() => {
+        this.fastToolGuardUntil = Date.now() + 3_000;
+        this.deterministicFastToolGuardUntil = Date.now() + 3_000;
+        this.notifyState();
+      });
   }
 
   private async handleFastProviderToolCall(

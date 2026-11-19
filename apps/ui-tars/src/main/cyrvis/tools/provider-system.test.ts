@@ -27,6 +27,8 @@ import type {
   WindowInfo,
 } from './types';
 
+const noBuiltinProviders = { tools: [], manifests: [] };
+
 class ProviderTestDesktop implements DesktopHost {
   async openPath(): Promise<void> {
     return undefined;
@@ -94,6 +96,7 @@ const createStateStore = async (
       disks: async () => [],
       battery: async () => null,
       services: async () => [],
+      recentFiles: async () => [],
     },
   });
   await store.refresh(true);
@@ -175,6 +178,7 @@ describe('provider system', () => {
       'utf8',
     );
     const matrix = createFastToolMatrix(desktop, process.cwd(), store, {
+      builtinProviders: noBuiltinProviders,
       manifestDirectories: [directory],
       allowUntrustedProviders: true,
     });
@@ -304,6 +308,7 @@ server.connect(new StdioServerTransport());
     );
     const desktop = new ProviderTestDesktop();
     const matrix = createFastToolMatrix(desktop, process.cwd(), undefined, {
+      builtinProviders: noBuiltinProviders,
       manifestDirectories: [root],
       allowUntrustedProviders: true,
     });
@@ -368,6 +373,7 @@ server.connect(new StdioServerTransport());
     const desktop = new ProviderTestDesktop();
     const store = await createStateStore(desktop, []);
     const matrix = createFastToolMatrix(desktop, process.cwd(), store, {
+      builtinProviders: noBuiltinProviders,
       manifestDirectories: [directory],
       allowUntrustedProviders: true,
     });
@@ -400,6 +406,69 @@ server.connect(new StdioServerTransport());
     }
   });
 
+  it('defers foreground-scoped providers until their application is active', async () => {
+    const directory = await fs.mkdtemp(
+      path.join(os.tmpdir(), 'cyrvis-foreground-provider-'),
+    );
+    await fs.writeFile(
+      path.join(directory, 'foreground-provider.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        toolApiVersion: 1,
+        id: 'foreground-provider',
+        name: 'Foreground Provider',
+        version: '1.0.0',
+        trust: 'untrusted',
+        permissions: ['remote.tools'],
+        activation: {
+          mode: 'foreground',
+          applications: ['Visual Studio Code'],
+          processes: ['Code'],
+        },
+        transport: {
+          type: 'streamable-http',
+          url: 'https://example.invalid/mcp',
+        },
+        tools: [
+          {
+            remoteName: 'echo',
+            domain: 'system',
+            risk: 'low',
+            tier: 2,
+            activation: 'on-demand',
+          },
+        ],
+      }),
+      'utf8',
+    );
+    const desktop = new ProviderTestDesktop();
+    const store = await createStateStore(desktop, []);
+    const matrix = createFastToolMatrix(desktop, process.cwd(), store, {
+      builtinProviders: noBuiltinProviders,
+      manifestDirectories: [directory],
+      allowUntrustedProviders: true,
+    });
+
+    try {
+      await matrix.providerManager.start();
+      expect(matrix.registry.get('foreground-provider.echo')).toBeDefined();
+      expect(matrix.providerManager.list()[0]).toMatchObject({
+        availability: 'unknown',
+        unavailableReason: 'Provider 正在等待匹配的前台应用。',
+      });
+      expect(
+        matrix.capabilityCatalog.get('foreground-provider.echo'),
+      ).toMatchObject({
+        availability: 'unknown',
+      });
+    } finally {
+      await matrix.providerManager.stop();
+      matrix.dispose();
+      store.stop();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it('tracks usage and rejects unsupported tool schema versions', async () => {
     const usageFile = path.join(
       os.tmpdir(),
@@ -407,6 +476,7 @@ server.connect(new StdioServerTransport());
     );
     const desktop = new ProviderTestDesktop();
     const matrix = createFastToolMatrix(desktop, process.cwd(), undefined, {
+      builtinProviders: noBuiltinProviders,
       usageStateFile: usageFile,
     });
 
@@ -451,6 +521,7 @@ server.connect(new StdioServerTransport());
   it('removes capabilities whose permissions are denied by policy', () => {
     const desktop = new ProviderTestDesktop();
     const matrix = createFastToolMatrix(desktop, process.cwd(), undefined, {
+      builtinProviders: noBuiltinProviders,
       deniedPermissions: ['filesystem.write'],
     });
     try {

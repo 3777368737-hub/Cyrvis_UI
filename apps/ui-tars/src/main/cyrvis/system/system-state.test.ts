@@ -133,6 +133,13 @@ describe('SystemStateStore', () => {
             startType: 'Manual',
           },
         ],
+        recentFiles: async () => [
+          {
+            name: 'report.docx',
+            path: 'C:\\Users\\test\\report.docx',
+            lastUsedAt: 100,
+          },
+        ],
       },
     });
 
@@ -145,8 +152,12 @@ describe('SystemStateStore', () => {
     );
     expect(snapshot.capabilities).toContain('steam.launch');
     expect(snapshot.capabilities).toContain('service.status');
+    expect(snapshot.recentFiles).toContainEqual(
+      expect.objectContaining({ name: 'report.docx' }),
+    );
     expect(store.searchApplications('steam')).toHaveLength(1);
     expect(store.getContext()).toContain('Visual Studio Code');
+    expect(store.getContext()).toContain('report.docx');
 
     const steam = await store.launchApplication('Steam');
     expect(steam.name).toBe('Steam');
@@ -190,6 +201,7 @@ describe('SystemStateStore', () => {
         disks: async () => [],
         battery: async () => null,
         services: async () => [],
+        recentFiles: async () => [],
       },
     });
 

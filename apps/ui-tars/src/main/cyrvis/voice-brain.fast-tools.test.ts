@@ -799,12 +799,67 @@ describe('VoiceBrain fast tool interception', () => {
     provider.assistantText(SENSITIVE_CONFIRMATION_PROMPT);
     provider.audio();
 
-    const consumed = provider.transcript('确认执行');
+    const consumed = provider.transcript('是的，');
     expect(consumed).toBe(true);
     await flush();
     await flush();
 
     expect(desktop.closed).toEqual(['notepad']);
+  });
+
+  it('uses semantic arbitration with pending memory for an unlisted confirmation phrase', async () => {
+    const adapter = new NoopGUIAdapter();
+    const controller = new CyrvisController(adapter, { stallTimeoutMs: 0 });
+    const desktop = new FakeDesktopHost();
+    const matrix = createFastToolMatrix(desktop, process.cwd(), undefined, {
+      builtinProviders: { tools: [], manifests: [] },
+    });
+    const classifyPendingIntent = vi.fn(async () => ({
+      intent: 'confirm' as const,
+      confidence: 0.96,
+      reason: 'The user is agreeing to the pending action.',
+    }));
+    let provider!: FakeProvider;
+    const brain = new VoiceBrain(
+      controller,
+      {},
+      (callbacks) => {
+        provider = new FakeProvider(callbacks);
+        return provider;
+      },
+      {
+        requireWakeWord: false,
+        fastToolRouter: matrix.router,
+        classifyPendingIntent,
+      },
+    );
+
+    try {
+      await brain.start();
+      provider.transcript('关闭应用记事本');
+      await flush();
+      await flush();
+      expect(matrix.router.hasPendingConfirmation()).toBe(true);
+
+      const consumed = provider.transcript('嗯，就按刚才说的处理吧。');
+      expect(consumed).toBe(true);
+      await flush();
+      await flush();
+
+      expect(classifyPendingIntent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: '嗯，就按刚才说的处理吧。',
+          pending: expect.objectContaining({
+            tool: 'app.close',
+          }),
+        }),
+      );
+      expect(desktop.closed).toEqual(['记事本']);
+      expect(matrix.router.hasPendingConfirmation()).toBe(false);
+    } finally {
+      matrix.dispose();
+      brain.dispose();
+    }
   });
 
   it('speaks confirmation for a high-risk capability invoked through the broker', async () => {

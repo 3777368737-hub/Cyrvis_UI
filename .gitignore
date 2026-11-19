@@ -9,6 +9,7 @@ out
 test-results/
 coverage/
 .turbo/
+.pnpm-store/
 scripts/merge-yml/*.yml
 .claude/
 .tarko

@@ -28,7 +28,7 @@ ASR final transcript
        -> ToolResult.speech -> provider.speak
 
   -> 入口 2：Qwen / Cascade LLM 工具选择
-       -> 模型看到 6 个语音工具 + 最多 24 个动态 cyrvis_* 本地工具
+       -> 模型看到 10 个语音工具 + 最多 24 个动态 cyrvis_* 本地工具
        -> 模型返回 function call + JSON 参数
        -> VoiceBrain 解析回本地工具名
        -> ToolRegistry.prepare / execute
@@ -179,7 +179,7 @@ capability.invoke("steam.launch_game", {"query":"Dota 2"})
 
 ## 4. 工具能力矩阵
 
-当前运行时注册约 45 个工具，其中 9 个工具读取动态系统快照和软件能力。
+当前运行时注册约 81 个工具，其中 9 个工具读取动态系统快照和软件能力。
 默认只向语言模型暴露最多 24 个，完整能力仍可通过 CapabilityCatalog 和
 `capability.*` 元工具访问。
 

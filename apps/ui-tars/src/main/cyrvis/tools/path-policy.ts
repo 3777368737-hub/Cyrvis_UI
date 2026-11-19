@@ -75,7 +75,9 @@ export class PathPolicy {
           ...splitRoots(configuredRoots),
         ]
           .filter((value): value is string => Boolean(value))
-          .map((value) => path.resolve(value)),
+          // macOS aliases /var to /private/var. Compare canonical roots with
+          // canonical targets so explicitly allowed temp paths stay allowed.
+          .map((value) => this.canonicalize(path.resolve(value))),
       ),
     );
   }

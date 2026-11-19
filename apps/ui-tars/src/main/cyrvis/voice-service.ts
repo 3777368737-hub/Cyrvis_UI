@@ -1,3 +1,6 @@
+import { DesktopGazeCursor } from './gaze/cursor';
+import { gazeInspector } from './gaze/desktop-inspector';
+import { setDesktopGaze } from './gaze/context';
 /*
  * Copyright (c) 2025 Bytedance, Inc. and its affiliates.
  * SPDX-License-Identifier: Apache-2.0
@@ -7,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { app, BrowserWindow, globalShortcut, ipcMain } from 'electron';
+import { app, BrowserWindow, globalShortcut, ipcMain, screen } from 'electron';
 
 import * as env from '@main/env';
 import { logger } from '@main/logger';
@@ -1096,6 +1099,96 @@ const registerVoiceIpc = () => {
   }
   ipcRegistered = true;
 
+  const desktopCursor = new DesktopGazeCursor();
+  ipcMain.handle('cyrvis:gaze:inspect-enabled', (_event, enabled) =>
+    gazeInspector.setEnabled(enabled === true),
+  );
+  ipcMain.handle('cyrvis:gaze:inspection-status', () =>
+    gazeInspector.getStatus(),
+  );
+  ipcMain.handle('cyrvis:gaze:inspect', async () => {
+    try {
+      const answer = await gazeInspector.inspect();
+      service?.provider.speak(answer);
+    } catch {
+      /* Error is displayed in the inspection panel. */
+    }
+    return gazeInspector.getStatus();
+  });
+  globalShortcut.register('CommandOrControl+Alt+I', () => {
+    void gazeInspector
+      .inspect()
+      .then((answer) => {
+        service?.provider.speak(answer);
+      })
+      .catch((error) => {
+        service?.provider.speak(
+          error instanceof Error ? error.message : '看屏识别失败',
+        );
+      });
+  });
+  ipcMain.handle('cyrvis:gaze:cursor', (_event, sample) =>
+    desktopCursor.update(sample),
+  );
+  ipcMain.handle('cyrvis:gaze:cursor-enabled', (_event, enabled) =>
+    desktopCursor.setEnabled(enabled === true),
+  );
+  ipcMain.handle('cyrvis:gaze:cursor-preview', async () => {
+    desktopCursor.setEnabled(true);
+    desktopCursor.update({ x: 0.5, y: 0.5, timestamp: Date.now() }, 5000);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return { visible: desktopCursor.isVisible() };
+  });
+  globalShortcut.register('CommandOrControl+Alt+G', () =>
+    desktopCursor.toggle(),
+  );
+  screen.on('display-metrics-changed', () => {
+    desktopCursor.hide();
+    setDesktopGaze(null);
+  });
+  screen.on('display-removed', () => {
+    desktopCursor.hide();
+    setDesktopGaze(null);
+  });
+  ipcMain.handle('cyrvis:gaze:calibrate-screen', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) return;
+    desktopCursor.hide();
+    // Transparent/vibrant windows can become blank in macOS simple fullscreen.
+    // Cover the primary screen with a normal opaque window instead.
+    if (win.isSimpleFullScreen()) win.setSimpleFullScreen(false);
+    if (win.isFullScreen()) win.setFullScreen(false);
+    win.setVibrancy(null);
+    win.setBackgroundColor('#ffffff');
+    const bounds = screen.getPrimaryDisplay().bounds;
+    win.setBounds(bounds);
+    win.show();
+    win.focus();
+    win.webContents.invalidate();
+  });
+  ipcMain.handle('cyrvis:gaze:hide', (event) =>
+    BrowserWindow.fromWebContents(event.sender)?.hide(),
+  );
+  ipcMain.handle('cyrvis:gaze:update', (_event, sample) => {
+    if (!sample) {
+      setDesktopGaze(null);
+      return;
+    }
+    if (
+      !Number.isFinite(sample.x) ||
+      !Number.isFinite(sample.y) ||
+      sample.x < 0 ||
+      sample.x > 1 ||
+      sample.y < 0 ||
+      sample.y > 1 ||
+      Math.abs(Date.now() - sample.timestamp) > 3000
+    )
+      return;
+    setDesktopGaze({ x: sample.x, y: sample.y });
+    // Read the current sample at tool invocation. Repeated session.update calls
+    // can overwrite the voice provider's in-flight speech instructions.
+  });
+
   ipcMain.handle('cyrvis:voice:toggle-ptt', () => {
     setPttActive(!pttActive);
     return { active: pttActive, mode: pttMode };
@@ -1108,7 +1201,11 @@ const registerVoiceIpc = () => {
 
   ipcMain.handle('cyrvis:voice:start', async () => {
     if (!service) {
-      return { ok: false, error: 'voice service is not configured' };
+      return {
+        ok: false,
+        error:
+          '未配置语音模型：请在 apps/ui-tars/.env 填写 QWEN_API_KEY，保存后完全退出并重新启动 CYRVIS。',
+      };
     }
     try {
       await service.brain.start();
@@ -1795,7 +1892,10 @@ export const startVoiceService = (): VoiceService | null => {
           : new QwenOmniProvider({
               apiKey,
               model: process.env.QWEN_MODEL || 'qwen3.8-omni-flash-realtime',
-              endpoint: process.env.QWEN_REALTIME_URL || undefined,
+              endpoint:
+                process.env.QWEN_REALTIME_URL ||
+                process.env.QWEN_ENDPOINT ||
+                undefined,
               voice:
                 process.env.QWEN_VOICE?.trim() ||
                 resolveCompanionSkin(companionStore.get('skinId')).voice,
@@ -1811,6 +1911,7 @@ export const startVoiceService = (): VoiceService | null => {
     },
     {
       requireWakeWord,
+      inspectGaze: (question) => gazeInspector.inspect(question),
       awakeTimeoutMs: requireWakeWord ? 20_000 : 0,
       wakePatterns,
       proactivity: {

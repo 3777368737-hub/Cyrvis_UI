@@ -66,6 +66,7 @@ export interface CyrvisVoiceState {
 }
 
 export type VoiceToolName =
+  | 'inspect_gaze_target'
   | 'start_gui_task'
   | 'cancel_gui_task'
   | 'pause_gui_task'
@@ -119,6 +120,8 @@ export const describeVoiceToolCall = (
   instruction?: string,
 ): string => {
   switch (name) {
+    case 'inspect_gaze_target':
+      return '识别当前注视区域';
     case 'start_gui_task':
       return instruction ? `启动电脑任务：${instruction}` : '启动电脑任务';
     case 'cancel_gui_task':

@@ -83,8 +83,8 @@ class FakeProvider implements VoiceProvider {
     this.connected = false;
   }
 
-  emitTranscript(text: string, final = true): void {
-    this.callbacks.onTranscript?.(text, final);
+  emitTranscript(text: string, final = true): boolean | void {
+    return this.callbacks.onTranscript?.(text, final);
   }
 
   emitToolCall(call: VoiceToolCallWithId): void {
@@ -102,6 +102,7 @@ const flush = async () => {
 };
 
 const setup = (options?: {
+  inspectGaze?: (question: string) => Promise<string>;
   requireWakeWord?: boolean;
   awakeTimeoutMs?: number;
   rememberFact?: (text: string) => Promise<string | null>;
@@ -134,6 +135,7 @@ const setup = (options?: {
       requireWakeWord: options?.requireWakeWord ?? true,
       awakeTimeoutMs: options?.awakeTimeoutMs ?? 0,
       rememberFact: options?.rememberFact,
+      inspectGaze: options?.inspectGaze,
     },
   );
 
@@ -145,6 +147,119 @@ afterEach(() => {
 });
 
 describe('VoiceBrain', () => {
+  it('keeps gaze inspection available after a spoken stop task command', async () => {
+    const inspectGaze = vi.fn(async () => '仍能识别注视区域');
+    const { brain, provider, controller } = setup({
+      requireWakeWord: false,
+      inspectGaze,
+    });
+    await brain.start();
+    provider.emitTranscript('打开网易云音乐');
+    provider.emitToolCall({
+      name: 'start_gui_task',
+      callId: 'start',
+      args: { instruction: '打开网易云音乐' },
+    });
+    await flush();
+    provider.emitTranscript('停止任务');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(controller.getStatus().status).toBe('cancelled');
+    expect(brain.getState().awake).toBe(true);
+    provider.emitTranscript('我在看什么');
+    await flush();
+    expect(inspectGaze).toHaveBeenCalledWith('我在看什么');
+    expect(provider.spoken).toContain('仍能识别注视区域');
+    brain.dispose();
+  });
+  it('joins a model tool call to an in-flight deterministic gaze request without duplicate speech or capture', async () => {
+    let resolve!: (answer: string) => void;
+    const inspectGaze = vi.fn(
+      () =>
+        new Promise<string>((done) => {
+          resolve = done;
+        }),
+    );
+    const { brain, provider } = setup({ requireWakeWord: false, inspectGaze });
+    await brain.start();
+    provider.emitTranscript('我在看什么');
+    provider.emitToolCall({
+      name: 'inspect_gaze_target',
+      callId: 'joined',
+      args: {},
+    });
+    resolve('截图中的测试文字');
+    await flush();
+    expect(inspectGaze).toHaveBeenCalledOnce();
+    expect(provider.spoken).toEqual([]);
+    expect(provider.toolResults).toHaveLength(1);
+    expect(provider.toolResults[0].output).toContain('截图中的测试文字');
+    brain.dispose();
+  });
+  it('routes an explicit gaze question to the visual inspector and speaks its result without starting a GUI task', async () => {
+    const inspectGaze = vi.fn(async () => '这片区域里有一个音乐播放器');
+    const { brain, provider, adapter } = setup({
+      requireWakeWord: false,
+      inspectGaze,
+    });
+    await brain.start();
+    expect(provider.emitTranscript('我在看什么？')).toBe(true);
+    await flush();
+    expect(inspectGaze).toHaveBeenCalledWith('我在看什么？');
+    expect(provider.spoken).toContain('这片区域里有一个音乐播放器');
+    expect(adapter.instruction).toBe('');
+    brain.dispose();
+  });
+
+  it('returns visual inspection tool output for other gaze questions', async () => {
+    const inspectGaze = vi.fn(async () => '画面中有三个按钮');
+    const { brain, provider, adapter } = setup({
+      requireWakeWord: false,
+      inspectGaze,
+    });
+    await brain.start();
+    provider.emitTranscript('解释一下我注视的区域');
+    provider.emitToolCall({
+      name: 'inspect_gaze_target',
+      callId: 'gaze-1',
+      args: { question: '解释我注视的区域' },
+    });
+    await flush();
+    expect(provider.toolResults[0].output).toContain('画面中有三个按钮');
+    expect(adapter.instruction).toBe('');
+    brain.dispose();
+  });
+
+  it('does not speak a delayed inspection after sleep', async () => {
+    let resolve!: (answer: string) => void;
+    const { brain, provider } = setup({
+      requireWakeWord: false,
+      inspectGaze: () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    });
+    await brain.start();
+    provider.emitTranscript('我在看什么');
+    brain.sleep();
+    resolve('不应播出的旧画面');
+    await flush();
+    expect(provider.spoken).toEqual([]);
+    brain.dispose();
+  });
+
+  it('speaks an actionable capture error instead of inventing screen content', async () => {
+    const { brain, provider } = setup({
+      requireWakeWord: false,
+      inspectGaze: async () => {
+        throw new Error('请启用屏幕录制权限');
+      },
+    });
+    await brain.start();
+    provider.emitTranscript('这个是什么');
+    await flush();
+    expect(provider.spoken).toEqual(['请启用屏幕录制权限']);
+    brain.dispose();
+  });
   it('wakes on an explicit greeting', async () => {
     const { brain, provider } = setup();
     await brain.start();

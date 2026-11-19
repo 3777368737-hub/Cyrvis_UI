@@ -26,7 +26,14 @@ const mock = vi.hoisted(() => ({
   },
 }));
 vi.mock('electron', () => ({
-  app: { on: vi.fn() },
+  app: { on: vi.fn(), once: vi.fn() },
+  screen: {
+    on: vi.fn(),
+    getPrimaryDisplay: () => ({
+      id: 1,
+      bounds: { x: 0, y: 0, width: 1440, height: 900 },
+    }),
+  },
   BrowserWindow: {
     getAllWindows: () => [
       { isDestroyed: () => false, webContents: { send: mock.send } },

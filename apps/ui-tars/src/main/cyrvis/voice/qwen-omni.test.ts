@@ -60,7 +60,7 @@ vi.mock('ws', () => ({
 }));
 
 const providers: QwenOmniProvider[] = [];
-const setup = (model?: string) => {
+const setup = (model?: string, endpoint?: string) => {
   vi.useFakeTimers();
   const callbacks = {
     onError: vi.fn(),
@@ -71,6 +71,7 @@ const setup = (model?: string) => {
   const provider = new QwenOmniProvider({
     apiKey: 'test-key',
     model,
+    endpoint,
     callbacks,
     connectTimeoutMs: 100,
   });
@@ -90,6 +91,27 @@ const sent = (socket: FakeWebSocket) =>
   socket.send.mock.calls.map(([data]) => JSON.parse(data));
 
 describe('Qwen companion voices', () => {
+  it('uses the flat PCM handshake for existing Token Plan configurations', async () => {
+    const { provider } = setup(
+      'qwen-audio-3.0-realtime-plus',
+      'wss://token-plan.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen-audio-3.0-realtime-plus',
+    );
+    const connecting = provider.connect();
+    sockets[0].readyState = 1;
+    receive(sockets[0], { type: 'session.created' });
+    const payload = sent(sockets[0])[0];
+    expect(payload.session.input_audio_format).toBe('pcm');
+    expect(payload.session.output_audio_format).toBe('pcm');
+    expect(payload.session.audio).toBeUndefined();
+    expect(
+      payload.session.tools.some(
+        (tool: QwenToolDefinition) =>
+          tool.function.name === 'inspect_gaze_target',
+      ),
+    ).toBe(true);
+    sockets[0].ready();
+    await connecting;
+  });
   it('uses the compatible voice field for the configured Qwen3.5 model', async () => {
     const { provider } = setup('qwen3.5-omni-plus-realtime');
     provider.setVoice('Evan');

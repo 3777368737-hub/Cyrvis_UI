@@ -1,3 +1,4 @@
+import { desktopGazeHint } from './gaze/context';
 /*
  * Copyright (c) 2025 Bytedance, Inc. and its affiliates.
  * SPDX-License-Identifier: Apache-2.0
@@ -10,10 +11,7 @@ import { runAgent } from '@main/services/runAgent';
 import { store } from '@main/store/create';
 import type { AppState } from '@main/store/types';
 import { showCompanion } from '@main/window';
-import {
-  closeOverlay,
-  hideScreenWaterFlow,
-} from '@main/window/ScreenMarker';
+import { closeOverlay, hideScreenWaterFlow } from '@main/window/ScreenMarker';
 
 import type { GUIAdapter, GUIAdapterCallbacks } from './types';
 
@@ -97,6 +95,8 @@ export class ElectronGUIAdapter implements GUIAdapter {
     instruction: string,
     callbacks: GUIAdapterCallbacks,
   ): Promise<void> {
+    const gaze = desktopGazeHint();
+    if (gaze) instruction += `\n\n[眼动辅助上下文] ${gaze}`;
     if (store.getState().thinking) {
       throw new Error('GUI agent is already running');
     }

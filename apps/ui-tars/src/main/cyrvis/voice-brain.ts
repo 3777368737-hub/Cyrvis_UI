@@ -44,6 +44,7 @@ export interface VoiceBrainCallbacks {
 }
 
 export interface VoiceBrainOptions {
+  inspectGaze?: (question: string) => Promise<string>;
   requireWakeWord?: boolean;
   awakeTimeoutMs?: number;
   wakePatterns?: RegExp[];
@@ -114,6 +115,17 @@ export class VoiceBrain {
   private assistantTextBuffer = '';
   private lastFinalTranscript = '';
   private lastFinalAt = 0;
+  private inspectionGeneration = 0;
+  private lastInspection: {
+    question: string;
+    at: number;
+    result: Promise<string>;
+  } | null = null;
+  private deterministicInspection: {
+    generation: number;
+    toolReply: boolean;
+    answered: boolean;
+  } | null = null;
   private suppressAudioUntilResponseDone = false;
   private completionGuardTriggered = false;
   private awakeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -297,6 +309,7 @@ export class VoiceBrain {
   }
 
   sleep(): void {
+    this.inspectionGeneration++;
     if (!this.awake) {
       return;
     }
@@ -308,6 +321,7 @@ export class VoiceBrain {
   }
 
   dispose(): void {
+    this.inspectionGeneration++;
     this.clearAwakeTimer();
     this.clearPlaybackWatchdog();
     this.clearUserResponseWatchdog();
@@ -537,6 +551,7 @@ export class VoiceBrain {
     }
 
     this.lastUserText = text;
+    const inspectionGeneration = ++this.inspectionGeneration;
     if (voiceIntent.mode !== 'chat') {
       console.log(
         '[cyrvis intent]',
@@ -601,6 +616,51 @@ export class VoiceBrain {
 
     if (!bareStop) {
       this.armUserResponseWatchdog();
+    }
+
+    // Consume gaze questions before fast tools. Cascade must skip its own
+    // LLM turn when this handler returns true.
+    if (
+      this.options.inspectGaze &&
+      /(我(?:现在在|正在|在)看什么|我看(?:的|着的)(?:是)?什么|看看我在看|这个是什么|帮我看看这里)/.test(
+        text,
+      )
+    ) {
+      this.provider.cancelResponse();
+      this.markUserResponseOutput();
+      const request = {
+        generation: inspectionGeneration,
+        toolReply: false,
+        answered: false,
+      };
+      this.deterministicInspection = request;
+      void this.inspectGaze(text).then(
+        (answer) => {
+          if (
+            this.awake &&
+            inspectionGeneration === this.inspectionGeneration &&
+            !request.toolReply
+          ) {
+            request.answered = true;
+            this.speak(answer);
+          }
+        },
+        (error) => {
+          if (
+            this.awake &&
+            inspectionGeneration === this.inspectionGeneration &&
+            !request.toolReply
+          ) {
+            request.answered = true;
+            this.speak(
+              error instanceof Error ? error.message : '看屏识别失败，请重试。',
+            );
+          }
+        },
+      );
+      this.resetAwakeTimer();
+      this.notifyState();
+      return true;
     }
 
     const isStatusQuery = this.isTaskStatusQuery(text);
@@ -945,6 +1005,42 @@ export class VoiceBrain {
     }
 
     switch (call.name) {
+      case 'inspect_gaze_target': {
+        const generation = this.inspectionGeneration;
+        const deterministic =
+          this.deterministicInspection?.generation === generation
+            ? this.deterministicInspection
+            : null;
+        // Join an in-flight local request, instead of taking a second screenshot.
+        // Once spoken, cancel a late duplicate response so the mic is not left muted.
+        if (deterministic?.answered || deterministic?.toolReply) {
+          this.provider.cancelResponse();
+          return;
+        }
+        if (deterministic) deterministic.toolReply = true;
+        try {
+          const answer = await (deterministic && this.lastInspection
+            ? this.lastInspection.result
+            : this.inspectGaze(
+                call.args.question || this.lastUserText || '我在看什么？',
+              ));
+          if (this.awake && generation === this.inspectionGeneration)
+            this.provider.sendToolResult(
+              call.callId,
+              JSON.stringify({ ok: true, answer, read_only: true }),
+            );
+        } catch (error) {
+          if (this.awake && generation === this.inspectionGeneration)
+            this.provider.sendToolResult(
+              call.callId,
+              JSON.stringify({
+                ok: false,
+                error: error instanceof Error ? error.message : '看屏识别失败',
+              }),
+            );
+        }
+        break;
+      }
       case 'start_gui_task': {
         // Semantic intents own the turn before the dynamic web.search shortcut.
         const earlyInstruction = call.args.instruction?.trim() || '';
@@ -1631,6 +1727,14 @@ export class VoiceBrain {
         }),
       );
     }
+  }
+
+  private inspectGaze(question: string): Promise<string> {
+    if (!this.options.inspectGaze)
+      return Promise.reject(new Error('当前未配置AI看屏功能。'));
+    const result = this.options.inspectGaze(question);
+    this.lastInspection = { question, at: Date.now(), result };
+    return result;
   }
 
   private handleDeterministicControl(text: string): 'cancel' | 'pause' | null {

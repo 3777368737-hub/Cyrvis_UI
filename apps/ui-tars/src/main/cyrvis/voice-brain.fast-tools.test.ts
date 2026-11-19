@@ -756,7 +756,9 @@ describe('VoiceBrain fast tool interception', () => {
 
     expect(desktop.closed).toEqual([]);
     expect(provider.toolResults).toEqual([]);
-    expect(provider.spoken.at(-1)).toBe(SENSITIVE_CONFIRMATION_PROMPT);
+    await vi.waitFor(() =>
+      expect(provider.spoken.at(-1)).toBe(SENSITIVE_CONFIRMATION_PROMPT),
+    );
     expect(provider.canceled).toBeGreaterThan(0);
 
     const confirmationPromptCount = provider.spoken.length;
@@ -780,48 +782,55 @@ describe('VoiceBrain fast tool interception', () => {
     expect(desktop.closed).toEqual(['notepad']);
   });
 
-  it('speaks confirmation for a high-risk capability invoked through the broker', async () => {
-    const adapter = new NoopGUIAdapter();
-    const controller = new CyrvisController(adapter, { stallTimeoutMs: 0 });
-    const desktop = new FakeDesktopHost();
-    const matrix = createFastToolMatrix(desktop);
-    let provider!: FakeProvider;
-    const brain = new VoiceBrain(
-      controller,
-      {},
-      (callbacks) => {
-        provider = new FakeProvider(callbacks);
-        return provider;
-      },
-      {
-        requireWakeWord: false,
-        fastToolRouter: matrix.router,
-      },
-    );
-    await brain.start();
+  // app.close is explicitly Windows-only in the capability catalog.
+  it.skipIf(process.platform !== 'win32')(
+    'speaks confirmation for a high-risk capability invoked through the broker',
+    async () => {
+      const adapter = new NoopGUIAdapter();
+      const controller = new CyrvisController(adapter, { stallTimeoutMs: 0 });
+      const desktop = new FakeDesktopHost();
+      const matrix = createFastToolMatrix(desktop);
+      let provider!: FakeProvider;
+      const brain = new VoiceBrain(
+        controller,
+        {},
+        (callbacks) => {
+          provider = new FakeProvider(callbacks);
+          return provider;
+        },
+        {
+          requireWakeWord: false,
+          fastToolRouter: matrix.router,
+        },
+      );
+      await brain.start();
 
-    provider.transcript('处理一下记事本应用');
-    provider.toolCall({
-      callId: 'broker-close-app',
-      name: 'cyrvis_capability_invoke',
-      args: {
-        toolId: 'app.close',
-        arguments: { name: 'notepad' },
-      },
-    });
-    await flush();
-    await flush();
+      provider.transcript('处理一下记事本应用');
+      provider.toolCall({
+        callId: 'broker-close-app',
+        name: 'cyrvis_capability_invoke',
+        args: {
+          toolId: 'app.close',
+          arguments: { name: 'notepad' },
+        },
+      });
+      await flush();
+      await flush();
 
-    expect(desktop.closed).toEqual([]);
-    expect(provider.spoken.at(-1)).toBe(SENSITIVE_CONFIRMATION_PROMPT);
-    expect(provider.canceled).toBeGreaterThan(0);
-    expect(matrix.router.hasPendingConfirmation()).toBe(true);
+      expect(desktop.closed).toEqual([]);
+      expect(provider.toolResults).toEqual([]);
+      await vi.waitFor(() =>
+        expect(provider.spoken.at(-1)).toBe(SENSITIVE_CONFIRMATION_PROMPT),
+      );
+      expect(provider.canceled).toBeGreaterThan(0);
+      expect(matrix.router.hasPendingConfirmation()).toBe(true);
 
-    provider.transcript('确认执行');
-    await flush();
-    await flush();
-    expect(desktop.closed).toEqual(['notepad']);
-  });
+      provider.transcript('确认执行');
+      await flush();
+      await flush();
+      expect(desktop.closed).toEqual(['notepad']);
+    },
+  );
 
   it('recovers confirmation by replaying the last actionable command when pending is lost', async () => {
     const adapter = new NoopGUIAdapter();

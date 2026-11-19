@@ -999,6 +999,30 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
     this.contextDirty = false;
     this.toolsDirty = false;
     this.pendingSessionTools = this.tools.slice();
+    // Token Plan uses the legacy flat PCM session schema. Preserve the
+    // current partial context/tool updates after this initial handshake.
+    if (this.endpoint.includes('token-plan.')) {
+      this.send({
+        event_id: eventId('event_session'),
+        type: 'session.update',
+        session: {
+          modalities: ['audio', 'text'],
+          voice: this.voice,
+          instructions: this.instructions,
+          input_audio_format: 'pcm',
+          output_audio_format: 'pcm',
+          turn_detection: this.localVad
+            ? null
+            : {
+                type: 'server_vad',
+                threshold: 0.5,
+                silence_duration_ms: this.silenceDurationMs,
+              },
+          tools: this.tools,
+        },
+      });
+      return;
+    }
     this.send({
       event_id: eventId('event_session'),
       type: 'session.update',

@@ -20,6 +20,25 @@ export const CYRVIS_VOICE_TOOLS: QwenToolDefinition[] = [
   {
     type: 'function',
     function: {
+      name: 'inspect_gaze_target',
+      description:
+        'Read-only: capture the region of the primary desktop the user is looking at and ask the visual model what is there. Use for 我在看什么、这个是什么、帮我看看这里. Coordinates alone do not reveal screen content. Does not click or control any app.',
+      parameters: {
+        type: 'object',
+        properties: {
+          question: {
+            type: 'string',
+            description:
+              'The user question about the area they are looking at.',
+          },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'start_gui_task',
       description:
         'Fallback GUI task executor. Call this only when no cyrvis_* local fast tool or voice fast tool can complete the request, or when the request requires visual inspection, interaction with an existing app UI, login, popups, dragging, or other multi-step GUI work. For live search/information needs, call search_web first. Never call for greetings, thanks, identity questions, stable knowledge you can answer directly, or chit-chat.',

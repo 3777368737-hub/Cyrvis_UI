@@ -1,5 +1,7 @@
 import {
+  Database,
   Ear,
+  Eraser,
   Headphones,
   Mic,
   MicOff,
@@ -9,6 +11,7 @@ import {
 } from 'lucide-react';
 
 import { useVoiceAudio } from './useVoiceAudio';
+import { useDynamicContext } from './useDynamicContext';
 
 const STATUS_LABEL: Record<string, string> = {
   idle: 'Idle',
@@ -22,6 +25,7 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 export function CyrvisVoiceBar() {
+  const { context, clearContext } = useDynamicContext();
   const {
     state,
     transcript,
@@ -118,14 +122,37 @@ export function CyrvisVoiceBar() {
                 </>
               )}
             </div>
-            <div className="truncate text-xs text-gray-500 dark:text-gray-400">
-              {error
-                ? error
-                : assistantText ||
-                  transcript ||
-                  (state.awake
-                    ? 'Listening… say a command.'
-                    : 'Say “Hello CYRVIS” to wake me.')}
+            <div className="flex min-w-0 items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+              <span className="truncate">
+                {error
+                  ? error
+                  : assistantText ||
+                    transcript ||
+                    (state.awake
+                      ? 'Listening… say a command.'
+                      : 'Say “Hello CYRVIS” to wake me.')}
+              </span>
+              {context?.activeApplication && (
+                <span
+                  className="hidden max-w-[180px] shrink-0 items-center gap-1 rounded-md bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600 sm:flex dark:bg-gray-800 dark:text-gray-300"
+                  title={
+                    context.activeWindow
+                      ? `${context.activeApplication} · ${context.activeWindow}`
+                      : context.activeApplication
+                  }
+                >
+                  <Database className="h-3 w-3" />
+                  <span className="truncate">{context.activeApplication}</span>
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => void clearContext()}
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+                title="清除最近的临时上下文"
+              >
+                <Eraser className="h-3 w-3" />
+              </button>
             </div>
           </div>
 

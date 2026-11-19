@@ -7,7 +7,7 @@ import {
 import type { CompanionState } from '@shared/companion';
 
 const images = import.meta.glob(
-  '../../../../../resources/cyrvis-companion/**/*.{png,webp,gif}',
+  '../../../../../resources/cyrvis-companion/**/*.{png,webp,gif,svg}',
   {
     eager: true,
     query: '?url',
@@ -37,7 +37,9 @@ export function CompanionArtwork({
     urls[
       dragging && skin.format === 'starpie'
         ? `${skin.directory}drag.png`
-        : companionSkinImage(skin, state)
+        : dragging && skin.id === 'clawd'
+          ? `${skin.directory}clawd-dizzy.svg`
+          : companionSkinImage(skin, state)
     ];
   if (skin.format === 'codex') {
     const { row, frames } = codexAnimation(state);

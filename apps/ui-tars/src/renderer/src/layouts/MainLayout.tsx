@@ -7,6 +7,7 @@ import {
 } from '@renderer/components/ui/sidebar';
 import { VoiceRuntime } from '@renderer/components/CyrvisVoice/VoiceRuntime';
 import CyrvisGaze from '@renderer/components/CyrvisGaze';
+import { FollowUpDialog } from '@renderer/components/Proactivity/FollowUpDialog';
 
 export function MainLayout() {
   return (
@@ -26,6 +27,7 @@ export function MainLayout() {
       <VoiceRuntime />
       {/* Only the main workbench owns gaze; task widgets must not stop it. */}
       <CyrvisGaze />
+      <FollowUpDialog />
     </SidebarProvider>
   );
 }

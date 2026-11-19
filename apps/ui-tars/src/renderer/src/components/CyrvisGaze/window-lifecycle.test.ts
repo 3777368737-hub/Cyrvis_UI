@@ -30,6 +30,9 @@ vi.mock('@renderer/components/ui/sidebar', () => ({
     React.createElement('div', null, children),
   SidebarTrigger: () => null,
 }));
+vi.mock('@renderer/components/Proactivity/FollowUpDialog', () => ({
+  FollowUpDialog: () => React.createElement('div', null, 'Follow-up dialog'),
+}));
 vi.mock('sonner', () => ({ Toaster: () => null }));
 vi.mock('../../pages/home', () => ({ default: () => null }));
 vi.mock('../../pages/local', () => ({ default: () => null }));
@@ -66,6 +69,7 @@ describe('gaze camera ownership across Electron windows', () => {
     window.webgazer = { end: vi.fn() };
     const main = await renderWindow('/');
     expect(main.container.textContent).toContain('眼动');
+    expect(main.container.textContent).toContain('Follow-up dialog');
     const widget = await renderWindow('/widget');
     expect(widget.container.textContent).not.toContain('眼动');
     await act(async () => {

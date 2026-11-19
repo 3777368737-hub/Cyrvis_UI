@@ -4,6 +4,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { CodingAgentService, CodingTaskSnapshot } from './coding-agent';
 import { CyrvisController } from './controller';
 import type { ControllerEvent, GUIAdapter, GUIAdapterCallbacks } from './types';
 import type {
@@ -113,6 +114,7 @@ const setup = (options?: {
   requireWakeWord?: boolean;
   awakeTimeoutMs?: number;
   rememberFact?: (text: string) => Promise<string | null>;
+  codingAgent?: CodingAgentService;
 }) => {
   const adapter = new FakeGUIAdapter();
   const controller = new CyrvisController(adapter, {
@@ -144,6 +146,7 @@ const setup = (options?: {
       rememberFact: options?.rememberFact,
       inspectGaze: options?.inspectGaze,
       getGazeActionContext: options?.getGazeActionContext,
+      codingAgent: options?.codingAgent,
     },
   );
 
@@ -793,7 +796,7 @@ describe('VoiceBrain', () => {
 
     provider.emitTranscript('任务进度怎么样了', true);
 
-    expect(provider.spoken.at(-1)).toContain('第 2 步');
+    expect(provider.spoken.at(-1)).toContain('当前节点');
     expect(provider.spoken.at(-1)).toContain('打开记事本窗口');
   });
 
@@ -911,6 +914,197 @@ describe('VoiceBrain', () => {
     ).toHaveLength(0);
   });
 
+  it('cancels deterministically on "停一下" while a task is running', async () => {
+    const { brain, provider, controller } = setup();
+    await brain.start();
+    provider.emitTranscript('Hello CYRVIS', true);
+    provider.emitTranscript('Open Notepad and type hello', true);
+    provider.emitToolCall({
+      name: 'start_gui_task',
+      args: { instruction: 'Open Notepad and type hello' },
+      callId: 'call-start',
+    });
+    await flush();
+
+    provider.emitTranscript('停一下', true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(controller.getStatus().status).toBe('cancelled');
+  });
+
+  it('blocks a queued tool call after a stop barge', async () => {
+    const { brain, provider, adapter } = setup();
+    await brain.start();
+    provider.emitTranscript('Hello CYRVIS', true);
+    await flush();
+
+    brain.markUserStop();
+    provider.emitToolCall({
+      name: 'start_gui_task',
+      args: { instruction: 'Open Notepad and type hello' },
+      callId: 'call-after-stop',
+    });
+    await flush();
+
+    expect(adapter.instruction).toBe('');
+    expect(provider.toolResults.at(-1)?.output).toContain('STOPPED');
+  });
+
+  it('treats 等一下 as a pause prefix and ignores trailing TTS echo', async () => {
+    const { brain, provider, controller } = setup();
+    await brain.start();
+    provider.emitTranscript('Hello CYRVIS', true);
+    provider.emitTranscript('Open Notepad and type hello', true);
+    provider.emitToolCall({
+      name: 'start_gui_task',
+      args: { instruction: 'Open Notepad and type hello' },
+      callId: 'call-start',
+    });
+    await flush();
+
+    provider.emitTranscript(
+      '等一下，给我打开b站，然后搜索这个刘德华，并且点击第一条视频',
+      true,
+    );
+    await flush();
+
+    expect(controller.getStatus().status).toBe('paused');
+  });
+
+  it('treats a leading stop plus trailing echo as a pure stop', async () => {
+    const { brain, provider, controller } = setup();
+    await brain.start();
+    provider.emitTranscript('Hello CYRVIS', true);
+    provider.emitTranscript('Open Notepad and type hello', true);
+    provider.emitToolCall({
+      name: 'start_gui_task',
+      args: { instruction: 'Open Notepad and type hello' },
+      callId: 'call-start',
+    });
+    await flush();
+
+    provider.emitTranscript(
+      '停一下，现在这样，打开B站搜索周杰伦，然后点击第一个视频',
+      true,
+    );
+    await flush();
+
+    expect(controller.getStatus().status).toBe('cancelled');
+  });
+
+  it('cancels a running task on any confirmed barge', async () => {
+    const { brain, provider, controller } = setup();
+    await brain.start();
+    provider.emitTranscript('Hello CYRVIS', true);
+    provider.emitTranscript('Open Notepad and type hello', true);
+    provider.emitToolCall({
+      name: 'start_gui_task',
+      args: { instruction: 'Open Notepad and type hello' },
+      callId: 'call-start',
+    });
+    await flush();
+
+    brain.handleBargeStop();
+    expect(controller.getStatus().status).toBe('cancelled');
+  });
+
+  it('suspends gaze menus and rejects gaze operations while a coding task is active', async () => {
+    const codingAgent = { isBusy: () => true } as unknown as CodingAgentService;
+    const { brain, provider, adapter } = setup({
+      requireWakeWord: false,
+      codingAgent,
+    });
+    await brain.start();
+    expect(brain.canOfferGazeSuggestion()).toBe(false);
+    expect(brain.gazeSuggestionBlockReason()).toContain('编码任务');
+    const gaze = {
+      x: 0.5,
+      y: 0.5,
+      at: Date.now(),
+      displayId: 1,
+      bounds: { x: 0, y: 0, width: 1440, height: 900 },
+      target: {
+        id: 'cover',
+        scene: 'music',
+        label: '歌单',
+        role: 'AXImage',
+        source: 'accessibility' as const,
+        bounds: { x: 500, y: 300, width: 180, height: 180 },
+      },
+    };
+    const suggestion = {
+      ...parseGazeSuggestion(
+        JSON.stringify({
+          kind: 'music',
+          description: '封面',
+          confidence: 'high',
+        }),
+        Date.now(),
+      )!,
+      gaze,
+    };
+    brain.offerGazeSuggestion(suggestion);
+    expect(brain.followGazeSuggestion(suggestion.id, 'play').ok).toBe(false);
+    expect(adapter.instruction).toBe('');
+    expect(provider.spoken.at(-1)).toContain('编码任务');
+    brain.dispose();
+  });
+
+  it('cancels a running coding task on "停一下"', async () => {
+    const cancel = vi.fn().mockResolvedValue({ status: 'cancelled' });
+    const codingAgent = {
+      isBusy: () => true,
+      cancel,
+    } as unknown as CodingAgentService;
+    const { brain, provider } = setup({ codingAgent });
+    await brain.start();
+    provider.emitTranscript('Hello CYRVIS', true);
+    await flush();
+
+    provider.emitTranscript('停一下', true);
+    await flush();
+
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('speaks only key coding nodes and reports command output', async () => {
+    const { brain, provider } = setup({ requireWakeWord: false });
+    await brain.start();
+    const base: CodingTaskSnapshot = {
+      taskId: 'coding-1',
+      status: 'running',
+      instruction: '写一个脚本',
+      workspace: 'D:/demo',
+      startedAt: 1,
+      endedAt: null,
+      lastMessage: '正在读取文件',
+      lastEvent: {
+        tool: 'read_file',
+        message: '正在读取文件：hello.py',
+        ok: true,
+      },
+      result: '',
+      diff: '',
+      changedFiles: [],
+      error: null,
+    };
+
+    brain.notifyCodingStatus(base);
+    expect(provider.spoken).toHaveLength(0);
+
+    brain.notifyCodingStatus({
+      ...base,
+      lastMessage: '命令完成：sorted',
+      lastEvent: {
+        tool: 'run_shell_command',
+        message: '命令完成：sorted',
+        ok: true,
+        output: 'sorted',
+      },
+    });
+    expect(provider.spoken.at(-1)).toContain('运行结果：sorted');
+  });
+
   it('pauses deterministically and acknowledges "暂停"', async () => {
     const { brain, provider, controller } = setup();
     await brain.start();
@@ -942,6 +1136,31 @@ describe('VoiceBrain', () => {
     await flush();
 
     expect(provider.canceled).toBeGreaterThan(0);
+  });
+
+  it('ignores an empty transcript when no local user speech happened', async () => {
+    const { brain, provider } = setup({ requireWakeWord: false });
+    await brain.start();
+    provider.callbacks.onResponseStarted?.();
+    provider.emitAudio(new Int16Array(320));
+    provider.emitTranscript('', true);
+    await flush();
+
+    expect(provider.canceled).toBe(0);
+  });
+
+  it('ignores an empty transcript even after a local utterance', async () => {
+    const { brain, provider } = setup({ requireWakeWord: false });
+    await brain.start();
+    provider.callbacks.onResponseStarted?.();
+    provider.emitAudio(new Int16Array(320));
+    provider.callbacks.onSpeechStarted?.();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    provider.callbacks.onSpeechStopped?.();
+    provider.emitTranscript('', true);
+    await flush();
+
+    expect(provider.canceled).toBe(0);
   });
 
   it('suppresses the model reply after a bare stop', async () => {

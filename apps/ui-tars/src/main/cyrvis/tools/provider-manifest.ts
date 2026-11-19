@@ -49,10 +49,14 @@ const TOOL_PERMISSIONS = new Set<ToolPermission>([
   'filesystem.write',
   'desktop.app',
   'desktop.window',
+  'desktop.screen',
+  'desktop.input',
   'clipboard.read',
   'clipboard.write',
   'system.read',
   'system.process',
+  'system.media',
+  'system.power',
   'network',
   'office',
   'process.spawn',
@@ -151,6 +155,28 @@ const asPermissionList = (
     throw new Error(`${field} contains an unsupported permission`);
   }
   return permissions as ToolPermission[] | undefined;
+};
+
+const asActivationPolicy = (value: unknown): ProviderManifest['activation'] => {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('activation must be an object');
+  }
+  const input = value as Record<string, unknown>;
+  const mode = asString(input.mode, 'activation.mode', {
+    max: 20,
+    optional: true,
+  });
+  if (mode && mode !== 'always' && mode !== 'foreground') {
+    throw new Error('activation.mode must be "always" or "foreground"');
+  }
+  return {
+    mode: mode as 'always' | 'foreground' | undefined,
+    applications: asStringArray(input.applications, 'activation.applications'),
+    processes: asStringArray(input.processes, 'activation.processes'),
+  };
 };
 
 const asToolPolicy = (value: unknown, index: number): RemoteToolPolicy => {
@@ -405,6 +431,7 @@ export const parseProviderManifest = (
       trust,
       enabled: input.enabled !== false,
       requirements: asRequirements(input.requirements, 'requirements'),
+      activation: asActivationPolicy(input.activation),
       permissions: asPermissionList(input.permissions, 'permissions'),
       transport: asTransport(input.transport),
       tools: Array.isArray(input.tools)
@@ -438,6 +465,7 @@ export const parseProviderManifest = (
     trust,
     enabled: input.enabled !== false,
     requirements: asRequirements(input.requirements, 'requirements'),
+    activation: asActivationPolicy(input.activation),
     permissions: asPermissionList(input.permissions, 'permissions'),
     transport: asTransport(input.transport),
     tools: Array.isArray(input.tools)

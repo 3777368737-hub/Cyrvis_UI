@@ -37,6 +37,10 @@ import { windowManager } from './services/windowManager';
 import { checkBrowserAvailability } from './services/browserCheck';
 import { startVoiceService } from './cyrvis/voice-service';
 import icon from '@resources/icon.png?asset';
+import {
+  registerFollowUpService,
+  requestFollowUp,
+} from './cyrvis/follow-up-service';
 
 const { isProd } = env;
 
@@ -128,6 +132,11 @@ const initializeApp = async () => {
   logger.info('createMainWindow');
   let mainWindow = createMainWindow();
 
+  registerFollowUpService();
+  mainWindow.webContents.once('did-finish-load', () => {
+    requestFollowUp('launch', { force: true });
+  });
+
   session.defaultSession.setDisplayMediaRequestHandler(
     (_request, callback) => {
       desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
@@ -198,10 +207,13 @@ const initializeApp = async () => {
 
   app.on('activate', () => {
     logger.info('app activate');
+    const wasHidden =
+      !mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible();
     if (!mainWindow || mainWindow.isDestroyed()) {
       mainWindow = createMainWindow();
     }
     showCompanion();
+    if (wasHidden) requestFollowUp('activate', { force: true });
   });
 
   logger.info('initializeApp end');

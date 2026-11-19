@@ -7,24 +7,27 @@ Voice Agent（Qwen Realtime）↔ VoiceBrain ↔ Controller ↔ ElectronGUIAdapt
 
 ## 先看这几份
 
-| 文档                                             | 内容                                                                |
-| ------------------------------------------------ | ------------------------------------------------------------------- |
-| [architecture.md](./architecture.md)             | 整体分层、状态机、接口、早期可行性分析                              |
-| [voice-architecture.md](./voice-architecture.md) | **当前语音实现权威说明**：采集/播放分进程、打断、双模式、阈值、实测 |
-| [fast-tool-matrix.md](./fast-tool-matrix.md)     | 前方快速工具矩阵：能力、Router、安全策略、MCP 与扩展方式            |
-| [provider-manifests.md](./provider-manifests.md) | 动态 Provider manifest、签名、权限、MCP 生命周期与审计              |
-| [system-awareness.md](./system-awareness.md)     | 系统状态感知、软件发现、Steam、动态能力和任务交互                   |
-| [roadmap.md](./roadmap.md)                       | 后续重点：GUI 加速 + MCP + 简单任务直连、UI、眼动、主动性/记忆      |
-| [development.md](./development.md)               | 环境、启动、测试、日志、密钥与常见故障                              |
+| 文档                                                             | 内容                                                                |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------- |
+| [architecture.md](./architecture.md)                             | 整体分层、状态机、接口、早期可行性分析                              |
+| [voice-architecture.md](./voice-architecture.md)                 | **当前语音实现权威说明**：采集/播放分进程、打断、双模式、阈值、实测 |
+| [fast-tool-matrix.md](./fast-tool-matrix.md)                     | 前方快速工具矩阵：能力、Router、安全策略、MCP 与扩展方式            |
+| [tool-matrix-capability-map.md](./tool-matrix-capability-map.md) | 当前 81 个工具的分类、功能、层级、缺口、边界和项目定位              |
+| [dynamic-tool-context.md](./dynamic-tool-context.md)             | 用户上下文、动态资源、能力绑定、相关性排序和 Provider 激活          |
+| [dynamic-perception.md](./dynamic-perception.md)                 | 通用感知 Provider、增量资源、刷新调度、浏览器标签页和验证闭环       |
+| [provider-manifests.md](./provider-manifests.md)                 | 动态 Provider manifest、签名、权限、MCP 生命周期与审计              |
+| [system-awareness.md](./system-awareness.md)                     | 系统状态感知、软件发现、Steam、动态能力和任务交互                   |
+| [roadmap.md](./roadmap.md)                                       | 后续重点：GUI 加速 + MCP + 简单任务直连、UI、眼动、主动性/记忆      |
+| [development.md](./development.md)                               | 环境、启动、测试、日志、密钥与常见故障                              |
 
 ## 过程记录
 
-| 文档                         | 用途                                       |
-| ---------------------------- | ------------------------------------------ |
-| [plan.md](./plan.md)         | 项目计划与文档索引（含当前阶段）           |
-| [progress.md](./progress.md) | 按时间推进的完成项与待办                   |
-| [findings.md](./findings.md) | 排障结论、模型/接口/音频事实，避免重复踩坑 |
-| [travel-search.md](./travel-search.md) | 多站旅行比价骨架、站点适配器状态与下一步 |
+| 文档                                   | 用途                                       |
+| -------------------------------------- | ------------------------------------------ |
+| [plan.md](./plan.md)                   | 项目计划与文档索引（含当前阶段）           |
+| [progress.md](./progress.md)           | 按时间推进的完成项与待办                   |
+| [findings.md](./findings.md)           | 排障结论、模型/接口/音频事实，避免重复踩坑 |
+| [travel-search.md](./travel-search.md) | 多站旅行比价骨架、站点适配器状态与下一步   |
 
 `progress.md` / `findings.md` 是**实时记录**：开发过程中直接追加，不要事后补录。
 
@@ -51,6 +54,7 @@ apps/ui-tars/src/main/cyrvis/          # CYRVIS 主进程
   capture-service.ts                   # 隐藏采集窗口 + 本地 HTTP/WS
   voice-service.ts                     # 单例、IPC、打断检测、双模式
   voice/                               # Qwen Realtime Provider、工具定义
+  context/                             # 用户上下文、资源目录、绑定和相关度
   tools/                               # 前方快速工具矩阵、Router、MCP facade
   types.ts                             # 共享类型
   # 已有：memory/ proactivity/；后续：gui/ gaze/

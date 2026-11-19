@@ -3,7 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import fs from 'node:fs/promises';
 import os from 'node:os';
+import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -23,6 +25,7 @@ import type {
   VoiceToolCallWithId,
 } from './voice/provider';
 import { VoiceBrain } from './voice-brain';
+import { parseGazeSuggestion } from './gaze/suggestions';
 import { buildVoiceToolSurface } from './voice/tool-surface';
 import { buildSearchUrl } from './navigation';
 import { buildSiteSearchUrl, resolveSite } from './site-registry';
@@ -239,6 +242,40 @@ async function setupNavigation(
 }
 
 describe('unified navigation', () => {
+  it('keeps sensitive-action confirmation ahead of a pending gaze menu', async () => {
+    const x = await setupNavigation();
+    const directory = await fs.mkdtemp(
+      path.join(os.tmpdir(), 'cyrvis-gaze-confirm-'),
+    );
+    const file = path.join(directory, 'delete-me.txt');
+    try {
+      await fs.writeFile(file, 'temporary test data');
+      x.brain.offerGazeSuggestion(
+        parseGazeSuggestion(
+          JSON.stringify({
+            kind: 'music',
+            description: '封面',
+            confidence: 'high',
+            identified: false,
+          }),
+          Date.now(),
+        )!,
+      );
+      await x.matrix.router.handleText(`删除文件 ${file}`);
+      expect(x.matrix.router.hasPendingConfirmation()).toBe(true);
+      x.provider.transcript('是的');
+      await vi.waitFor(async () => {
+        await expect(fs.access(file)).rejects.toThrow();
+      });
+      expect(x.matrix.router.hasPendingConfirmation()).toBe(false);
+      expect(x.provider.spoken.join('')).not.toContain('选择哪一项');
+      expect(x.adapter.started).toBe(false);
+    } finally {
+      x.dispose();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it('preserves app targets and audits the underlying launch', async () => {
     const x = await setupNavigation();
     try {
@@ -293,6 +330,31 @@ describe('unified navigation', () => {
       expect(new Set(names).size).toBe(names.length);
       expect(x.matrix.registry.get('web.search')).toBeDefined();
     } finally {
+      x.dispose();
+    }
+  });
+
+  it('creates deterministic text files without starting the GUI agent', async () => {
+    const x = await setupNavigation();
+    const directory = await fs.mkdtemp(
+      path.join(os.tmpdir(), 'cyrvis-text-file-'),
+    );
+    const file = path.join(directory, 'numbers.txt');
+    try {
+      x.provider.toolCall({
+        callId: 'text-file',
+        name: 'create_text_file',
+        args: { path: file, content: '1\n2\n3', open: true },
+      });
+      await flush();
+      await flush();
+      await flush();
+
+      expect(await fs.readFile(file, 'utf8')).toBe('1\n2\n3');
+      expect(x.adapter.started).toBe(false);
+      expect(x.provider.toolResults.at(-1)?.output).toContain('FILE_CREATED');
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
       x.dispose();
     }
   });
@@ -774,12 +836,67 @@ describe('VoiceBrain fast tool interception', () => {
     provider.assistantText(SENSITIVE_CONFIRMATION_PROMPT);
     provider.audio();
 
-    const consumed = provider.transcript('确认执行');
+    const consumed = provider.transcript('是的，');
     expect(consumed).toBe(true);
     await flush();
     await flush();
 
     expect(desktop.closed).toEqual(['notepad']);
+  });
+
+  it('uses semantic arbitration with pending memory for an unlisted confirmation phrase', async () => {
+    const adapter = new NoopGUIAdapter();
+    const controller = new CyrvisController(adapter, { stallTimeoutMs: 0 });
+    const desktop = new FakeDesktopHost();
+    const matrix = createFastToolMatrix(desktop, process.cwd(), undefined, {
+      builtinProviders: { tools: [], manifests: [] },
+    });
+    const classifyPendingIntent = vi.fn(async () => ({
+      intent: 'confirm' as const,
+      confidence: 0.96,
+      reason: 'The user is agreeing to the pending action.',
+    }));
+    let provider!: FakeProvider;
+    const brain = new VoiceBrain(
+      controller,
+      {},
+      (callbacks) => {
+        provider = new FakeProvider(callbacks);
+        return provider;
+      },
+      {
+        requireWakeWord: false,
+        fastToolRouter: matrix.router,
+        classifyPendingIntent,
+      },
+    );
+
+    try {
+      await brain.start();
+      provider.transcript('关闭应用记事本');
+      await flush();
+      await flush();
+      expect(matrix.router.hasPendingConfirmation()).toBe(true);
+
+      const consumed = provider.transcript('嗯，就按刚才说的处理吧。');
+      expect(consumed).toBe(true);
+      await flush();
+      await flush();
+
+      expect(classifyPendingIntent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: '嗯，就按刚才说的处理吧。',
+          pending: expect.objectContaining({
+            tool: 'app.close',
+          }),
+        }),
+      );
+      expect(desktop.closed).toEqual(['记事本']);
+      expect(matrix.router.hasPendingConfirmation()).toBe(false);
+    } finally {
+      matrix.dispose();
+      brain.dispose();
+    }
   });
 
   // app.close is explicitly Windows-only in the capability catalog.

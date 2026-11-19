@@ -147,6 +147,41 @@ describe('Qwen companion voices', () => {
     expect(user.item.content[0].text).toContain('封面背景');
     expect(sent(sockets[0]).at(-1).type).toBe('response.create');
   });
+  it('cleans up a gaze reminder and accepts tools again for the next user turn', async () => {
+    const { provider, callbacks } = setup('qwen-audio-3.0-realtime-plus');
+    const connected = provider.connect();
+    sockets[0].ready();
+    await connected;
+    provider.speak('播放它，还是核实作品信息？');
+    expect(
+      sent(sockets[0]).filter((m) => m.type === 'conversation.item.create'),
+    ).toHaveLength(1);
+    receive(sockets[0], {
+      type: 'conversation.item.created',
+      item: { id: 'gaze-prompt', role: 'user' },
+    });
+    receive(sockets[0], {
+      type: 'response.done',
+      response: { status: 'completed' },
+    });
+    expect(
+      sent(sockets[0]).filter(
+        (m) =>
+          m.type === 'conversation.item.delete' && m.item_id === 'gaze-prompt',
+      ),
+    ).toHaveLength(1);
+    receive(sockets[0], { type: 'input_audio_buffer.speech_started' });
+    receive(sockets[0], {
+      type: 'response.function_call_arguments.done',
+      name: 'start_gui_task',
+      call_id: 'confirmed',
+      arguments: '{"instruction":"play the selected cover"}',
+    });
+    expect(callbacks.onToolCall).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ name: 'start_gui_task', callId: 'confirmed' }),
+    );
+  });
+
   it('uses a partial instruction update for confirmed requests on Omni', async () => {
     const { provider } = setup('qwen3.8-omni-flash-realtime');
     const connected = provider.connect();
@@ -348,6 +383,43 @@ describe('QwenOmniProvider connection lifecycle', () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(sockets).toHaveLength(2);
     expect(callbacks.onReady).toHaveBeenCalledTimes(1);
+  });
+
+  it('speaks a proactive line through a temporary user item', async () => {
+    const { provider } = setup();
+    const connected = provider.connect();
+    sockets[0].readyState = 1;
+    receive(sockets[0], { type: 'session.created' });
+    sockets[0].ready();
+    await connected;
+
+    provider.speak('编码任务完成');
+    const messages = sent(sockets[0]);
+    const item = messages.find(
+      (message) => message.type === 'conversation.item.create',
+    );
+    expect(item?.item?.role).toBe('user');
+    expect(item?.item?.content?.[0]?.text).toContain('编码任务完成');
+    expect(messages.some((message) => message.type === 'response.create')).toBe(
+      true,
+    );
+
+    receive(sockets[0], {
+      type: 'conversation.item.created',
+      item: { id: 'item_proactive', role: 'user' },
+    });
+    receive(sockets[0], {
+      type: 'response.done',
+      response: { status: 'completed' },
+    });
+
+    expect(
+      sent(sockets[0]).some(
+        (message) =>
+          message.type === 'conversation.item.delete' &&
+          message.item_id === 'item_proactive',
+      ),
+    ).toBe(true);
   });
 });
 

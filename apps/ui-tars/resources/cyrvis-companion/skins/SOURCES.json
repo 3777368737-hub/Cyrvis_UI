@@ -62,5 +62,13 @@
     "path": "desktop/assets/pet",
     "author": "AI Jarvis contributors",
     "license": "MIT (repository LICENSE)"
+  },
+  {
+    "id": "clawd",
+    "repo": "https://github.com/ccyrene/clawd",
+    "revision": "fea00f0126d2aded71ec8916966c51a5cd3c22bf",
+    "path": "src/assets",
+    "author": "Clawd project author; Hert4/clawd-window upstream, ccyrene/clawd fork",
+    "license": "README identifies the SVG artwork as original work of the project author, provided as-is. No explicit redistribution or commercial license grant found at the pinned revision."
   }
 ]

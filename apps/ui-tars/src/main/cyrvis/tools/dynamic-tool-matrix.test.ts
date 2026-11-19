@@ -110,6 +110,7 @@ const createStateStore = async (
       disks: async () => [],
       battery: async () => null,
       services: async () => [],
+      recentFiles: async () => [],
     },
   });
   await store.refresh(true);

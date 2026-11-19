@@ -20,7 +20,9 @@ const normalize = (value: string): string =>
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, '');
 
-const executableExists = (command: string): boolean => {
+const executableCache = new Map<string, boolean>();
+
+const checkExecutableExists = (command: string): boolean => {
   if (
     path.isAbsolute(command) ||
     command.includes('/') ||
@@ -43,6 +45,16 @@ const executableExists = (command: string): boolean => {
     }
   }
   return false;
+};
+
+const executableExists = (command: string): boolean => {
+  const cached = executableCache.get(command);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const exists = checkExecutableExists(command);
+  executableCache.set(command, exists);
+  return exists;
 };
 
 export const mergeRequirements = (

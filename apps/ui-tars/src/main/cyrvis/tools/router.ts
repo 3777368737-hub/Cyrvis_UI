@@ -15,6 +15,7 @@ import {
 import type {
   FastToolOutcome,
   FastToolRoute,
+  PendingConfirmationSnapshot,
   PreparedToolCall,
   ToolContext,
 } from './types';
@@ -33,9 +34,44 @@ interface PendingConfirmation {
 }
 
 const CONFIRM_COMMAND_PATTERN =
-  /^(?:确认|确定|确认执行|执行|执行吧|可以|可以执行|同意|继续执行|好|是|yes|confirm|go ahead)$/i;
+  /^(?:确认|确定|确认执行|执行|执行吧|直行|可以|可以执行|同意|继续执行|好|是|yes|confirm|go ahead)$/i;
 const CANCEL_COMMAND_PATTERN =
   /^(?:取消|算了|不要|不要执行|别执行|否|no|cancel)$/i;
+
+const compactCommand = (text: string): string =>
+  text
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[\s，。！？、,.!?;；:：""''“”‘’]/g, '');
+
+const isContextualConfirmation = (text: string): boolean => {
+  const raw = text.trim();
+  if (CONFIRM_COMMAND_PATTERN.test(raw)) {
+    return true;
+  }
+  const compact = compactCommand(raw);
+  if (
+    /^(?:是的|是啊|对呀|嗯|嗯嗯|好的|行|当然|直接执行|直接删除|确认删除|我已确认|对|对的|对的对的|没问题|可以删|可以删了|删吧|删了吧|执行吧)$/.test(
+      compact,
+    )
+  ) {
+    return true;
+  }
+  return (
+    /(?:确认|对|可以|好)/.test(compact) &&
+    /(?:删除|删掉|执行|继续|处理)/.test(compact) &&
+    !/(?:不|别|取消|算了|否)/.test(compact)
+  );
+};
+
+const isContextualCancellation = (text: string): boolean => {
+  if (CANCEL_COMMAND_PATTERN.test(text.trim())) {
+    return true;
+  }
+  return /^(?:不要了|不要删|别删|不对|不行|不用了|停止|先不要)$/.test(
+    compactCommand(text),
+  );
+};
 
 export interface FastToolRouterOptions {
   confirmationTtlMs?: number;
@@ -212,19 +248,62 @@ export class FastToolRouter {
     return Boolean(this.validPending(now));
   }
 
+  getPendingConfirmation(now = Date.now()): PendingConfirmationSnapshot | null {
+    const pending = this.validPending(now);
+    return pending
+      ? {
+          tool: pending.route.tool,
+          risk: pending.route.risk,
+          domain: pending.route.domain,
+          confirmationReason: pending.route.confirmationReason,
+          expiresAt: pending.expiresAt,
+        }
+      : null;
+  }
+
+  async confirmPending(): Promise<FastToolOutcome> {
+    const pending = this.validPending(Date.now());
+    if (!pending) {
+      return {
+        handled: true,
+        ok: false,
+        speech: '确认已经过期，请重新发出指令。',
+      };
+    }
+    return this.execute({
+      ...pending.route,
+      kind: 'confirm',
+      requiresConfirmation: false,
+      confirmationReason: null,
+    });
+  }
+
+  async cancelPending(): Promise<FastToolOutcome> {
+    const pending = this.validPending(Date.now());
+    if (!pending) {
+      return { handled: false };
+    }
+    return this.execute({
+      ...pending.route,
+      kind: 'cancel',
+      requiresConfirmation: false,
+      confirmationReason: null,
+      summary: `取消${pending.route.summary}`,
+    });
+  }
+
   isPendingConfirmationReply(text: string, now = Date.now()): boolean {
     if (!this.validPending(now)) {
       return false;
     }
-    const normalized = normalize(text);
-    return (
-      CONFIRM_COMMAND_PATTERN.test(normalized) ||
-      CANCEL_COMMAND_PATTERN.test(normalized)
-    );
+    return isContextualConfirmation(text) || isContextualCancellation(text);
   }
 
   isConfirmationIntent(text: string): boolean {
     const normalized = normalize(text);
+    if (this.validPending()) {
+      return isContextualConfirmation(text) || isContextualCancellation(text);
+    }
     return (
       CONFIRM_COMMAND_PATTERN.test(normalized) ||
       CANCEL_COMMAND_PATTERN.test(normalized)
@@ -400,7 +479,7 @@ export class FastToolRouter {
     return this.execute(route);
   }
 
-  private validPending(now: number): PendingConfirmation | null {
+  private validPending(now = Date.now()): PendingConfirmation | null {
     if (!this.pending) {
       return null;
     }
@@ -415,6 +494,9 @@ export class FastToolRouter {
     prepared: PreparedToolCall,
     summary: string,
   ): string {
+    if (this.validPending(Date.now())) {
+      return SENSITIVE_CONFIRMATION_PROMPT;
+    }
     const route: FastToolRoute = {
       kind: 'execute',
       tool: prepared.tool,
@@ -439,10 +521,10 @@ export class FastToolRouter {
       return null;
     }
     if (this.validPending(now)) {
-      if (CONFIRM_COMMAND_PATTERN.test(text)) {
+      if (isContextualConfirmation(text)) {
         return command('__confirm__', {}, '确认执行');
       }
-      if (CANCEL_COMMAND_PATTERN.test(text)) {
+      if (isContextualCancellation(text)) {
         return command('__cancel__', {}, '取消操作');
       }
     }

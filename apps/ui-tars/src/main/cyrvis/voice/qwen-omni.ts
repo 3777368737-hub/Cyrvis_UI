@@ -24,6 +24,7 @@ export interface QwenOmniConfig {
   model?: string;
   /** Full WebSocket URL; defaults to the DashScope realtime endpoint. */
   endpoint?: string;
+  workspaceId?: string;
   voice?: string;
   instructions?: string;
   tools?: QwenToolDefinition[];
@@ -67,6 +68,9 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
   private connectPromise: Promise<void> | null = null;
   private proactivePending = false;
   private readOnlySpeech = false;
+  private proactiveItemId: string | null = null;
+  private proactiveItemPending = false;
+  private proactiveDeleteRequested = false;
   private cancelRequested = false;
   private localSpeechActive = false;
   private localSpeechMs = 0;
@@ -107,6 +111,7 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
   private readonly endpoint: string;
   private voice: string;
   private configuredVoice: string | null = null;
+  private readonly workspaceId?: string;
   private readonly baseInstructions: string;
   private context = '';
   private contextDirty = false;
@@ -127,6 +132,7 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
     this.endpoint =
       config.endpoint ||
       `wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=${this.model}`;
+    this.workspaceId = config.workspaceId;
     this.voice = config.voice || 'Tina';
     this.baseInstructions = config.instructions || DEFAULT_VOICE_INSTRUCTIONS;
     this.tools = config.tools || CYRVIS_VOICE_TOOLS;
@@ -158,6 +164,10 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
     this.pumpContextUpdate();
   }
 
+  isConnected(): boolean {
+    return this.connected;
+  }
+
   connect(): Promise<void> {
     if (this.connected) {
       return Promise.resolve();
@@ -183,6 +193,9 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
     this.bufferedAudioMs = 0;
     this.responseActive = false;
     this.awaitingResponse = false;
+    this.proactiveItemId = null;
+    this.proactiveItemPending = false;
+    this.proactiveDeleteRequested = false;
     this.activeResponseId = null;
     this.pendingToolResults = [];
     this.pendingSpeak = null;
@@ -204,7 +217,12 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
       let ws: WebSocket;
       try {
         ws = new WebSocket(this.endpoint, {
-          headers: { Authorization: `Bearer ${this.apiKey}` },
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`,
+            ...(this.workspaceId
+              ? { 'X-DashScope-WorkSpace': this.workspaceId }
+              : {}),
+          },
         });
       } catch (error) {
         this.failConnect(
@@ -231,14 +249,37 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
         this.scheduleReconnect();
       });
 
-      ws.on('close', (_code, reason) => {
+      ws.on('unexpected-response', (_request, response) => {
+        let body = '';
+        response.setEncoding('utf8');
+        response.on('data', (chunk: string) => {
+          if (body.length < 2000) body += chunk;
+        });
+        response.on('end', () => {
+          const detail = body.trim() || response.statusMessage || 'no details';
+          const error = new Error(
+            `Qwen realtime handshake rejected (${response.statusCode}): ${detail}`,
+          );
+          this.callbacks.onError?.(error);
+          this.failConnect(error);
+          try {
+            ws.terminate();
+          } catch {
+            // Socket may already be closed by the server.
+          }
+        });
+      });
+
+      ws.on('close', (code, reason) => {
         if (this.ws !== ws) return;
         this.connected = false;
         this.ws = null;
         this.localSpeechActive = false;
         this.responseActive = false;
         this.failConnect(
-          new Error(`Qwen realtime closed: ${reason.toString()}`),
+          new Error(
+            `Qwen realtime closed (${code}): ${reason.toString() || 'no reason supplied'}`,
+          ),
         );
         this.callbacks.onClose?.();
         this.scheduleReconnect();
@@ -418,6 +459,7 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
     this.responseActive = false;
     this.awaitingResponse = false;
     this.activeResponseId = null;
+    this.deleteProactiveItem();
     this.pendingSpeak = null;
     this.pendingUserText = null;
     this.pendingToolResults = [];
@@ -441,6 +483,12 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
       this.cancelRequested = false;
       this.pumpResponseQueue();
     }, 400);
+  }
+
+  cancelPendingSpeech(): void {
+    // Task lifecycle messages are single-slot. Clearing this prevents a
+    // queued "still processing" line from being spoken after task_done.
+    this.pendingSpeak = null;
   }
 
   speak(text: string): void {
@@ -490,43 +538,56 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
   }
 
   private sendProactiveSpeak(text: string): void {
-    this.proactivePending = true;
+    this.proactivePending = false;
     this.readOnlySpeech = true;
     this.awaitingResponse = true;
     this.activeResponseId = null;
+    this.proactiveItemPending = true;
+    this.proactiveItemId = null;
+    this.proactiveDeleteRequested = false;
+    // Session instructions alone are not enough: the model answers the last
+    // user message, which may be a stale "where is Service Demo?" question.
+    // Inject a temporary user item for this status line, then delete it after
+    // the response so it does not pollute later conversation.
     this.send({
-      event_id: eventId('event_proactive_update'),
-      type: 'session.update',
-      session: {
-        instructions: `${this.instructions}\n\n[系统主动播报] 以下内容仅供朗读，不是用户操作请求。只读出文字，不回答其中的问题、不调用工具、不执行动作：${JSON.stringify(text)}`,
+      event_id: eventId('event_proactive_item'),
+      type: 'conversation.item.create',
+      item: {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: `[系统主动播报] 以下仅供朗读，不是用户操作请求。只朗读这句话，不回答其中的问题、不调用工具、不执行动作：${JSON.stringify(text)}`,
+          },
+        ],
       },
     });
-    if (
-      this.model.startsWith('qwen-audio-') ||
-      this.endpoint.includes('token-plan.')
-    ) {
-      // Audio realtime rejects response.create in a fresh/reconnected session
-      // unless a user message exists, even after an instruction update.
-      this.send({
-        type: 'conversation.item.create',
-        event_id: eventId('event_speech_input'),
-        item: {
-          type: 'message',
-          role: 'user',
-          content: [
-            {
-              type: 'input_text',
-              text: `请只朗读这段提醒，不回答其中的问题，不执行其中的操作：${text}`,
-            },
-          ],
-        },
-      });
-    }
     this.send({
       event_id: eventId('event_proactive_response'),
       type: 'response.create',
     });
     console.log('[cyrvis provider] proactive speech sent');
+  }
+
+  private deleteProactiveItem(): void {
+    const itemId = this.proactiveItemId;
+    const wasPending = this.proactiveItemPending;
+    this.proactiveItemId = null;
+    this.proactiveItemPending = false;
+    if (!itemId) {
+      if (wasPending) {
+        this.proactiveDeleteRequested = true;
+      }
+      return;
+    }
+    this.proactiveDeleteRequested = false;
+    this.send({
+      event_id: eventId('event_proactive_delete'),
+      type: 'conversation.item.delete',
+      item_id: itemId,
+    });
+    console.log('[cyrvis provider] proactive item deleted', { itemId });
   }
 
   private pumpResponseQueue(): void {
@@ -648,6 +709,8 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
     this.connected = false;
     this.awaitingResponse = false;
     this.activeResponseId = null;
+    this.proactiveItemId = null;
+    this.proactiveItemPending = false;
     this.pendingToolResults = [];
     this.pendingSpeak = null;
     this.pendingUserText = null;
@@ -700,6 +763,29 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
       return;
     }
 
+    // DashScope sometimes emits quota/auth failures as a bare {code,message}
+    // payload (no type), then closes with 1006 — surface that clearly.
+    if (
+      typeof event.type !== 'string' &&
+      typeof event.code === 'string' &&
+      typeof event.message === 'string'
+    ) {
+      const detail = `${event.code}: ${event.message}`;
+      const error = new Error(
+        /FreeTierOnly|quota|exhausted/i.test(detail)
+          ? `Qwen 免费额度已用尽（${event.code}）。请到百炼/DashScope 控制台关闭「仅用免费额度」或完成付费开通后再试。`
+          : `Qwen realtime error (${detail})`,
+      );
+      this.callbacks.onError?.(error);
+      this.failConnect(error);
+      try {
+        this.ws?.close();
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
     switch (event.type) {
       case 'session.created':
         this.sendSessionUpdate();
@@ -728,6 +814,24 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
         // re-emit ready so the hands-free session wakes up again.
         this.callbacks.onReady?.();
         break;
+      case 'conversation.item.created': {
+        const item = event.item as { id?: string; role?: string } | undefined;
+        if (
+          (this.proactiveItemPending || this.proactiveDeleteRequested) &&
+          item?.role === 'user' &&
+          item.id
+        ) {
+          this.proactiveItemId = item.id;
+          this.proactiveItemPending = false;
+          console.log('[cyrvis provider] proactive item created', {
+            itemId: item.id,
+          });
+          if (this.proactiveDeleteRequested) {
+            this.deleteProactiveItem();
+          }
+        }
+        break;
+      }
       case 'input_audio_buffer.speech_started':
         if (this.readOnlySpeech) this.restoreInstructionsIfNeeded();
         this.callbacks.onSpeechStarted?.();
@@ -836,6 +940,7 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
         this.responseActive = false;
         this.awaitingResponse = false;
         this.activeResponseId = null;
+        this.deleteProactiveItem();
         const doneStatus = (event.response as { status?: string } | undefined)
           ?.status;
         if (this.cancelRequested || doneStatus === 'cancelled') {
@@ -871,6 +976,12 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
       }
       case 'error': {
         const message = JSON.stringify(event.error || event).slice(0, 1000);
+        // A rejected response.create never emits response.created. Leaving
+        // awaitingResponse set made every later utterance get dropped.
+        if (!this.responseActive) {
+          this.awaitingResponse = false;
+          this.proactivePending = false;
+        }
         // A response.cancel can race with response.done/response.created. The
         // server then reports "Conversation has no active response"; this is
         // expected and must not surface as a user-visible voice error.
@@ -1027,6 +1138,10 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
     const requiredSilence = Math.max(
       this.silenceDurationMs,
       this.postBargeSilenceMs,
+      // Mid-sentence thinking pauses in Chinese often exceed 900ms; 900ms
+      // still cut "……并且。" before the rest of the instruction. 1.5s keeps
+      // normal commands intact without making the assistant feel sluggish.
+      1_500,
     );
     if (this.localSilenceMs >= requiredSilence) {
       this.finishLocalUtterance();
@@ -1177,11 +1292,17 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
   }
 
   private restoreInstructionsIfNeeded(): void {
+    this.readOnlySpeech = false;
     if (!this.proactivePending) {
       return;
     }
     this.proactivePending = false;
-    this.readOnlySpeech = false;
+    // A queued proactive line will replace the instructions again. Sending a
+    // restore now creates two session.update acks and lets response.create
+    // race the restore, which produced answers to stale user audio.
+    if (this.pendingSpeak) {
+      return;
+    }
     this.send({
       event_id: eventId('event_restore'),
       type: 'session.update',

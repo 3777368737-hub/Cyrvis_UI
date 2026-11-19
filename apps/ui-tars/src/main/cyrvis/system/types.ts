@@ -63,6 +63,12 @@ export interface ServiceState {
   startType: string;
 }
 
+export interface RecentFileState {
+  name: string;
+  path: string;
+  lastUsedAt: number;
+}
+
 export interface SystemStateSnapshot {
   capturedAt: number;
   platform: NodeJS.Platform;
@@ -81,6 +87,7 @@ export interface SystemStateSnapshot {
   installedApplications: InstalledApplication[];
   steamGames: SteamGame[];
   services: ServiceState[];
+  recentFiles: RecentFileState[];
   runningProcesses: Array<{
     pid: number;
     name: string;
@@ -91,6 +98,8 @@ export interface SystemStateSnapshot {
     pid: number;
     process: string;
     title: string;
+    focused?: boolean;
+    handle?: number;
   }>;
   capabilities: string[];
 }

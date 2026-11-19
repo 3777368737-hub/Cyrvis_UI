@@ -1,4 +1,4 @@
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -139,8 +139,8 @@ const firstExisting = (
   return null;
 };
 
-const findVscode = () =>
-  firstExisting([
+const findVscode = () => {
+  const installed = firstExisting([
     process.env.LOCALAPPDATA
       ? path.join(
           process.env.LOCALAPPDATA,
@@ -161,6 +161,36 @@ const findVscode = () =>
       : undefined,
     'C:\\Program Files\\Microsoft VS Code\\Code.exe',
   ]);
+  if (installed) {
+    return installed;
+  }
+  // VS Code can be installed outside Program Files (this machine uses
+  // D:\Microsoft VS Code). Resolve the `code` shim on PATH and map its
+  // bin\code.cmd back to the real Code.exe.
+  try {
+    const shim = execFileSync('where.exe', ['code'], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 3_000,
+    })
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean);
+    if (shim) {
+      const root = path.dirname(path.dirname(shim));
+      const executable = firstExisting([
+        path.join(root, 'Code.exe'),
+        path.join(root, 'code.exe'),
+      ]);
+      if (executable) {
+        return executable;
+      }
+    }
+  } catch {
+    // VS Code is optional; fall back to Explorer when it is not installed.
+  }
+  return null;
+};
 
 const findChrome = () =>
   firstExisting([
@@ -197,7 +227,9 @@ const spawnDetached = (executable: string, args: string[]) => {
   const child = spawn(executable, args, {
     detached: true,
     stdio: 'ignore',
-    windowsHide: true,
+    // Do not pass windowsHide here: it applies STARTF_USESHOWWINDOW/SW_HIDE
+    // to GUI children, so Notepad launches as a hidden process with no window.
+    windowsHide: false,
   });
   return new Promise<number | undefined>((resolve, reject) => {
     child.once('spawn', () => {

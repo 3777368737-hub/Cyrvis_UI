@@ -273,7 +273,15 @@ describe('FastToolRouter', () => {
     expect(pending.speech).not.toContain(file);
     expect(router.isPendingConfirmationReply('确认执行')).toBe(true);
     expect(router.isPendingConfirmationReply('执行')).toBe(true);
+    expect(router.isPendingConfirmationReply('直行')).toBe(true);
     expect(router.isPendingConfirmationReply('是')).toBe(true);
+    expect(router.isPendingConfirmationReply('是的，')).toBe(true);
+    expect(
+      router.isPendingConfirmationReply('对的对的，你就把这个删掉就可以。'),
+    ).toBe(true);
+    expect(
+      router.isPendingConfirmationReply('直接删除这个文件，我已确认。'),
+    ).toBe(true);
     expect(router.isPendingConfirmationReply('取消')).toBe(true);
     expect(router.isPendingConfirmationReply('我在')).toBe(false);
     expect(await fs.readFile(file, 'utf8')).toBe('keep');
@@ -286,6 +294,21 @@ describe('FastToolRouter', () => {
     await router.handleText('把 replaced 写入剪贴板');
     expect(await router.handleText('确认执行')).toEqual({ handled: false });
     expect(await fs.readFile(file, 'utf8')).toBe('keep');
+  });
+
+  it('executes the pending deletion after a natural-language confirmation', async () => {
+    const { router } = matrix();
+    const file = path.join(root, 'natural-confirmation.txt');
+    await fs.writeFile(file, 'delete', 'utf8');
+
+    const pending = await router.handleText(`删除文件 ${file}`);
+    expect(pending.speech).toBe(SENSITIVE_CONFIRMATION_PROMPT);
+    const confirmed = await router.handleText('直接删除这个文件，我已确认。');
+    expect(confirmed).toMatchObject({
+      handled: true,
+      ok: true,
+    });
+    await expect(fs.access(file)).rejects.toThrow();
   });
 
   it('requires confirmation outside configured roots and for sensitive files', async () => {
@@ -308,11 +331,39 @@ describe('FastToolRouter', () => {
     ).toBe(true);
   });
 
+  it('allows read-only system inspection outside configured roots', async () => {
+    const { registry } = matrix();
+    const directory =
+      process.platform === 'win32'
+        ? 'C:\\Program Files\\Tencent'
+        : '/opt/cyrvis-test';
+    const target = path.join(directory, 'QQBrowser.exe');
+
+    await expect(
+      registry.prepare('condition.check', {
+        kind: 'path_exists',
+        target,
+      }),
+    ).resolves.toMatchObject({ requiresConfirmation: false });
+    await expect(
+      registry.prepare('fs.list_directory', {
+        path: directory,
+      }),
+    ).resolves.toMatchObject({ requiresConfirmation: false });
+    await expect(
+      registry.prepare('fs.write_file', {
+        path: path.join(directory, 'blocked.txt'),
+        content: 'x',
+      }),
+    ).resolves.toMatchObject({ requiresConfirmation: true });
+  });
+
   it('intercepts application, window, clipboard, system, and web commands', async () => {
     const { router } = matrix();
 
     expect((await router.handleText('打开记事本')).ok).toBe(true);
-    expect(desktop.launchedApplications).toEqual(['记事本']);
+    expect((await router.handleText('帮我打开QQ浏览器')).ok).toBe(true);
+    expect(desktop.launchedApplications).toEqual(['记事本', 'QQ浏览器']);
 
     const wordFile = path.join(root, 'word.txt');
     await fs.writeFile(wordFile, 'document', 'utf8');
@@ -382,6 +433,7 @@ describe('FastToolRouter', () => {
   it('leaves non-command chat outside the fast tool matrix', async () => {
     const { router } = matrix();
     expect(router.isConfirmationIntent('确认执行')).toBe(true);
+    expect(router.isConfirmationIntent('直行')).toBe(true);
     expect(router.isConfirmationIntent('取消')).toBe(true);
     expect((await router.match('查看桌面下有什么'))?.tool).toBe(
       'fs.list_directory',

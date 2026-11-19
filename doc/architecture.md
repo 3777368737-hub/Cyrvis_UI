@@ -28,6 +28,7 @@ Voice Agent 不直接驱动鼠标键盘，也不直接调用 GUI Agent；所有�
 │   ├─ 打断检测：播报中能量阈值 1000 / 150ms / 600ms 预录                 │
 │   ├─ QwenOmniProvider：Realtime ASR/TTS、Function Calling、本地 VAD     │
 │   ├─ VoiceBrain：意图路由、唤醒、确定性控制、主动播报                   │
+│   ├─ DynamicContextStore：用户状态、资源目录、能力绑定、工具面排序       │
 │   ├─ ProactivityPolicy：任务事件 → 主动播报                             │
 │   └─ CyrvisController → ElectronGUIAdapter → UI-TARS GUIAgent           │
 └───────────────────────────────────────────────────────────────────────┘
@@ -38,16 +39,17 @@ Voice Agent 不直接驱动鼠标键盘，也不直接调用 GUI Agent；所有�
 
 ## 3. 模块职责
 
-| 模块               | 位置                                       | 职责                                              |
-| ------------------ | ------------------------------------------ | ------------------------------------------------- |
-| VoiceService       | `main/cyrvis/voice-service.ts`             | 单例、IPC、采集启动/热插拔、打断检测、双模式      |
-| CaptureService     | `main/cyrvis/capture-service.ts`           | 隐藏采集窗口、本地 HTTP/WS、物理麦选择            |
-| QwenOmniProvider   | `main/cyrvis/voice/qwen-omni.ts`           | Qwen Realtime WebSocket、ASR/TTS/工具、取消、VAD  |
-| VoiceBrain         | `main/cyrvis/voice-brain.ts`               | 意图路由、唤醒、工具校验、确定性控制、主动播报    |
-| CyrvisController   | `main/cyrvis/controller.ts`                | 单任务状态机、暂停/恢复/取消、stall、事件总线     |
-| ElectronGUIAdapter | `main/cyrvis/gui-adapter.ts`               | 包装 `runAgent` / `GUIAgentManager`，映射任务事件 |
-| ProactivityPolicy  | `main/cyrvis/proactivity.ts`               | 优先级、冷却、静音门控、主动话术                  |
-| Renderer           | `components/CyrvisVoice/`、`pages/widget/` | 主窗口语音播放、右侧常驻语音面板                  |
+| 模块                | 位置                                       | 职责                                              |
+| ------------------- | ------------------------------------------ | ------------------------------------------------- |
+| VoiceService        | `main/cyrvis/voice-service.ts`             | 单例、IPC、采集启动/热插拔、打断检测、双模式      |
+| CaptureService      | `main/cyrvis/capture-service.ts`           | 隐藏采集窗口、本地 HTTP/WS、物理麦选择            |
+| QwenOmniProvider    | `main/cyrvis/voice/qwen-omni.ts`           | Qwen Realtime WebSocket、ASR/TTS/工具、取消、VAD  |
+| VoiceBrain          | `main/cyrvis/voice-brain.ts`               | 意图路由、唤醒、工具校验、确定性控制、主动播报    |
+| DynamicContextStore | `main/cyrvis/context/`                     | 用户上下文、动态资源、能力绑定、相关性排序        |
+| CyrvisController    | `main/cyrvis/controller.ts`                | 单任务状态机、暂停/恢复/取消、stall、事件总线     |
+| ElectronGUIAdapter  | `main/cyrvis/gui-adapter.ts`               | 包装 `runAgent` / `GUIAgentManager`，映射任务事件 |
+| ProactivityPolicy   | `main/cyrvis/proactivity.ts`               | 优先级、冷却、静音门控、主动话术                  |
+| Renderer            | `components/CyrvisVoice/`、`pages/widget/` | 主窗口语音播放、右侧常驻语音面板                  |
 
 右侧 `widget` 是纯 UI 消费方：只订阅 `cyrvis:voice:state`、转写、回复和
 `ControllerEvent`，并通过 IPC 请求唤醒、打断、暂停或取消。它不直接采集
@@ -141,6 +143,7 @@ apps/ui-tars/src/main/cyrvis/
 ├── voice-brain.ts
 ├── capture-service.ts
 ├── voice-service.ts
+├── context/       # 用户状态、资源、绑定、前台监控、相关性
 ├── proactivity.ts
 ├── types.ts
 ├── voice/

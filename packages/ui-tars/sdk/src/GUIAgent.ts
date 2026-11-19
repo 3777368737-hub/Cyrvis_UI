@@ -406,7 +406,10 @@ export class GUIAgent<T extends Operator> extends BaseGUIAgent<
             break;
           }
 
-          if (!signal?.aborted && !this.isStopped) {
+          // Pause can arrive while the model is still thinking. Do not
+          // execute the stale action after the user asked to stop; the next
+          // loop will wait on resumePromise and re-plan from a fresh frame.
+          if (!signal?.aborted && !this.isStopped && !this.isPaused) {
             logger.info(
               '[GUIAgent] Action Inputs:',
               parsedPrediction.action_inputs,

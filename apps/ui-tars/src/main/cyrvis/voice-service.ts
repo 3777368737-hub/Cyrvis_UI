@@ -38,18 +38,22 @@ import {
 } from '@shared/cyrvis';
 
 import { startCaptureService, type CaptureService } from './capture-service';
+import { CodingAgentService } from './coding-agent';
 import { CyrvisController } from './controller';
+import { openApp } from './desktop-actions';
 import { ElectronGUIAdapter } from './gui-adapter';
 import { KeywordGate } from './keyword-gate';
 import { voiceMemoryService } from './memory';
 import { SpeakerEchoDetector, type SpeakerEchoAnalysis } from './speaker-barge';
 import { isLikelySpeakerEcho } from './speaker-echo';
+import { composeContextSections, type DynamicContextStore } from './context';
 import { LocalDesktopHost } from './tools/desktop-host';
 import { createFastToolMatrix } from './tools';
 import { SystemStateStore } from './system/system-state';
 import { CascadeVoiceProvider } from './voice/cascade-provider';
 import { QwenOmniProvider } from './voice/qwen-omni';
 import type { InteractiveVoiceProvider } from './voice/provider';
+import { createPendingIntentClassifier } from './voice/pending-intent-classifier';
 import { buildVoiceToolSurface } from './voice/tool-surface';
 import { VoiceBrain, type VoiceBrainState } from './voice-brain';
 import type { ControllerEvent } from './types';
@@ -59,6 +63,7 @@ interface VoiceService {
   provider: InteractiveVoiceProvider;
   controller: CyrvisController;
   systemState: SystemStateStore;
+  dynamicContext?: DynamicContextStore;
 }
 
 let service: VoiceService | null = null;
@@ -88,6 +93,10 @@ function proactiveGazeBlockReason(): string | undefined {
     return '对话刚结束，稍后恢复注视计时。';
   return undefined;
 }
+const providerContextMaxChars = (() => {
+  const value = Number(process.env.CYRVIS_CONTEXT_MAX_CHARS);
+  return Number.isFinite(value) && value >= 2_000 ? value : 12_000;
+})();
 let selectedVoiceEngine: 'cascade' | 'omni' = env.voiceEngine;
 // Hybrid mode: the main Renderer owns the microphone (and its AEC reference),
 // so the hidden capture window must not feed a second copy of the same audio
@@ -122,6 +131,25 @@ let testAudioActive = false;
 let pttActive = false;
 // Hands-free by default. PTT remains available as a fallback mode.
 const pttMode = false;
+
+/** Speak a proactive reminder through the active realtime voice session. */
+export const speakProactiveText = (text: string): boolean => {
+  if (!service || !text.trim() || service.provider.isConnected?.() !== true) {
+    return false;
+  }
+  service.provider.speak(text);
+  return true;
+};
+
+/** Show locally spoken proactive text in the voice conversation as well. */
+export const publishProactiveText = (text: string): void => {
+  const normalized = text.trim();
+  if (!normalized) return;
+  broadcast('cyrvis:voice:assistant', { text: normalized, final: true });
+  void voiceMemoryService.appendTurn('assistant', normalized).catch((error) => {
+    logger.warn('[cyrvis follow-up] message persist failed', error);
+  });
+};
 
 const isExternalOutputLabel = (label: string): boolean => {
   const lower = label.toLowerCase();
@@ -232,12 +260,12 @@ interface SpeakerProbeState {
 
 const speakerEchoDetector = new SpeakerEchoDetector();
 let speakerProbe: SpeakerProbeState | null = null;
+let speakerBargeConfirmTimer: ReturnType<typeof setTimeout> | null = null;
 let speakerCandidateMs = 0;
 // Headset mode has no meaningful speaker echo; use direct energy barge so a
 // short "停" is never lost to a 700ms probe confirmation window.
 let headsetBargeMs = 0;
 let speakerResumeSuppressUntil = 0;
-let deferredBargeGuiStop = false;
 let lastSpeakerDiagnosticAt = 0;
 let voiceprintPending = false;
 let lastVoiceprintAt = 0;
@@ -362,8 +390,13 @@ const recentForVerification = (): Int16Array[] => {
   return total >= 8000 ? capturePreroll : keywordPreroll;
 };
 
+const recentKeywordForVerification = (): Int16Array[] => {
+  const total = keywordPreroll.reduce((sum, chunk) => sum + chunk.length, 0);
+  return total >= 8000 ? keywordPreroll : [];
+};
+
 const feedHybridKeywordAudio = (pcm16: Int16Array): void => {
-  if (!assistantPlaybackActive || !keywordGate?.available) {
+  if (!keywordGate?.available) {
     return;
   }
   keywordPreroll.push(pcm16.slice());
@@ -1071,7 +1104,14 @@ const syncProviderMemoryContext = async (): Promise<void> => {
     return;
   }
   service.provider.setContext?.(
-    `${await voiceMemoryService.getContext()}\n\n${service.systemState.getContext()}`,
+    composeContextSections(
+      [
+        service.dynamicContext?.getContext(),
+        await voiceMemoryService.getContext(),
+        service.systemState.getContext(40),
+      ],
+      providerContextMaxChars,
+    ),
   );
 };
 
@@ -1088,11 +1128,14 @@ const broadcastPtt = () => {
   broadcast('cyrvis:voice:ptt', { active: pttActive, mode: pttMode });
 };
 
-const triggerBargeIn = () => {
+const triggerBargeIn = (hardStop = false) => {
   if (!service) {
     return;
   }
-  deferredBargeGuiStop = false;
+  if (speakerBargeConfirmTimer) {
+    clearTimeout(speakerBargeConfirmTimer);
+    speakerBargeConfirmTimer = null;
+  }
   logger.info('[cyrvis voice] barge-in');
   if (bargeTrace) {
     bargeTrace.bargeAt = Date.now();
@@ -1109,9 +1152,9 @@ const triggerBargeIn = () => {
     service.provider.muteMicFor(BARGE_MIC_TAIL_MS[selectedVoiceEngine]);
   }
   service.brain.forceAwake();
-  service.brain.handleBargeStop();
+  service.brain.handleBargeStop(hardStop);
   broadcast('cyrvis:voice:response-stopped');
-  emitActivity('speech', '已打断助手回答');
+  emitActivity('speech', hardStop ? '已停止任务' : '已打断助手回答');
 };
 
 const setPttActive = (active: boolean) => {
@@ -1360,6 +1403,15 @@ const registerVoiceIpc = () => {
 
   ipcMain.handle('cyrvis:voice:get-memory', () => {
     return voiceMemoryService.getSnapshot();
+  });
+
+  ipcMain.handle('cyrvis:voice:get-context', () => {
+    return service?.dynamicContext?.getPublicSnapshot() ?? null;
+  });
+
+  ipcMain.handle('cyrvis:voice:clear-context', () => {
+    service?.dynamicContext?.clearUserContext();
+    return service?.dynamicContext?.getPublicSnapshot() ?? null;
   });
 
   ipcMain.handle('cyrvis:voice:get-capture-ready', () => ({
@@ -1693,13 +1745,57 @@ const registerVoiceIpc = () => {
     if (!service) {
       return;
     }
-    logger.info('[cyrvis voice] speech-only barge-in');
-    assistantPlaybackActive = false;
-    deferredBargeGuiStop = true;
-    service.provider.bargeIn({ forceCommit: false });
-    service.provider.muteMicFor(BARGE_MIC_TAIL_MS[selectedVoiceEngine]);
-    service.brain.forceAwake();
-    broadcast('cyrvis:voice:response-stopped');
+    const runBarge = () => {
+      if (!service) {
+        return;
+      }
+      logger.info('[cyrvis voice] speech-only barge-in');
+      assistantPlaybackActive = false;
+      service.provider.bargeIn({ forceCommit: false });
+      service.brain.handleBargeStop();
+      service.provider.muteMicFor(BARGE_MIC_TAIL_MS[selectedVoiceEngine]);
+      service.brain.forceAwake();
+      broadcast('cyrvis:voice:response-stopped');
+    };
+
+    if (speakerOutputMode || externalOutput) {
+      // Legacy fast mode: accept energy barge immediately (yesterday's feel).
+      // Echo protection still comes from the renderer threshold + AEC and the
+      // transcript echo filters; it is not perfect and can self-interrupt.
+      // Set CYRVIS_SPEAKER_BARGE_FAST=0 to restore the 200ms VAD gate.
+      if (process.env.CYRVIS_SPEAKER_BARGE_FAST !== '0') {
+        if (service.brain.isTaskSpeechActive()) {
+          logger.info(
+            '[cyrvis voice] speaker energy barge ignored during task speech',
+          );
+          return;
+        }
+        logger.info('[cyrvis voice] speaker energy barge immediate (legacy)');
+        runBarge();
+        return;
+      }
+      if (service.brain.getState().userSpeaking) {
+        runBarge();
+        return;
+      }
+      if (speakerBargeConfirmTimer) {
+        clearTimeout(speakerBargeConfirmTimer);
+      }
+      speakerBargeConfirmTimer = setTimeout(() => {
+        speakerBargeConfirmTimer = null;
+        if (service?.brain.getState().userSpeaking) {
+          logger.info('[cyrvis voice] speaker energy barge confirmed by VAD');
+          runBarge();
+        } else {
+          logger.info(
+            '[cyrvis voice] speaker energy barge ignored (no local speech)',
+          );
+        }
+      }, 200);
+      return;
+    }
+
+    runBarge();
   });
 
   ipcMain.on('cyrvis:voice:force-awake', () => {
@@ -1741,12 +1837,46 @@ export const startVoiceService = (): VoiceService | null => {
     );
     return null;
   }
+  // secretlint-disable @secretlint/secretlint-rule-pattern
+  const pendingIntentClassifier = createPendingIntentClassifier({
+    apiKey:
+      process.env.CYRVIS_PENDING_INTENT_LLM === '0'
+        ? ''
+        : settings.conversationApiKey ||
+          process.env.CONVERSATION_API_KEY ||
+          process.env.QWEN_API_KEY ||
+          '',
+    baseUrl:
+      settings.conversationBaseUrl ||
+      process.env.CONVERSATION_BASE_URL ||
+      'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    model:
+      process.env.CYRVIS_PENDING_INTENT_MODEL?.trim() ||
+      settings.conversationModelName ||
+      process.env.CONVERSATION_MODEL_NAME ||
+      'qwen-plus',
+  });
+  // secretlint-enable @secretlint/secretlint-rule-pattern
 
   const controller = new CyrvisController(new ElectronGUIAdapter());
+  const codingAgent = new CodingAgentService({
+    workspace:
+      process.env.CYRVIS_CODING_WORKSPACE?.trim() ||
+      'D:\\Desktop\\project\\CYRVIS-demo',
+  });
+  logger.info('[cyrvis coding] configured', {
+    workspace: codingAgent.getWorkspace(),
+    model: process.env.CYRVIS_CODING_MODEL || 'deepseek-flash',
+  });
   const companionStore = getCompanionStore();
   const desktopHost = new LocalDesktopHost();
   const runtimeRefreshMs = Number(process.env.CYRVIS_SYSTEM_RUNTIME_REFRESH_MS);
   const fullRefreshMs = Number(process.env.CYRVIS_SYSTEM_FULL_REFRESH_MS);
+  const foregroundRefreshMs = Number(process.env.CYRVIS_FOREGROUND_REFRESH_MS);
+  const nativeForegroundEvents =
+    process.platform === 'win32' &&
+    process.env.CYRVIS_VOICE_TEST !== '1' &&
+    process.env.CYRVIS_NATIVE_FOREGROUND_EVENTS !== '0';
   const systemState = new SystemStateStore(desktopHost, {
     runtimeRefreshMs:
       Number.isFinite(runtimeRefreshMs) && runtimeRefreshMs >= 1_000
@@ -1770,6 +1900,13 @@ export const startVoiceService = (): VoiceService | null => {
     process.env.CYRVIS_FAST_TOOLS === '0'
       ? null
       : createFastToolMatrix(desktopHost, process.cwd(), systemState, {
+          foregroundRefreshMs:
+            Number.isFinite(foregroundRefreshMs) && foregroundRefreshMs >= 500
+              ? foregroundRefreshMs
+              : undefined,
+          nativeForegroundEvents,
+          foregroundScriptPath:
+            process.env.CYRVIS_FOREGROUND_EVENT_SCRIPT?.trim() || undefined,
           manifestDirectories: [
             path.join(userDataDirectory, 'cyrvis', 'providers'),
             ...(process.resourcesPath
@@ -1798,6 +1935,8 @@ export const startVoiceService = (): VoiceService | null => {
   }
   let provider!: InteractiveVoiceProvider;
   let unsubscribeFastToolUpdates: (() => void) | null = null;
+  let unsubscribeContextEvents: (() => void) | null = null;
+  let unsubscribeContextSnapshots: (() => void) | null = null;
   const requireWakeWord = settings.voiceRequireWakeWord ?? true;
   const configuredWakeWord = settings.voiceWakeWord?.trim();
   const escapeRegExp = (value: string) =>
@@ -1834,6 +1973,7 @@ export const startVoiceService = (): VoiceService | null => {
       onTranscript: (text, final) => {
         broadcast('cyrvis:voice:transcript', { text, final });
         if (final) {
+          fastToolMatrix?.dynamicContext.recordUserText(text);
           recordTurn('user', text);
         }
       },
@@ -1863,6 +2003,8 @@ export const startVoiceService = (): VoiceService | null => {
         emitActivity('session', '语音会话已休眠');
       },
       onTaskEvent: (event: ControllerEvent) => {
+        fastToolMatrix?.dynamicContext.recordTaskEvent(event);
+        void syncProviderMemoryContext();
         broadcast('cyrvis:voice:task-event', event);
         const text = describeControllerEvent(event);
         if (text) {
@@ -1896,14 +2038,37 @@ export const startVoiceService = (): VoiceService | null => {
             !assistantPlaybackActive &&
             Date.now() >= speakerGuardUntil &&
             service?.brain.isGazeFollowup(text) === true;
-          if (final && deferredBargeGuiStop) {
-            deferredBargeGuiStop = false;
-            const keepGuiRunning =
-              /暂停|继续|恢复|进度|第几步|pause|resume|progress|status/i.test(
-                text,
+          // Opt-in only: the enrolled embedding does not reliably match the
+          // Bluetooth/AEC microphone window on this machine (real user speech
+          // scored 0.01-0.05 against a 0.22 threshold). Keep the implementation
+          // for a re-enrolled/calibrated setup, but do not reject ASR by
+          // default.
+          const asrVoiceprintEnabled =
+            process.env.CYRVIS_ASR_VOICEPRINT_GATE === '1';
+          if (
+            final &&
+            asrVoiceprintEnabled &&
+            text.trim() &&
+            (speakerOutputMode || externalOutput) &&
+            keywordGate?.available &&
+            !pendingConfirmationReply &&
+            !explicitConfirmation
+          ) {
+            const score = keywordGate.verify(recentKeywordForVerification());
+            if (score !== null && score < keywordGate.speakerThreshold) {
+              logger.warn(
+                '[cyrvis voice] ASR transcript rejected by voiceprint',
+                {
+                  transcript: text.slice(0, 120),
+                  score: Number(score.toFixed(4)),
+                  threshold: keywordGate.speakerThreshold,
+                },
               );
-            if (!keepGuiRunning && service) {
-              service.brain.handleBargeStop();
+              provider?.cancelResponse();
+              provider?.clearAudioBuffer();
+              broadcast('cyrvis:voice:transcript', { text: '', final: true });
+              emitActivity('speech', '已忽略非用户语音，未触发指令');
+              return;
             }
           }
           if (
@@ -2082,8 +2247,19 @@ export const startVoiceService = (): VoiceService | null => {
         progressCooldownMs: 30000,
       },
       memoryContextProvider: async () =>
-        `${await voiceMemoryService.getContext()}\n\n${systemState.getContext()}`,
+        composeContextSections(
+          [
+            fastToolMatrix?.dynamicContext.getContext(),
+            await voiceMemoryService.getContext(),
+            systemState.getContext(40),
+          ],
+          providerContextMaxChars,
+        ),
       fastToolRouter: fastToolMatrix?.router,
+      codingAgent,
+      classifyPendingIntent: pendingIntentClassifier
+        ? (input) => pendingIntentClassifier.classify(input)
+        : undefined,
       rememberFact: async (text) => {
         const remembered = await voiceMemoryService.rememberFact(text);
         if (remembered) {
@@ -2094,7 +2270,32 @@ export const startVoiceService = (): VoiceService | null => {
     },
   );
 
-  service = { brain, provider, controller, systemState };
+  codingAgent.setStatusListener((snapshot) => {
+    if (snapshot.status === 'running' && snapshot.lastMessage) {
+      emitActivity('task', `编码进度：${snapshot.lastMessage}`);
+    }
+    brain.notifyCodingStatus(snapshot);
+    if (snapshot.status === 'done') {
+      const target =
+        snapshot.changedFiles[snapshot.changedFiles.length - 1] ||
+        snapshot.workspace;
+      emitActivity('task', `编码任务完成，正在打开 VS Code：${target}`);
+      void openApp('vscode', target).catch((error: unknown) => {
+        logger.warn('[cyrvis coding] open vscode failed', error);
+        return openApp('explorer', target).catch((fallbackError: unknown) => {
+          logger.warn('[cyrvis coding] open workspace failed', fallbackError);
+        });
+      });
+    }
+  });
+
+  service = {
+    brain,
+    provider,
+    controller,
+    systemState,
+    dynamicContext: fastToolMatrix?.dynamicContext,
+  };
   const unsubscribeSkin = companionStore.onDidChange('skinId', (skinId) => {
     // Companion voices apply to Omni; cascade retains its configured TTS voice.
     if (!(provider instanceof QwenOmniProvider)) return;
@@ -2145,6 +2346,21 @@ export const startVoiceService = (): VoiceService | null => {
         logger.warn('[cyrvis providers] start failed', error);
       });
   }
+  unsubscribeContextEvents =
+    fastToolMatrix?.dynamicContext.subscribeEvents((event) => {
+      if (event.type === 'foreground_changed') {
+        void fastToolMatrix?.providerManager.refresh().catch((error) => {
+          logger.warn('[cyrvis providers] foreground refresh failed', error);
+        });
+      }
+    }) ?? null;
+  unsubscribeContextSnapshots =
+    fastToolMatrix?.dynamicContext.subscribe(() => {
+      broadcast(
+        'cyrvis:voice:context',
+        fastToolMatrix.dynamicContext.getPublicSnapshot(),
+      );
+    }) ?? null;
   let lastSystemContextSyncAt = 0;
   systemState.onChange(() => {
     const now = Date.now();
@@ -2161,7 +2377,7 @@ export const startVoiceService = (): VoiceService | null => {
     keywordGate = new KeywordGate({
       onTrigger: (keyword) => {
         logger.info('[cyrvis voice] keyword barge-in', { keyword });
-        triggerBargeIn();
+        triggerBargeIn(true);
       },
       onDetected: (keyword, at) => {
         if (bargeTrace) {
@@ -2197,7 +2413,9 @@ export const startVoiceService = (): VoiceService | null => {
 
   // Keyboard fallback for barge-in. Voice barge-in works by speaking, but this
   // is deterministic even when the mic/echo gate is misbehaving.
-  const stopShortcut = globalShortcut.register('Control+Alt+X', triggerBargeIn);
+  const stopShortcut = globalShortcut.register('Control+Alt+X', () =>
+    triggerBargeIn(true),
+  );
   logger.info('[cyrvis voice] stop-speaking shortcut', {
     accelerator: 'Control+Alt+X',
     registered: stopShortcut,
@@ -2234,6 +2452,10 @@ export const startVoiceService = (): VoiceService | null => {
     keywordGate = null;
     unsubscribeFastToolUpdates?.();
     unsubscribeFastToolUpdates = null;
+    unsubscribeContextEvents?.();
+    unsubscribeContextEvents = null;
+    unsubscribeContextSnapshots?.();
+    unsubscribeContextSnapshots = null;
     fastToolMatrix?.dispose();
     systemState.stop();
     brain.dispose();

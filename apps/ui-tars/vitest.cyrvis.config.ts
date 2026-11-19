@@ -13,6 +13,8 @@ export default defineConfig({
     include: [
       'src/main/cyrvis/**/*.test.ts',
       'src/renderer/src/components/CyrvisGaze/*.test.ts',
+      'src/shared/*.test.ts',
+      'src/renderer/src/components/CyrvisVoice/pcm-player.test.ts',
     ],
     exclude: ['node_modules/**'],
   },

@@ -12,6 +12,7 @@ import type {
   BatteryState,
   DiskState,
   InstalledApplication,
+  RecentFileState,
   ServiceState,
   SteamGame,
 } from './types';
@@ -523,4 +524,55 @@ export const discoverServices = async (): Promise<ServiceState[]> => {
       startType: String(record.StartType ?? ''),
     }))
     .sort((left, right) => left.name.localeCompare(right.name));
+};
+
+export const discoverRecentFiles = async (): Promise<RecentFileState[]> => {
+  if (process.platform !== 'win32') {
+    return [];
+  }
+  const output = await runPowerShell(`
+$recent = Join-Path $env:APPDATA 'Microsoft\\Windows\\Recent'
+if (-not (Test-Path -LiteralPath $recent)) { Write-Output '[]'; exit 0 }
+$shell = New-Object -ComObject WScript.Shell
+$items = Get-ChildItem -LiteralPath $recent -Filter *.lnk -File -ErrorAction SilentlyContinue |
+  Sort-Object LastWriteTimeUtc -Descending |
+  Select-Object -First 120 |
+  ForEach-Object {
+    try {
+      $target = $shell.CreateShortcut($_.FullName).TargetPath
+      if ($target -and (Test-Path -LiteralPath $target)) {
+        [pscustomobject]@{
+          name = $_.BaseName
+          path = $target
+          lastUsedAt = $_.LastWriteTimeUtc.ToString('o')
+        }
+      }
+    } catch {}
+  }
+$items | ConvertTo-Json -Compress
+`).catch(() => '[]');
+  const records = parseJson<
+    Array<{ name?: string; path?: string; lastUsedAt?: string }>
+  >(output, []);
+  const blocked =
+    /(?:^|[\\/_.-])(?:\.env|password|passwd|secret|token|credential|privatekey|id_rsa|bank)(?:[\\/_.-]|$)/i;
+  return records
+    .filter(
+      (record) =>
+        record.name &&
+        record.path &&
+        !blocked.test(record.path) &&
+        path.isAbsolute(record.path),
+    )
+    .map((record) => ({
+      name: record.name || path.basename(record.path || ''),
+      path: record.path || '',
+      lastUsedAt: record.lastUsedAt ? Date.parse(record.lastUsedAt) : 0,
+    }))
+    .filter(
+      (record, index, values) =>
+        values.findIndex(
+          (entry) => entry.path.toLowerCase() === record.path.toLowerCase(),
+        ) === index,
+    );
 };

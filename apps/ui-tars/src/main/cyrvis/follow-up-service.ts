@@ -2,11 +2,12 @@
  * Copyright (c) 2025 Bytedance, Inc. and its affiliates.
  * SPDX-License-Identifier: Apache-2.0
  */
-import { app, ipcMain, powerMonitor } from 'electron';
+import { app, BrowserWindow, ipcMain, powerMonitor } from 'electron';
 import ElectronStore from 'electron-store';
 import { execFile, type ChildProcess } from 'node:child_process';
 
 import { logger } from '@main/logger';
+import { showMainWindow } from '@main/window/index';
 import type { CyrvisMemorySnapshot } from '@shared/cyrvis';
 import { voiceMemoryService } from './memory';
 import { travelPlanner } from './travel/travel-planner';
@@ -525,6 +526,14 @@ const stopLocalSpeech = (): void => {
   }
 };
 
+const broadcastPrompt = (prompt: FollowUpPrompt): void => {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('cyrvis:follow-up:prompt', prompt);
+    }
+  }
+};
+
 const enrichAndSpeak = async (prompt: FollowUpPrompt): Promise<void> => {
   const pending = followUpStore.get('pending');
   if (!pending || pending.id !== prompt.id) return;
@@ -566,18 +575,18 @@ const enrichAndSpeak = async (prompt: FollowUpPrompt): Promise<void> => {
     lastGreeting: speech,
     pending: enriched,
   });
+  broadcastPrompt(enriched);
 
   // Always mirror proactive lines into the transcript/memory.
   publishProactiveText(speech);
   if (!speakProactiveText(speech)) {
     speakLocally(speech);
   }
-  followUpStore.set('pending', null);
 };
 
 export const requestFollowUp = (
   reason: FollowUpReason,
-  options: { force?: boolean } = {},
+  options: { force?: boolean; revealWindow?: boolean } = {},
 ): FollowUpPrompt | null => {
   const now = Date.now();
   const enabled = followUpStore.get('enabled');
@@ -605,6 +614,9 @@ export const requestFollowUp = (
     pending: prompt,
   });
 
+  if (options.revealWindow) {
+    void showMainWindow();
+  }
   void enrichAndSpeak(prompt);
   logger.info('[cyrvis follow-up] prompt', prompt);
   return prompt;
@@ -613,6 +625,9 @@ export const requestFollowUp = (
 export const registerFollowUpService = (): void => {
   if (registered) return;
   registered = true;
+  // Do not let a pre-existing system-idle clock fire an idle suggestion before
+  // the launch greeting has had a chance to run.
+  lastLifecyclePromptAt = Date.now();
 
   ipcMain.handle('cyrvis:follow-up:get-pending', () =>
     followUpStore.get('pending'),
@@ -620,7 +635,12 @@ export const registerFollowUpService = (): void => {
   ipcMain.handle('cyrvis:follow-up:complete', (_event, id: unknown) => {
     stopLocalSpeech();
     const pending = followUpStore.get('pending');
+    logger.info('[cyrvis follow-up] complete', {
+      id,
+      pendingId: pending?.id ?? null,
+    });
     if (!pending || pending.id === id) followUpStore.set('pending', null);
+    idleSuggestionShown = true;
     return { ok: true };
   });
   ipcMain.handle(
@@ -629,6 +649,7 @@ export const registerFollowUpService = (): void => {
       stopLocalSpeech();
       const pending = followUpStore.get('pending');
       if (!pending || pending.id === id) followUpStore.set('pending', null);
+      idleSuggestionShown = true;
       const safeDelay =
         typeof delayMs === 'number' && delayMs > 0
           ? Math.min(delayMs, 24 * 60 * 60 * 1000)
@@ -641,7 +662,7 @@ export const registerFollowUpService = (): void => {
   const requestLifecycleFollowUp = (reason: FollowUpReason): void => {
     const now = Date.now();
     if (now - lastLifecyclePromptAt < LIFECYCLE_DEDUPE_MS) return;
-    requestFollowUp(reason, { force: true });
+    requestFollowUp(reason, { force: true, revealWindow: true });
   };
 
   powerMonitor.on('resume', () => requestLifecycleFollowUp('resume'));
@@ -699,6 +720,7 @@ export const registerFollowUpService = (): void => {
 
       const prompt = requestFollowUp('idle', {
         force: true,
+        revealWindow: true,
       });
       if (prompt) {
         idleSuggestionShown = true;

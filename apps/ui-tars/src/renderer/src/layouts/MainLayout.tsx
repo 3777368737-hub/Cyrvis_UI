@@ -6,6 +6,7 @@ import {
   SidebarTrigger,
 } from '@renderer/components/ui/sidebar';
 import { VoiceRuntime } from '@renderer/components/CyrvisVoice/VoiceRuntime';
+import { FollowUpDialog } from '@renderer/components/Proactivity/FollowUpDialog';
 
 export function MainLayout() {
   return (
@@ -23,6 +24,7 @@ export function MainLayout() {
         </div>
       </SidebarInset>
       <VoiceRuntime />
+      <FollowUpDialog />
     </SidebarProvider>
   );
 }

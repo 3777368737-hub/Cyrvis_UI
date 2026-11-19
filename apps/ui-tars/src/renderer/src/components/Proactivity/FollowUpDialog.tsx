@@ -28,14 +28,20 @@ const reasonText: Record<NonNullable<FollowUpPrompt>['reason'], string> = {
 
 export function FollowUpDialog() {
   const navigate = useNavigate();
-  const { sessions, loading, refreshSessions, setActiveSession } = useSession();
+  const { sessions, loading, setActiveSession } = useSession();
   const [prompt, setPrompt] = useState<FollowUpPrompt>(null);
+  const [sessionsReady, setSessionsReady] = useState(false);
 
   useEffect(() => {
-    void refreshSessions();
+    if (!loading) setSessionsReady(true);
+  }, [loading]);
+
+  useEffect(() => {
+    if (loading) return;
     void window.electron.followUp.getPending().then(setPrompt);
-    return window.electron.followUp.onPrompt(setPrompt);
-  }, []);
+  }, [loading]);
+
+  useEffect(() => window.electron.followUp.onPrompt(setPrompt), []);
 
   const previousSession = useMemo(
     () => [...sessions].sort((a, b) => b.updatedAt - a.updatedAt)[0],
@@ -43,11 +49,11 @@ export function FollowUpDialog() {
   );
 
   useEffect(() => {
-    if (!loading && prompt && !previousSession) {
+    if (sessionsReady && !loading && prompt && !previousSession) {
       void window.electron.followUp.complete(prompt.id);
       setPrompt(null);
     }
-  }, [loading, previousSession, prompt]);
+  }, [sessionsReady, loading, previousSession, prompt]);
 
   const close = useCallback(async () => {
     if (prompt) await window.electron.followUp.complete(prompt.id);

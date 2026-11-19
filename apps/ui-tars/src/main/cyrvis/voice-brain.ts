@@ -15,6 +15,21 @@ import { classifyIntent, isExplicitChat } from './intent-gate';
 import { ProactivityPolicy, type ProactivityOptions } from './proactivity';
 import { classifyVoiceIntent, type VoiceIntentDecision } from './search-intent';
 import { TaskConversationCoordinator } from './task-conversation';
+import {
+  isExplicitTravelGuiRequest,
+  isTravelPlanningText,
+  travelPlanner,
+} from './travel/travel-planner';
+import {
+  appendTravelMemo,
+  writeTravelPlanDesktopTxt,
+} from './travel/travel-memo';
+import {
+  buildTravelSearchQuery,
+  hitsToSnippets,
+  probeTravelHighlights,
+  searchTravelInfo,
+} from './travel/travel-search';
 import type { ControllerEvent } from './types';
 import {
   SENSITIVE_CONFIRMATION_PROMPT,
@@ -31,8 +46,27 @@ import type {
   PendingIntentDecision,
   PendingIntentInput,
 } from './voice/pending-intent-classifier';
+import type { TravelPlanSnapshot } from './travel/travel-planner';
 
 export type VoiceBrainState = CyrvisVoiceState;
+
+/** Compact travel tool payloads so the voice model does not stall on huge JSON. */
+const slimTravelResult = (
+  snapshot: TravelPlanSnapshot,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> => ({
+  ok: true,
+  phase: snapshot.phase,
+  missingFramework: snapshot.missingFramework,
+  nextQuestion: snapshot.nextQuestion,
+  primaryInterest: snapshot.primaryInterest,
+  interestLabel: snapshot.interestLabel,
+  preferredNextAspect: snapshot.preferredNextAspect,
+  softBridge: snapshot.softBridge,
+  speakHint: snapshot.speakHint,
+  skeleton: snapshot.skeleton,
+  ...extra,
+});
 
 export interface VoiceBrainCallbacks {
   onAudio?: (pcm16: Int16Array) => void;
@@ -1319,6 +1353,17 @@ export class VoiceBrain {
         const userIsExplicitChat = this.lastUserText
           ? isExplicitChat(this.lastUserText)
           : false;
+        const travelText = `${this.lastUserText} ${instruction}`;
+        if (
+          isTravelPlanningText(travelText) &&
+          !isExplicitTravelGuiRequest(travelText)
+        ) {
+          this.provider.sendToolResult(
+            call.callId,
+            'REJECTED: this is travel planning, not a desktop GUI task. Use travel_update_plan / travel_probe_highlights / travel_set_preference / travel_set_constraints / travel_expand_aspect / travel_finalize_plan instead. Only call start_gui_task when the user explicitly asks to open a booking site and operate it.',
+          );
+          return;
+        }
 
         // The model often paraphrases the user's task with verbs the gate does
         // not know ("在桌面新建一个txt文件..." lacks 打开/搜索/给我). Allow the
@@ -1938,6 +1983,284 @@ export class VoiceBrain {
           this.provider.sendToolResult(
             call.callId,
             `ERROR: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        break;
+      }
+      case 'travel_update_plan': {
+        const snapshot = travelPlanner.updateFramework({
+          destination: call.args.destination,
+          origin: call.args.origin,
+          startDate: call.args.start_date,
+          endDate: call.args.end_date,
+          companions: call.args.companions,
+          budget: call.args.budget,
+          purpose: call.args.purpose,
+          transport: call.args.transport,
+          userText: call.args.user_text || this.lastUserText,
+        });
+        if (snapshot.skeleton) {
+          void appendTravelMemo('framework', '旅行基础框架', snapshot.skeleton);
+        }
+        this.provider.sendToolResult(
+          call.callId,
+          JSON.stringify(
+            slimTravelResult(snapshot, {
+              message: /travel_expand_aspect|tickets|订票|雪票/.test(
+                snapshot.speakHint || '',
+              )
+                ? 'Call travel_expand_aspect(aspect=tickets, with_search=false). Speak briefly; no GUI.'
+                : snapshot.phase === 'probing_preferences'
+                  ? 'Speak skeleton in one short line, then travel_probe_highlights.'
+                  : 'Speak speakHint briefly; ask at most one missing field.',
+            }),
+          ),
+        );
+        break;
+      }
+      case 'travel_get_plan': {
+        this.provider.sendToolResult(
+          call.callId,
+          JSON.stringify(slimTravelResult(travelPlanner.getSnapshot())),
+        );
+        break;
+      }
+      case 'travel_confirm_skeleton': {
+        this.provider.sendToolResult(
+          call.callId,
+          JSON.stringify(
+            slimTravelResult(travelPlanner.confirmSkeleton(), {
+              message:
+                'If preference missing, travel_probe_highlights next. Speak short.',
+            }),
+          ),
+        );
+        break;
+      }
+      case 'travel_probe_highlights': {
+        const plan = travelPlanner.getSnapshot();
+        if (plan.missingFramework.length > 0) {
+          this.provider.sendToolResult(
+            call.callId,
+            JSON.stringify(
+              slimTravelResult(plan, {
+                ok: false,
+                message: 'Finish required framework fields first.',
+              }),
+            ),
+          );
+          break;
+        }
+        const probed = await probeTravelHighlights(plan.framework);
+        if (probed.queries[0]) travelPlanner.noteSearch(probed.queries[0]);
+        const snapshot = travelPlanner.setHighlights(probed.highlights);
+        void appendTravelMemo(
+          'highlights',
+          `亮点试探-${plan.framework.destination || '旅行'}`,
+          `${probed.season.monthLabel || ''} ${probed.season.festivalHints.join('、')}；` +
+            snapshot.highlights
+              .map((item) => `${item.interest}:${item.title}`)
+              .join('；'),
+        );
+        this.provider.sendToolResult(
+          call.callId,
+          JSON.stringify(
+            slimTravelResult(snapshot, {
+              highlights: snapshot.highlights.map((item) => ({
+                interest: item.interest,
+                title: item.title,
+              })),
+              message:
+                'Ask which one category they prefer. One short question; no long lists.',
+            }),
+          ),
+        );
+        break;
+      }
+      case 'travel_set_preference': {
+        const interest = call.args.interest?.trim();
+        if (!interest) {
+          this.provider.sendToolResult(
+            call.callId,
+            'ERROR: interest is required.',
+          );
+          break;
+        }
+        const snapshot = travelPlanner.setPreference(interest, call.args.notes);
+        void appendTravelMemo(
+          'preference',
+          '旅行偏好',
+          snapshot.interestLabel || interest,
+        );
+        this.provider.sendToolResult(
+          call.callId,
+          JSON.stringify(
+            slimTravelResult(snapshot, {
+              message:
+                'Acknowledge preference in one short line, then ask constraint card.',
+            }),
+          ),
+        );
+        break;
+      }
+      case 'travel_set_constraints': {
+        const snapshot = travelPlanner.setConstraints({
+          okWithWalking: call.args.ok_with_walking,
+          okWithEarlyStart: call.args.ok_with_early_start,
+          okWithQueues: call.args.ok_with_queues,
+          notes: call.args.notes,
+          userText: call.args.user_text || this.lastUserText,
+        });
+        void appendTravelMemo(
+          'constraints',
+          '旅行约束卡片',
+          JSON.stringify(snapshot.constraints),
+        );
+        this.provider.sendToolResult(
+          call.callId,
+          JSON.stringify(
+            slimTravelResult(snapshot, {
+              message:
+                'Confirm constraints briefly, then offer one next aspect.',
+            }),
+          ),
+        );
+        break;
+      }
+      case 'travel_expand_aspect': {
+        const aspect = call.args.aspect?.trim();
+        if (!aspect) {
+          this.provider.sendToolResult(
+            call.callId,
+            'ERROR: aspect is required.',
+          );
+          break;
+        }
+        let snippets: string[] = [];
+        const bookableLike =
+          /ticket|accommodation|门票|票务|买票|订票|预约|预订|雪票|住宿|酒店|民宿|ski/i.test(
+            aspect,
+          ) ||
+          /(门票|买票|订票|预约|预订|雪票|展览票|演出票|乐园|住宿|酒店|民宿|住哪|帮我订)/.test(
+            this.lastUserText || '',
+          );
+        // Tickets + hotels: catalog/generic links only — never GUI booking loops.
+        const shouldSearch =
+          call.args.with_search === true ||
+          (call.args.with_search !== false && !bookableLike);
+        if (shouldSearch) {
+          const plan = travelPlanner.getSnapshot();
+          const query = buildTravelSearchQuery(
+            plan.framework,
+            null,
+            `${aspect} ${call.args.notes || ''}`.trim(),
+          );
+          travelPlanner.noteSearch(query);
+          const search = await searchTravelInfo(query);
+          snippets = hitsToSnippets(search.hits);
+        }
+        travelPlanner.syncFromConversation([
+          this.lastUserText,
+          aspect,
+          call.args.notes || '',
+        ]);
+        const snapshot = travelPlanner.expandAspect(
+          aspect,
+          call.args.notes,
+          snippets,
+          this.lastUserText,
+        );
+        const latest = snapshot.aspects[snapshot.aspects.length - 1];
+        if (latest) {
+          void appendTravelMemo('aspect', latest.aspect, latest.summary);
+        }
+        this.provider.sendToolResult(
+          call.callId,
+          JSON.stringify(
+            slimTravelResult(snapshot, {
+              latestAspect: latest
+                ? { aspect: latest.aspect, summary: latest.summary }
+                : null,
+              message: bookableLike
+                ? 'Speak 2-3 option names briefly; say links are in the notes. No GUI. Soft-bridge once.'
+                : 'Speak Day plan / options briefly from speakHint. Do not re-ask preference.',
+            }),
+          ),
+        );
+        break;
+      }
+      case 'travel_search': {
+        const plan = travelPlanner.getSnapshot();
+        const query =
+          call.args.query?.trim() ||
+          buildTravelSearchQuery(
+            plan.framework,
+            null,
+            call.args.aspect || this.lastUserText,
+          );
+        travelPlanner.noteSearch(query);
+        // Keep planner warm even when search is the first travel tool call.
+        if (plan.phase === 'idle' && this.lastUserText) {
+          travelPlanner.updateFramework({ userText: this.lastUserText });
+        }
+        const search = await searchTravelInfo(query);
+        this.provider.sendToolResult(
+          call.callId,
+          JSON.stringify({
+            ok: search.ok,
+            query: search.query,
+            hits: search.hits.slice(0, 3),
+            error: search.error,
+            phase: travelPlanner.getSnapshot().phase,
+            message:
+              'Use hits as short hints only. Do not invent live prices. Speak briefly.',
+          }),
+        );
+        break;
+      }
+      case 'travel_decline_expand': {
+        const snapshot = travelPlanner.declineFurther();
+        void appendTravelMemo(
+          'pause',
+          '旅行规划先告一段落',
+          snapshot.skeleton || snapshot.speakHint,
+        );
+        this.provider.sendToolResult(
+          call.callId,
+          JSON.stringify(
+            slimTravelResult(snapshot, {
+              message:
+                'Soft close in one sentence. Offer travel_finalize_plan if they want the desktop txt.',
+            }),
+          ),
+        );
+        break;
+      }
+      case 'travel_finalize_plan': {
+        try {
+          const plan = travelPlanner.getSnapshot();
+          const written = await writeTravelPlanDesktopTxt(plan);
+          const snapshot = travelPlanner.markFinalized(written.desktopPath);
+          const fileName =
+            written.desktopPath.split(/[/\\]/).pop() || written.desktopPath;
+          this.provider.sendToolResult(
+            call.callId,
+            JSON.stringify({
+              ok: true,
+              phase: snapshot.phase,
+              desktopPath: written.desktopPath,
+              fileName,
+              speakHint: snapshot.speakHint,
+              message:
+                'ONLY say: the styled travel plan page is ready on the desktop; open it in the browser to review. One or two short sentences. Do NOT read any plan content aloud.',
+            }),
+          );
+        } catch (error) {
+          this.provider.sendToolResult(
+            call.callId,
+            `ERROR: failed to write travel plan txt: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           );
         }
         break;

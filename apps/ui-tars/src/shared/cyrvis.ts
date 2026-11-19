@@ -72,7 +72,17 @@ export type VoiceToolName =
   | 'resume_gui_task'
   | 'get_gui_status'
   | 'confirm_action'
-  | 'remember_fact';
+  | 'remember_fact'
+  | 'travel_update_plan'
+  | 'travel_get_plan'
+  | 'travel_confirm_skeleton'
+  | 'travel_probe_highlights'
+  | 'travel_set_preference'
+  | 'travel_set_constraints'
+  | 'travel_expand_aspect'
+  | 'travel_search'
+  | 'travel_decline_expand'
+  | 'travel_finalize_plan';
 
 export type CyrvisMemoryTurnRole = 'user' | 'assistant';
 
@@ -162,6 +172,26 @@ export const describeVoiceToolCall = (
       return '确认任务操作';
     case 'remember_fact':
       return '保存长期记忆';
+    case 'travel_update_plan':
+      return '更新旅行基础框架';
+    case 'travel_get_plan':
+      return '查看旅行规划状态';
+    case 'travel_confirm_skeleton':
+      return '确认旅行骨架攻略';
+    case 'travel_probe_highlights':
+      return '检索旅行大类亮点';
+    case 'travel_set_preference':
+      return '记录旅行偏好';
+    case 'travel_set_constraints':
+      return '记录旅行约束卡片';
+    case 'travel_expand_aspect':
+      return '展开旅行攻略方面';
+    case 'travel_search':
+      return '检索旅行信息';
+    case 'travel_decline_expand':
+      return '暂停旅行攻略展开';
+    case 'travel_finalize_plan':
+      return '生成旅行计划桌面摘要';
     default:
       return '调用语音工具';
   }

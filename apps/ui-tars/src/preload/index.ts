@@ -112,6 +112,30 @@ const electronHandler = {
       };
     },
   },
+  followUp: {
+    getPending: () => ipcRenderer.invoke('cyrvis:follow-up:get-pending'),
+    complete: (id: string) =>
+      ipcRenderer.invoke('cyrvis:follow-up:complete', id),
+    snooze: (id: string, delayMs = 30 * 60 * 1000) =>
+      ipcRenderer.invoke('cyrvis:follow-up:snooze', id, delayMs),
+    onPrompt: (
+      callback: (prompt: {
+        id: string;
+        reason: 'launch' | 'activate' | 'resume' | 'unlock' | 'idle';
+        createdAt: number;
+        greeting: string;
+      }) => void,
+    ) => {
+      const listener = (
+        _event: IpcRendererEvent,
+        prompt: Parameters<typeof callback>[0],
+      ) => callback(prompt);
+      ipcRenderer.on('cyrvis:follow-up:prompt', listener);
+      return () => {
+        ipcRenderer.removeListener('cyrvis:follow-up:prompt', listener);
+      };
+    },
+  },
   voice: {
     isTestMode: process.env.CYRVIS_VOICE_TEST === '1',
     // Capture runs in a hidden renderer that never plays audio; the main

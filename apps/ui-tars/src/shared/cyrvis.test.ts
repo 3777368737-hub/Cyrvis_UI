@@ -59,5 +59,11 @@ describe('Cyrvis shared UI model', () => {
       '启动电脑任务：打开记事本',
     );
     expect(describeVoiceToolCall('remember_fact')).toBe('保存长期记忆');
+    expect(describeVoiceToolCall('travel_update_plan')).toBe(
+      '更新旅行基础框架',
+    );
+    expect(describeVoiceToolCall('travel_expand_aspect')).toBe(
+      '展开旅行攻略方面',
+    );
   });
 });

@@ -99,7 +99,48 @@ export type VoiceToolCall =
   | {
       name: 'confirm_action';
       args: { task_id: string; approved: boolean };
-    };
+    }
+  | {
+      name: 'travel_update_plan';
+      args: {
+        destination?: string;
+        origin?: string;
+        start_date?: string;
+        end_date?: string;
+        companions?: string;
+        budget?: string;
+        purpose?: string;
+        transport?: string;
+        user_text?: string;
+      };
+    }
+  | { name: 'travel_get_plan'; args: Record<string, never> }
+  | { name: 'travel_confirm_skeleton'; args: Record<string, never> }
+  | { name: 'travel_probe_highlights'; args: Record<string, never> }
+  | {
+      name: 'travel_set_preference';
+      args: { interest: string; notes?: string };
+    }
+  | {
+      name: 'travel_set_constraints';
+      args: {
+        ok_with_walking?: boolean;
+        ok_with_early_start?: boolean;
+        ok_with_queues?: boolean;
+        notes?: string;
+        user_text?: string;
+      };
+    }
+  | {
+      name: 'travel_expand_aspect';
+      args: { aspect: string; notes?: string; with_search?: boolean };
+    }
+  | {
+      name: 'travel_search';
+      args: { query?: string; aspect?: string };
+    }
+  | { name: 'travel_decline_expand'; args: Record<string, never> }
+  | { name: 'travel_finalize_plan'; args: Record<string, never> };
 
 export type ProactivityReason =
   | 'task_started'

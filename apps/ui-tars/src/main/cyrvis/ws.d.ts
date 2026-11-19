@@ -1,5 +1,6 @@
 declare module 'ws' {
   import { EventEmitter } from 'node:events';
+  import type { ClientRequest, IncomingMessage } from 'node:http';
 
   export interface ClientOptions {
     headers?: Record<string, string>;
@@ -41,6 +42,7 @@ declare module 'ws' {
       callback?: (error?: Error) => void,
     ): void;
     close(code?: number, reason?: string): void;
+    terminate(): void;
 
     once(event: 'open', listener: () => void): this;
     on(event: 'open', listener: () => void): this;
@@ -60,5 +62,9 @@ declare module 'ws' {
     ): this;
     on(event: 'close', listener: (code: number, reason: Buffer) => void): this;
     removeAllListeners(event?: string): this;
+    on(
+      event: 'unexpected-response',
+      listener: (request: ClientRequest, response: IncomingMessage) => void,
+    ): this;
   }
 }

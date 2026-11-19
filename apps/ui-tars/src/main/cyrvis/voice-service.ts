@@ -94,6 +94,25 @@ let pttActive = false;
 // Hands-free by default. PTT remains available as a fallback mode.
 const pttMode = false;
 
+/** Speak a proactive reminder through the active realtime voice session. */
+export const speakProactiveText = (text: string): boolean => {
+  if (!service || !text.trim() || service.provider.isConnected?.() !== true) {
+    return false;
+  }
+  service.provider.speak(text);
+  return true;
+};
+
+/** Show locally spoken proactive text in the voice conversation as well. */
+export const publishProactiveText = (text: string): void => {
+  const normalized = text.trim();
+  if (!normalized) return;
+  broadcast('cyrvis:voice:assistant', { text: normalized, final: true });
+  void voiceMemoryService.appendTurn('assistant', normalized).catch((error) => {
+    logger.warn('[cyrvis follow-up] message persist failed', error);
+  });
+};
+
 const isExternalOutputLabel = (label: string): boolean => {
   const lower = label.toLowerCase();
   if (/cc ultimate|airpods|耳机|headset|bluetooth/.test(lower)) {

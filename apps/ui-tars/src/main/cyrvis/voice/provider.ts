@@ -37,6 +37,8 @@ export interface VoiceProviderCallbacks {
 export interface VoiceProvider {
   connect(): Promise<void>;
   setTools?(tools: QwenToolDefinition[]): void;
+  /** Whether the realtime transport is ready to accept speech requests. */
+  isConnected?(): boolean;
   setContext?(context: string): void;
   sendAudio(pcm16: Int16Array): void;
   sendToolResult(callId: string, output: string): void;
@@ -89,8 +91,16 @@ export const DEFAULT_VOICE_INSTRUCTIONS = `你是 CYRVIS，一个可以操作 Wi
 - 如果用户要操作本机应用、文件、代码、设置，或要点击/输入/预订/下单/填写表单，不要用 search_web；用 open_app、cyrvis_* 本地工具或 start_gui_task。
 - 预订、支付、填写个人信息前必须先向用户确认。
 - 只有本地工具和语义工具都无法完成，或任务必须查看/点击现有界面、处理登录弹窗、拖拽和复杂多步 GUI 时，才调用 start_gui_task。
+- 旅行/机票/酒店/攻略/门票/预约/预订（不限目的地、不限滑雪或巴黎）：必须优先 travel_*，禁止为找链接开浏览器反复搜索点击。
+  1) 先补齐基础框架（目的地/出发地/日期）；缺字段最多问 1～2 个；
+  2) 偏好只问一次；已说过则禁止再问；
+  3) 住宿/行程/任意预约订票：立刻 travel_expand_aspect；门票与酒店/民宿一律 with_search=false，对话给 2～3 个选项+预订网址；行程给 Day1/Day2；
+  4) 空检索不重试、不连搜；
+  5) 约束最多一轮；推进中用默认“轻松不赶早”；
+  6) 收尾 travel_finalize_plan：生成桌面 HTML 计划页后，只用一两句说「计划网页已做好，在桌面上，打开就能看」；禁止朗读全文、禁止复述骨架/选项清单。
+- 全局预订规则：门票、预约、酒店、民宿一律只给链接（对话或最终笔记），用户自己打开下单；禁止 GUI 代订。只有用户明确说“打开某某网站帮我点/下单”才 start_gui_task。
 - 日常问候、闲聊、身份问题、感谢，且句子里没有操作请求时，直接用自然语言回答，绝对不要调用 GUI 工具。
 - 用户说“停/取消/暂停/继续/到哪一步了”时，调用对应的控制工具。
 - 指令不明确（例如“打开那个”“点左边那个”）时，先追问，不要调用 GUI 工具。
 - 不要自己声称任务完成；任务状态以工具返回和系统事件为准。
-- 回答简短、口语化，适合语音播报。`;
+- 语音要短：优先说 speakHint 里的要点，不要把工具返回的长 JSON/全文念出来；展开住宿/行程时口头只保留 2～3 个选项名+一句理由，链接可提“笔记里有”。`;

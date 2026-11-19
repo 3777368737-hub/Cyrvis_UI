@@ -24,6 +24,7 @@ export interface QwenOmniConfig {
   model?: string;
   /** Full WebSocket URL; defaults to the DashScope realtime endpoint. */
   endpoint?: string;
+  workspaceId?: string;
   voice?: string;
   instructions?: string;
   tools?: QwenToolDefinition[];
@@ -108,6 +109,7 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
   private readonly endpoint: string;
   private voice: string;
   private configuredVoice: string | null = null;
+  private readonly workspaceId?: string;
   private readonly baseInstructions: string;
   private context = '';
   private contextDirty = false;
@@ -128,6 +130,7 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
     this.endpoint =
       config.endpoint ||
       `wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=${this.model}`;
+    this.workspaceId = config.workspaceId;
     this.voice = config.voice || 'Tina';
     this.baseInstructions = config.instructions || DEFAULT_VOICE_INSTRUCTIONS;
     this.tools = config.tools || CYRVIS_VOICE_TOOLS;
@@ -157,6 +160,10 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
     this.tools = tools;
     this.toolsDirty = true;
     this.pumpContextUpdate();
+  }
+
+  isConnected(): boolean {
+    return this.connected;
   }
 
   connect(): Promise<void> {
@@ -205,7 +212,12 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
       let ws: WebSocket;
       try {
         ws = new WebSocket(this.endpoint, {
-          headers: { Authorization: `Bearer ${this.apiKey}` },
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`,
+            ...(this.workspaceId
+              ? { 'X-DashScope-WorkSpace': this.workspaceId }
+              : {}),
+          },
         });
       } catch (error) {
         this.failConnect(
@@ -232,14 +244,37 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
         this.scheduleReconnect();
       });
 
-      ws.on('close', (_code, reason) => {
+      ws.on('unexpected-response', (_request, response) => {
+        let body = '';
+        response.setEncoding('utf8');
+        response.on('data', (chunk: string) => {
+          if (body.length < 2000) body += chunk;
+        });
+        response.on('end', () => {
+          const detail = body.trim() || response.statusMessage || 'no details';
+          const error = new Error(
+            `Qwen realtime handshake rejected (${response.statusCode}): ${detail}`,
+          );
+          this.callbacks.onError?.(error);
+          this.failConnect(error);
+          try {
+            ws.terminate();
+          } catch {
+            // Socket may already be closed by the server.
+          }
+        });
+      });
+
+      ws.on('close', (code, reason) => {
         if (this.ws !== ws) return;
         this.connected = false;
         this.ws = null;
         this.localSpeechActive = false;
         this.responseActive = false;
         this.failConnect(
-          new Error(`Qwen realtime closed: ${reason.toString()}`),
+          new Error(
+            `Qwen realtime closed (${code}): ${reason.toString() || 'no reason supplied'}`,
+          ),
         );
         this.callbacks.onClose?.();
         this.scheduleReconnect();
@@ -666,6 +701,29 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
       return;
     }
 
+    // DashScope sometimes emits quota/auth failures as a bare {code,message}
+    // payload (no type), then closes with 1006 — surface that clearly.
+    if (
+      typeof event.type !== 'string' &&
+      typeof event.code === 'string' &&
+      typeof event.message === 'string'
+    ) {
+      const detail = `${event.code}: ${event.message}`;
+      const error = new Error(
+        /FreeTierOnly|quota|exhausted/i.test(detail)
+          ? `Qwen 免费额度已用尽（${event.code}）。请到百炼/DashScope 控制台关闭「仅用免费额度」或完成付费开通后再试。`
+          : `Qwen realtime error (${detail})`,
+      );
+      this.callbacks.onError?.(error);
+      this.failConnect(error);
+      try {
+        this.ws?.close();
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
     switch (event.type) {
       case 'session.created':
         this.sendSessionUpdate();
@@ -855,6 +913,12 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
       }
       case 'error': {
         const message = JSON.stringify(event.error || event).slice(0, 1000);
+        // A rejected response.create never emits response.created. Leaving
+        // awaitingResponse set made every later utterance get dropped.
+        if (!this.responseActive) {
+          this.awaitingResponse = false;
+          this.proactivePending = false;
+        }
         // A response.cancel can race with response.done/response.created. The
         // server then reports "Conversation has no active response"; this is
         // expected and must not surface as a user-visible voice error.

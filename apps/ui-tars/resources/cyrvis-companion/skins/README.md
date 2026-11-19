@@ -17,6 +17,9 @@ beside each pack. `SHA256SUMS.json` records the downloaded image bytes.
   permission for redistribution or commercial use has not been established.
 - Local Jarvis: four GIF states from `desktop/assets/pet`, under the repository
   MIT license (preserved in `jarvis/LICENSE`).
+- Clawd: seven original animated SVGs from `ccyrene/clawd`, a fork of
+  `Hert4/clawd-window`. The README credits the project author's artwork but gives
+  no explicit redistribution/commercial license grant; see `clawd/README.md`.
 
 Review these asset terms before distributing an application containing them.
 Repository source-code licenses do not override character or asset rights.
@@ -44,4 +47,4 @@ adaptations for Cyrvis, not claims that the source packs have six voice states.
 
 Add future packs under this directory and register them in
 `src/shared/companion-skins.ts`. The right-click Appearance menu groups entries
-by source automatically; the renderer includes PNG/WebP/GIF assets at build time.
+by source automatically; the renderer includes PNG/WebP/GIF/SVG assets at build time.

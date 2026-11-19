@@ -21,6 +21,17 @@ const states: CompanionState[] = [
 ];
 
 describe('companion skins', () => {
+  it('offers Clawd with distinct local animations for every voice state', () => {
+    const skin = resolveCompanionSkin('clawd');
+    expect(skin.id).toBe('clawd');
+    expect(skin.group).toBe('Clawd');
+    const images = states.map((state) => companionSkinImage(skin, state));
+    expect(new Set(images).size).toBe(states.length);
+    for (const file of images) {
+      expect(file).toMatch(/^skins\/clawd\/clawd-.*\.svg$/);
+      expect(readFileSync(resolve(root, file), 'utf8')).toContain('@keyframes');
+    }
+  });
   it('assigns character voices and keeps a default for missing saved skins', () => {
     expect(resolveCompanionSkin('jarvis').voice).toBe('Raymond');
     expect(resolveCompanionSkin('awesome-agumon--legeling').voice).toBe('Evan');

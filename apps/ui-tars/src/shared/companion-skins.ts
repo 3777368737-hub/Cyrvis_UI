@@ -5,7 +5,7 @@ export interface CompanionSkin {
   name: string;
   group: string;
   directory: string;
-  format: 'poses' | 'codex' | 'starpie' | 'gif';
+  format: 'poses' | 'codex' | 'starpie' | 'gif' | 'svg';
   /** Qwen-Omni voice used whenever this companion is selected. */
   voice: string;
 }
@@ -56,6 +56,14 @@ export const companionSkins: readonly CompanionSkin[] = [
     format: 'gif',
     voice: 'Raymond',
   },
+  {
+    id: 'clawd',
+    name: 'Clawd · 像素小螃蟹',
+    group: 'Clawd',
+    directory: 'skins/clawd/',
+    format: 'svg',
+    voice: 'Ryan',
+  },
 ];
 
 /** Stored selections may outlive a removed/renamed asset pack. */
@@ -79,6 +87,17 @@ export function codexAnimation(state: CompanionState) {
 export function companionSkinImage(skin: CompanionSkin, state: CompanionState) {
   if (skin.format === 'codex') return `${skin.directory}spritesheet.webp`;
   if (skin.format === 'poses') return `robot-${state}.png`;
+  if (skin.format === 'svg') {
+    const animations: Record<CompanionState, string> = {
+      idle: 'idle-living',
+      listening: 'notification',
+      thinking: 'working-thinking',
+      speaking: 'happy',
+      working: 'working-typing',
+      sleeping: 'sleeping',
+    };
+    return `${skin.directory}clawd-${animations[state]}.svg`;
+  }
   const files: Record<CompanionState, string> =
     skin.format === 'starpie'
       ? {

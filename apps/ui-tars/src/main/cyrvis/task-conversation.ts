@@ -7,6 +7,8 @@ import type { ControllerEvent, TaskSnapshot } from './types';
 
 export interface TaskConversationCoordinatorOptions {
   speak: (text: string) => void;
+  /** Drop a queued proactive line that has not been sent yet. */
+  clearSpeech?: () => void;
   getStatus: () => TaskSnapshot;
   startAckDelayMs?: number;
   progressIntervalMs?: number;
@@ -20,6 +22,10 @@ export class TaskConversationCoordinator {
   private lastProgressAt = 0;
   private lastStalledAt = 0;
   private lastStep = 0;
+  private lastSpokenNode = '';
+  // Progress/stall lines are only valid while this task is active. A queued
+  // "still processing" line must never speak after done/failed/cancelled.
+  private terminal = false;
   private readonly startAckDelayMs: number;
   private readonly progressIntervalMs: number;
   private readonly stalledCooldownMs: number;
@@ -42,34 +48,45 @@ export class TaskConversationCoordinator {
     switch (event.type) {
       case 'task_started': {
         this.clearStartAck();
+        this.terminal = false;
         this.lastStep = 0;
+        this.lastSpokenNode = '';
         this.startAckTimer = setTimeout(() => {
           this.startAckTimer = null;
           if (this.lastOutputAt >= eventAt) {
             return;
           }
-          this.options.speak('好的，任务已开始，我会持续向你反馈进度。');
+          this.options.speak('任务已开始。');
         }, this.startAckDelayMs);
         break;
       }
       case 'step_update':
         if (
+          !this.terminal &&
+          this.options.getStatus().status === 'executing' &&
           event.step > this.lastStep &&
           eventAt - this.lastProgressAt >= this.progressIntervalMs
         ) {
+          const summary = (event.summary || '').trim();
           this.lastStep = event.step;
           this.lastProgressAt = eventAt;
+          if (summary && summary === this.lastSpokenNode) {
+            break;
+          }
+          this.lastSpokenNode = summary;
           this.options.speak(
-            `正在执行第 ${event.step} 步：${event.summary || '继续处理当前操作'}`,
+            summary ? `任务节点：${summary}` : '任务继续处理中。',
           );
         }
         break;
       case 'task_stalled':
-        if (eventAt - this.lastStalledAt >= this.stalledCooldownMs) {
+        if (
+          !this.terminal &&
+          this.options.getStatus().status === 'executing' &&
+          eventAt - this.lastStalledAt >= this.stalledCooldownMs
+        ) {
           this.lastStalledAt = eventAt;
-          this.options.speak(
-            `任务还在处理，目前进行到第 ${event.step} 步，请稍等。`,
-          );
+          this.options.speak('任务还在处理，请稍等。');
         }
         break;
       case 'task_needs_user':
@@ -77,25 +94,28 @@ export class TaskConversationCoordinator {
         this.options.speak(event.question || '这里需要你确认一下。');
         break;
       case 'task_paused':
+        this.options.clearSpeech?.();
         this.options.speak('任务已暂停。');
         break;
       case 'task_resumed':
         this.options.speak('任务继续执行。');
         break;
       case 'task_done':
+        this.terminal = true;
         this.clearStartAck();
-        this.options.speak(
-          event.summary.trim()
-            ? `任务完成。${event.summary.trim()}`
-            : '任务已经完成。',
-        );
+        this.options.clearSpeech?.();
+        this.options.speak('任务已经完成。');
         break;
       case 'task_failed':
+        this.terminal = true;
         this.clearStartAck();
+        this.options.clearSpeech?.();
         this.options.speak(`任务失败：${event.error}`);
         break;
       case 'task_cancelled':
+        this.terminal = true;
         this.clearStartAck();
+        this.options.clearSpeech?.();
         this.options.speak('任务已取消。');
         break;
       default:
@@ -109,17 +129,15 @@ export class TaskConversationCoordinator {
       case 'starting':
         return '任务正在启动，还没有进入第一个执行步骤。';
       case 'executing':
-        return `任务正在执行，第 ${task.step} 步${
-          task.lastSummary ? `：${task.lastSummary}` : ''
-        }。`;
+        return task.lastSummary
+          ? `任务正在执行，当前节点：${task.lastSummary}。`
+          : '任务正在执行。';
       case 'paused':
-        return `任务已暂停在第 ${task.step} 步。`;
+        return '任务已暂停。';
       case 'cancelling':
         return '任务正在取消。';
       case 'done':
-        return task.lastSummary
-          ? `任务已完成：${task.lastSummary}`
-          : '任务已经完成。';
+        return '任务已经完成。';
       case 'failed':
         return `任务失败：${task.error || '未知错误'}`;
       case 'cancelled':
@@ -129,12 +147,20 @@ export class TaskConversationCoordinator {
     }
   }
 
+  /** Hard stop: invalidate queued progress/stall lines immediately. */
+  markStopped(): void {
+    this.terminal = true;
+    this.clearStartAck();
+    this.options.clearSpeech?.();
+  }
+
   reset(): void {
     this.clearStartAck();
     this.lastOutputAt = 0;
     this.lastProgressAt = 0;
     this.lastStalledAt = 0;
     this.lastStep = 0;
+    this.lastSpokenNode = '';
   }
 
   dispose(): void {

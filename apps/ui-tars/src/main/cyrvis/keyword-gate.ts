@@ -412,6 +412,10 @@ export class KeywordGate {
    * Exposed so the energy fallback in voice-service can use the same verifier
    * when KWS misses a short bare "停".
    */
+  get speakerThreshold(): number {
+    return this.threshold;
+  }
+
   verify(recent: Int16Array[]): number | null {
     if (!this.extractor || !this.embedding) {
       return null;

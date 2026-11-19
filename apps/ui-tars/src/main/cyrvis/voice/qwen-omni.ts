@@ -66,6 +66,9 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
   private pendingConnect: PendingConnect | null = null;
   private connectPromise: Promise<void> | null = null;
   private proactivePending = false;
+  private proactiveItemId: string | null = null;
+  private proactiveItemPending = false;
+  private proactiveDeleteRequested = false;
   private cancelRequested = false;
   private localSpeechActive = false;
   private localSpeechMs = 0;
@@ -181,6 +184,9 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
     this.bufferedAudioMs = 0;
     this.responseActive = false;
     this.awaitingResponse = false;
+    this.proactiveItemId = null;
+    this.proactiveItemPending = false;
+    this.proactiveDeleteRequested = false;
     this.activeResponseId = null;
     this.pendingToolResults = [];
     this.pendingSpeak = null;
@@ -413,6 +419,7 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
     this.responseActive = false;
     this.awaitingResponse = false;
     this.activeResponseId = null;
+    this.deleteProactiveItem();
     this.pendingSpeak = null;
     this.pendingToolResults = [];
     this.playbackBusy = false;
@@ -435,6 +442,12 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
       this.cancelRequested = false;
       this.pumpResponseQueue();
     }, 400);
+  }
+
+  cancelPendingSpeech(): void {
+    // Task lifecycle messages are single-slot. Clearing this prevents a
+    // queued "still processing" line from being spoken after task_done.
+    this.pendingSpeak = null;
   }
 
   speak(text: string): void {
@@ -474,14 +487,28 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
   }
 
   private sendProactiveSpeak(text: string): void {
-    this.proactivePending = true;
+    this.proactivePending = false;
     this.awaitingResponse = true;
     this.activeResponseId = null;
+    this.proactiveItemPending = true;
+    this.proactiveItemId = null;
+    this.proactiveDeleteRequested = false;
+    // Session instructions alone are not enough: the model answers the last
+    // user message, which may be a stale "where is Service Demo?" question.
+    // Inject a temporary user item for this status line, then delete it after
+    // the response so it does not pollute later conversation.
     this.send({
-      event_id: eventId('event_proactive_update'),
-      type: 'session.update',
-      session: {
-        instructions: `${this.instructions}\n\n[系统主动播报] 现在请只用一句自然、简短的中文对用户说：${text}`,
+      event_id: eventId('event_proactive_item'),
+      type: 'conversation.item.create',
+      item: {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: `[系统主动播报] 请只朗读下面这一句，不要反问、不要补充、不要回答其他问题：${text}`,
+          },
+        ],
       },
     });
     this.send({
@@ -489,6 +516,26 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
       type: 'response.create',
     });
     console.log('[cyrvis provider] proactive speech sent');
+  }
+
+  private deleteProactiveItem(): void {
+    const itemId = this.proactiveItemId;
+    const wasPending = this.proactiveItemPending;
+    this.proactiveItemId = null;
+    this.proactiveItemPending = false;
+    if (!itemId) {
+      if (wasPending) {
+        this.proactiveDeleteRequested = true;
+      }
+      return;
+    }
+    this.proactiveDeleteRequested = false;
+    this.send({
+      event_id: eventId('event_proactive_delete'),
+      type: 'conversation.item.delete',
+      item_id: itemId,
+    });
+    console.log('[cyrvis provider] proactive item deleted', { itemId });
   }
 
   private pumpResponseQueue(): void {
@@ -568,6 +615,8 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
     this.connected = false;
     this.awaitingResponse = false;
     this.activeResponseId = null;
+    this.proactiveItemId = null;
+    this.proactiveItemPending = false;
     this.pendingToolResults = [];
     this.pendingSpeak = null;
     this.playbackBusy = false;
@@ -645,6 +694,24 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
         // re-emit ready so the hands-free session wakes up again.
         this.callbacks.onReady?.();
         break;
+      case 'conversation.item.created': {
+        const item = event.item as { id?: string; role?: string } | undefined;
+        if (
+          (this.proactiveItemPending || this.proactiveDeleteRequested) &&
+          item?.role === 'user' &&
+          item.id
+        ) {
+          this.proactiveItemId = item.id;
+          this.proactiveItemPending = false;
+          console.log('[cyrvis provider] proactive item created', {
+            itemId: item.id,
+          });
+          if (this.proactiveDeleteRequested) {
+            this.deleteProactiveItem();
+          }
+        }
+        break;
+      }
       case 'input_audio_buffer.speech_started':
         this.callbacks.onSpeechStarted?.();
         break;
@@ -752,6 +819,7 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
         this.responseActive = false;
         this.awaitingResponse = false;
         this.activeResponseId = null;
+        this.deleteProactiveItem();
         const doneStatus = (event.response as { status?: string } | undefined)
           ?.status;
         if (this.cancelRequested || doneStatus === 'cancelled') {
@@ -935,6 +1003,10 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
     const requiredSilence = Math.max(
       this.silenceDurationMs,
       this.postBargeSilenceMs,
+      // Mid-sentence thinking pauses in Chinese often exceed 900ms; 900ms
+      // still cut "……并且。" before the rest of the instruction. 1.5s keeps
+      // normal commands intact without making the assistant feel sluggish.
+      1_500,
     );
     if (this.localSilenceMs >= requiredSilence) {
       this.finishLocalUtterance();
@@ -1064,6 +1136,12 @@ export class QwenOmniProvider implements InteractiveVoiceProvider {
       return;
     }
     this.proactivePending = false;
+    // A queued proactive line will replace the instructions again. Sending a
+    // restore now creates two session.update acks and lets response.create
+    // race the restore, which produced answers to stale user audio.
+    if (this.pendingSpeak) {
+      return;
+    }
     this.send({
       event_id: eventId('event_restore'),
       type: 'session.update',

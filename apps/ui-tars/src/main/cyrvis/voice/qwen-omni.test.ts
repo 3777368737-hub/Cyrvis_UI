@@ -256,6 +256,43 @@ describe('QwenOmniProvider connection lifecycle', () => {
     expect(sockets).toHaveLength(2);
     expect(callbacks.onReady).toHaveBeenCalledTimes(1);
   });
+
+  it('speaks a proactive line through a temporary user item', async () => {
+    const { provider } = setup();
+    const connected = provider.connect();
+    sockets[0].readyState = 1;
+    receive(sockets[0], { type: 'session.created' });
+    sockets[0].ready();
+    await connected;
+
+    provider.speak('编码任务完成');
+    const messages = sent(sockets[0]);
+    const item = messages.find(
+      (message) => message.type === 'conversation.item.create',
+    );
+    expect(item?.item?.role).toBe('user');
+    expect(item?.item?.content?.[0]?.text).toContain('编码任务完成');
+    expect(messages.some((message) => message.type === 'response.create')).toBe(
+      true,
+    );
+
+    receive(sockets[0], {
+      type: 'conversation.item.created',
+      item: { id: 'item_proactive', role: 'user' },
+    });
+    receive(sockets[0], {
+      type: 'response.done',
+      response: { status: 'completed' },
+    });
+
+    expect(
+      sent(sockets[0]).some(
+        (message) =>
+          message.type === 'conversation.item.delete' &&
+          message.item_id === 'item_proactive',
+      ),
+    ).toBe(true);
+  });
 });
 
 describe('QwenOmniProvider tool surface', () => {

@@ -41,7 +41,7 @@ describe('TaskConversationCoordinator', () => {
       source: 'voice',
     });
     await vi.advanceTimersByTimeAsync(700);
-    expect(spoken).toEqual(['好的，任务已开始，我会持续向你反馈进度。']);
+    expect(spoken).toEqual(['任务已开始。']);
   });
 
   it('does not duplicate a model response that arrives before the start fallback', async () => {
@@ -85,9 +85,47 @@ describe('TaskConversationCoordinator', () => {
     });
     expect(spoken).toEqual([
       '要使用哪个浏览器？',
-      '任务完成。已经打开浏览器。',
+      '任务已经完成。',
       '任务失败：网络不可用',
     ]);
+  });
+
+  it('drops stale progress speech after a terminal status', () => {
+    const spoken: string[] = [];
+    const clearSpeech = vi.fn();
+    let status: TaskSnapshot = snapshot({ status: 'executing' });
+    const coordinator = new TaskConversationCoordinator({
+      speak: (text) => spoken.push(text),
+      clearSpeech,
+      getStatus: () => status,
+    });
+
+    coordinator.onEvent({
+      type: 'task_stalled',
+      taskId: 'task-1',
+      step: 2,
+    });
+    status = snapshot({ status: 'done', endedAt: 2 });
+    coordinator.onEvent({
+      type: 'task_done',
+      taskId: 'task-1',
+      summary: '已经完成。',
+    });
+    coordinator.onEvent({
+      type: 'step_update',
+      taskId: 'task-1',
+      step: 3,
+      summary: '迟到的进度',
+      actionType: 'click',
+    });
+    coordinator.onEvent({
+      type: 'task_stalled',
+      taskId: 'task-1',
+      step: 3,
+    });
+
+    expect(clearSpeech).toHaveBeenCalledTimes(1);
+    expect(spoken).toEqual(['任务还在处理，请稍等。', '任务已经完成。']);
   });
 
   it('describes the latest task status for spoken queries', () => {
@@ -96,7 +134,7 @@ describe('TaskConversationCoordinator', () => {
       getStatus: () => snapshot(),
     });
     expect(coordinator.describeStatus()).toBe(
-      '任务正在执行，第 2 步：打开页面。',
+      '任务正在执行，当前节点：打开页面。',
     );
   });
 });

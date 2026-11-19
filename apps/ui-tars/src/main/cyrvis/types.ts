@@ -74,6 +74,21 @@ export type VoiceToolCall =
       };
     }
   | {
+      name: 'create_text_file';
+      args: {
+        path: string;
+        content: string;
+        open?: boolean;
+        overwrite?: boolean;
+      };
+    }
+  | {
+      name: 'start_coding_task';
+      args: { instruction: string; workspace?: string };
+    }
+  | { name: 'get_coding_status'; args: Record<string, never> }
+  | { name: 'cancel_coding_task'; args: Record<string, never> }
+  | {
       name: 'open_site';
       args: { site: string; query?: string; task_instruction?: string };
     }

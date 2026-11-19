@@ -198,6 +198,88 @@ export const CYRVIS_VOICE_TOOLS: QwenToolDefinition[] = [
   {
     type: 'function',
     function: {
+      name: 'create_text_file',
+      description:
+        'Create or overwrite a text file and optionally open it with the default app. Use this for deterministic text/document creation, especially "打开记事本，从1写到100", "新建 todo.txt，写入..." or "把这段内容保存到桌面". Generate the full file content yourself and pass it here. Do NOT use open_app with task_instruction or start_gui_task for this kind of deterministic writing. Paths may use desktop/downloads/documents aliases or be absolute.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description:
+              'Target file path, e.g. "桌面/numbers.txt" or an absolute path.',
+          },
+          content: {
+            type: 'string',
+            description: 'Complete text content to write.',
+          },
+          open: {
+            type: 'boolean',
+            description:
+              'Open the file with its default app after writing. Default true.',
+          },
+          overwrite: {
+            type: 'boolean',
+            description:
+              'Replace an existing file. Only set true after the user agrees to overwrite.',
+          },
+        },
+        required: ['path', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'start_coding_task',
+      description:
+        'Start a repository-level coding task with the coding agent. Use only for code tasks: read/edit multiple files, fix a bug, implement an interface, write/run tests, inspect a repository. Do NOT use for opening apps, ordinary text files, web search, or GUI interaction. The agent works only inside the configured demo workspace and asks before running shell commands.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instruction: {
+            type: 'string',
+            description:
+              'Self-contained coding instruction, including the expected files, behavior, and test command when known.',
+          },
+          workspace: {
+            type: 'string',
+            description:
+              'Optional workspace. Omit to use the configured CYRVIS-demo workspace.',
+          },
+        },
+        required: ['instruction'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_coding_status',
+      description:
+        'Get the current coding task status, last message, result, and git diff summary.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'cancel_coding_task',
+      description: 'Cancel the running coding task and stop its agent process.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'open_site',
       description:
         'Open a known website (Bilibili, Taobao, JD, YouTube, Zhihu, Weibo, Xiaohongshu, Baidu, Google, Bing, GitHub) for bare navigation requests like "打开B站/打开淘宝/打开YouTube". Do NOT use search_web or GUI clicking for these. If the user also wants a search inside the site ("打开B站搜一下猫"), set query. If they want you to interact with the page afterwards, set task_instruction.',

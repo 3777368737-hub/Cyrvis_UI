@@ -167,7 +167,14 @@ const unsupported = (feature: string): never => {
 
 export class LocalDesktopHost implements DesktopHost {
   async openPath(target: string): Promise<void> {
-    await this.openTarget(target);
+    // ShellExecute (shell.openPath) opens document associations in a visible
+    // window. The old hidden PowerShell child could launch Notepad without a
+    // window, and it also returned success even when nothing appeared.
+    const { shell } = await import('electron');
+    const error = await shell.openPath(target);
+    if (error) {
+      throw new Error(error);
+    }
   }
 
   async openUrl(url: string): Promise<void> {
@@ -410,21 +417,6 @@ try {
       totalBytes: stats.blocks * stats.bsize,
       freeBytes: stats.bavail * stats.bsize,
     };
-  }
-
-  private async openTarget(target: string): Promise<void> {
-    if (process.platform === 'win32') {
-      await runPowerShell('Start-Process -FilePath $env:CYRV_TOOL_TARGET', {
-        CYRV_TOOL_TARGET: target,
-      });
-      return;
-    }
-    const command = process.platform === 'darwin' ? 'open' : 'xdg-open';
-    await new Promise<void>((resolve, reject) => {
-      execFile(command, [target], (error) =>
-        error ? reject(error) : resolve(),
-      );
-    });
   }
 
   private async listUnixProcesses(): Promise<ProcessInfo[]> {

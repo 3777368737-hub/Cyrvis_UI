@@ -106,7 +106,13 @@ if (-not $target) {
   exit 1
 }
 
-[FocusBrowser]::ShowWindow($target.Handle, 9) | Out-Null
+# Spoken searches should fill the screen. Restore first if the browser was
+# minimized, then maximize; SW_MAXIMIZE is a no-op for an already maximized
+# window, so this does not fight the user's existing layout.
+if ([FocusBrowser]::IsIconic($target.Handle)) {
+  [FocusBrowser]::ShowWindow($target.Handle, 9) | Out-Null
+}
+[FocusBrowser]::ShowWindow($target.Handle, 3) | Out-Null
 [FocusBrowser]::BringWindowToTop($target.Handle) | Out-Null
 $currentThread = [FocusBrowser]::GetCurrentThreadId()
 $foreground = [FocusBrowser]::GetForegroundWindow()

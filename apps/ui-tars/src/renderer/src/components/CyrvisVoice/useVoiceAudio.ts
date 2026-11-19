@@ -102,9 +102,11 @@ const PREFERRED_MIC_PATTERN =
  * The Windows default input is often the ToDesk virtual cable, which produces
  * silence. Prefer a real microphone instead of marking voice as ready.
  */
-const openMicrophoneStream = async (): Promise<MediaStream> => {
+const openMicrophoneStream = async (
+  echoCancellation: boolean,
+): Promise<MediaStream> => {
   const constraints: MediaTrackConstraints = {
-    echoCancellation: true,
+    echoCancellation,
     noiseSuppression: false,
     autoGainControl: true,
     channelCount: 1,
@@ -177,6 +179,13 @@ export function useVoiceAudio() {
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const silentGainRef = useRef<GainNode | null>(null);
+  const rawCaptureContextRef = useRef<AudioContext | null>(null);
+  const rawStreamRef = useRef<MediaStream | null>(null);
+  const rawSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const rawProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const rawGainRef = useRef<GainNode | null>(null);
+  const rawKeywordPcmRef = useRef(new Uint8Array());
+  const rawKeywordActiveRef = useRef(false);
   const playerRef = useRef<StreamingPlayer | null>(null);
   const legacyPlayerRef = useRef<WebAudioStreamPlayer | null>(null);
   const playerStartRef = useRef<Promise<void> | null>(null);
@@ -409,15 +418,12 @@ export function useVoiceAudio() {
       const samples = downsamplePcm(input, inputSampleRate);
       const rms = calculateRms(input);
 
-      if (assistantSpeakingRef.current) {
-        bargePrerollRef.current = appendAudioPreroll(
-          bargePrerollRef.current,
-          input,
-          MAX_BARGE_PREROLL_CHUNKS,
-        );
-        // Keep the local stop-word detector fed during assistant playback.
-        // The provider drops microphone audio in this window, so this is a
-        // separate KWS-only path.
+      // Keep the local stop-word detector fed even when the assistant is
+      // silent: a GUI/coding task may be running with no TTS, and "停一下"
+      // must cancel it immediately instead of waiting for the final ASR text.
+      // When the dedicated raw KWS stream is active, do not duplicate the
+      // AEC-processed microphone into the keyword detector.
+      if (!rawKeywordActiveRef.current) {
         keywordPcmRef.current = appendPcm16(
           keywordPcmRef.current,
           floatToPcm16(samples),
@@ -427,6 +433,14 @@ export function useVoiceAudio() {
         for (const chunk of keywordChunks.chunks) {
           window.electron.voice.sendKeywordAudio(chunk.buffer as ArrayBuffer);
         }
+      }
+
+      if (assistantSpeakingRef.current) {
+        bargePrerollRef.current = appendAudioPreroll(
+          bargePrerollRef.current,
+          input,
+          MAX_BARGE_PREROLL_CHUNKS,
+        );
         const speakerMode = audioModeRef.current === 'speaker';
         const nowDiag = Date.now();
         const playbackMs = assistantPlaybackStartedAtRef.current
@@ -645,6 +659,18 @@ export function useVoiceAudio() {
     mediaStreamRef.current = null;
     await captureContextRef.current?.close();
     captureContextRef.current = null;
+    rawProcessorRef.current?.disconnect();
+    rawProcessorRef.current = null;
+    rawSourceRef.current?.disconnect();
+    rawSourceRef.current = null;
+    rawGainRef.current?.disconnect();
+    rawGainRef.current = null;
+    rawStreamRef.current?.getTracks().forEach((track) => track.stop());
+    rawStreamRef.current = null;
+    await rawCaptureContextRef.current?.close();
+    rawCaptureContextRef.current = null;
+    rawKeywordPcmRef.current = new Uint8Array();
+    rawKeywordActiveRef.current = false;
     streamingUtteranceActiveRef.current = false;
     bargePendingRef.current = false;
     pendingPcmRef.current = new Uint8Array();
@@ -655,7 +681,13 @@ export function useVoiceAudio() {
     if (mediaStreamRef.current) {
       return;
     }
-    const stream = await openMicrophoneStream();
+    // Headset mode uses the raw microphone so KWS can hear a short "停一下".
+    // Speaker mode keeps AEC to reduce the assistant's own TTS echo. The
+    // raw-speaker trial caused self-interruption on TTS echo (00:05), so it
+    // was rolled back.
+    const stream = await openMicrophoneStream(
+      audioModeRef.current === 'speaker',
+    );
     mediaStreamRef.current = stream;
     const audioContext = new AudioContext();
     captureContextRef.current = audioContext;
@@ -688,6 +720,48 @@ export function useVoiceAudio() {
       setError('Microphone disconnected');
       window.electron.voice.notifyCaptureError('Microphone disconnected');
     });
+
+    // Dedicated raw mic stream for KWS only. The main stream may be AEC
+    // processed in speaker mode, which suppresses a short "停一下"; KWS must
+    // hear the raw microphone while ASR keeps AEC.
+    try {
+      const rawStream = await openMicrophoneStream(false);
+      rawStreamRef.current = rawStream;
+      const rawContext = new AudioContext();
+      rawCaptureContextRef.current = rawContext;
+      await rawContext.resume();
+      const rawSource = rawContext.createMediaStreamSource(rawStream);
+      rawSourceRef.current = rawSource;
+      const rawProcessor = rawContext.createScriptProcessor(4096, 1, 1);
+      rawProcessorRef.current = rawProcessor;
+      rawProcessor.onaudioprocess = (event) => {
+        const rawSamples = downsamplePcm(
+          event.inputBuffer.getChannelData(0),
+          rawContext.sampleRate,
+        );
+        rawKeywordPcmRef.current = appendPcm16(
+          rawKeywordPcmRef.current,
+          floatToPcm16(rawSamples),
+        );
+        const rawChunks = takePcmChunks(rawKeywordPcmRef.current, 320 * 2);
+        rawKeywordPcmRef.current = rawChunks.remainder;
+        for (const chunk of rawChunks.chunks) {
+          window.electron.voice.sendKeywordAudio(chunk.buffer as ArrayBuffer);
+        }
+      };
+      const rawGain = rawContext.createGain();
+      rawGain.gain.value = 0;
+      rawGainRef.current = rawGain;
+      rawSource.connect(rawProcessor);
+      rawProcessor.connect(rawGain);
+      rawGain.connect(rawContext.destination);
+      rawKeywordActiveRef.current = true;
+      console.log('[cyrvis] raw KWS capture ready');
+    } catch (rawError) {
+      rawKeywordActiveRef.current = false;
+      console.warn('[cyrvis] raw KWS capture failed', rawError);
+    }
+
     setMicReady(true);
     setError(null);
     window.electron.voice.notifyCaptureReady(

@@ -3,7 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import fs from 'node:fs/promises';
 import os from 'node:os';
+import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -293,6 +295,31 @@ describe('unified navigation', () => {
       expect(new Set(names).size).toBe(names.length);
       expect(x.matrix.registry.get('web.search')).toBeDefined();
     } finally {
+      x.dispose();
+    }
+  });
+
+  it('creates deterministic text files without starting the GUI agent', async () => {
+    const x = await setupNavigation();
+    const directory = await fs.mkdtemp(
+      path.join(os.tmpdir(), 'cyrvis-text-file-'),
+    );
+    const file = path.join(directory, 'numbers.txt');
+    try {
+      x.provider.toolCall({
+        callId: 'text-file',
+        name: 'create_text_file',
+        args: { path: file, content: '1\n2\n3', open: true },
+      });
+      await flush();
+      await flush();
+      await flush();
+
+      expect(await fs.readFile(file, 'utf8')).toBe('1\n2\n3');
+      expect(x.adapter.started).toBe(false);
+      expect(x.provider.toolResults.at(-1)?.output).toContain('FILE_CREATED');
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
       x.dispose();
     }
   });

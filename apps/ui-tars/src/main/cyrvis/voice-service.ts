@@ -26,7 +26,9 @@ import {
 } from '@shared/cyrvis';
 
 import { startCaptureService, type CaptureService } from './capture-service';
+import { CodingAgentService } from './coding-agent';
 import { CyrvisController } from './controller';
+import { openApp } from './desktop-actions';
 import { ElectronGUIAdapter } from './gui-adapter';
 import { KeywordGate } from './keyword-gate';
 import { voiceMemoryService } from './memory';
@@ -193,12 +195,12 @@ interface SpeakerProbeState {
 
 const speakerEchoDetector = new SpeakerEchoDetector();
 let speakerProbe: SpeakerProbeState | null = null;
+let speakerBargeConfirmTimer: ReturnType<typeof setTimeout> | null = null;
 let speakerCandidateMs = 0;
 // Headset mode has no meaningful speaker echo; use direct energy barge so a
 // short "停" is never lost to a 700ms probe confirmation window.
 let headsetBargeMs = 0;
 let speakerResumeSuppressUntil = 0;
-let deferredBargeGuiStop = false;
 let lastSpeakerDiagnosticAt = 0;
 let voiceprintPending = false;
 let lastVoiceprintAt = 0;
@@ -323,8 +325,13 @@ const recentForVerification = (): Int16Array[] => {
   return total >= 8000 ? capturePreroll : keywordPreroll;
 };
 
+const recentKeywordForVerification = (): Int16Array[] => {
+  const total = keywordPreroll.reduce((sum, chunk) => sum + chunk.length, 0);
+  return total >= 8000 ? keywordPreroll : [];
+};
+
 const feedHybridKeywordAudio = (pcm16: Int16Array): void => {
-  if (!assistantPlaybackActive || !keywordGate?.available) {
+  if (!keywordGate?.available) {
     return;
   }
   keywordPreroll.push(pcm16.slice());
@@ -1049,11 +1056,14 @@ const broadcastPtt = () => {
   broadcast('cyrvis:voice:ptt', { active: pttActive, mode: pttMode });
 };
 
-const triggerBargeIn = () => {
+const triggerBargeIn = (hardStop = false) => {
   if (!service) {
     return;
   }
-  deferredBargeGuiStop = false;
+  if (speakerBargeConfirmTimer) {
+    clearTimeout(speakerBargeConfirmTimer);
+    speakerBargeConfirmTimer = null;
+  }
   logger.info('[cyrvis voice] barge-in');
   if (bargeTrace) {
     bargeTrace.bargeAt = Date.now();
@@ -1070,9 +1080,9 @@ const triggerBargeIn = () => {
     service.provider.muteMicFor(BARGE_MIC_TAIL_MS[selectedVoiceEngine]);
   }
   service.brain.forceAwake();
-  service.brain.handleBargeStop();
+  service.brain.handleBargeStop(hardStop);
   broadcast('cyrvis:voice:response-stopped');
-  emitActivity('speech', '已打断助手回答');
+  emitActivity('speech', hardStop ? '已停止任务' : '已打断助手回答');
 };
 
 const setPttActive = (active: boolean) => {
@@ -1475,13 +1485,57 @@ const registerVoiceIpc = () => {
     if (!service) {
       return;
     }
-    logger.info('[cyrvis voice] speech-only barge-in');
-    assistantPlaybackActive = false;
-    deferredBargeGuiStop = true;
-    service.provider.bargeIn({ forceCommit: false });
-    service.provider.muteMicFor(BARGE_MIC_TAIL_MS[selectedVoiceEngine]);
-    service.brain.forceAwake();
-    broadcast('cyrvis:voice:response-stopped');
+    const runBarge = () => {
+      if (!service) {
+        return;
+      }
+      logger.info('[cyrvis voice] speech-only barge-in');
+      assistantPlaybackActive = false;
+      service.provider.bargeIn({ forceCommit: false });
+      service.brain.handleBargeStop();
+      service.provider.muteMicFor(BARGE_MIC_TAIL_MS[selectedVoiceEngine]);
+      service.brain.forceAwake();
+      broadcast('cyrvis:voice:response-stopped');
+    };
+
+    if (speakerOutputMode || externalOutput) {
+      // Legacy fast mode: accept energy barge immediately (yesterday's feel).
+      // Echo protection still comes from the renderer threshold + AEC and the
+      // transcript echo filters; it is not perfect and can self-interrupt.
+      // Set CYRVIS_SPEAKER_BARGE_FAST=0 to restore the 200ms VAD gate.
+      if (process.env.CYRVIS_SPEAKER_BARGE_FAST !== '0') {
+        if (service.brain.isTaskSpeechActive()) {
+          logger.info(
+            '[cyrvis voice] speaker energy barge ignored during task speech',
+          );
+          return;
+        }
+        logger.info('[cyrvis voice] speaker energy barge immediate (legacy)');
+        runBarge();
+        return;
+      }
+      if (service.brain.getState().userSpeaking) {
+        runBarge();
+        return;
+      }
+      if (speakerBargeConfirmTimer) {
+        clearTimeout(speakerBargeConfirmTimer);
+      }
+      speakerBargeConfirmTimer = setTimeout(() => {
+        speakerBargeConfirmTimer = null;
+        if (service?.brain.getState().userSpeaking) {
+          logger.info('[cyrvis voice] speaker energy barge confirmed by VAD');
+          runBarge();
+        } else {
+          logger.info(
+            '[cyrvis voice] speaker energy barge ignored (no local speech)',
+          );
+        }
+      }, 200);
+      return;
+    }
+
+    runBarge();
   });
 
   ipcMain.on('cyrvis:voice:force-awake', () => {
@@ -1525,6 +1579,15 @@ export const startVoiceService = (): VoiceService | null => {
   }
 
   const controller = new CyrvisController(new ElectronGUIAdapter());
+  const codingAgent = new CodingAgentService({
+    workspace:
+      process.env.CYRVIS_CODING_WORKSPACE?.trim() ||
+      'D:\\Desktop\\project\\CYRVIS-demo',
+  });
+  logger.info('[cyrvis coding] configured', {
+    workspace: codingAgent.getWorkspace(),
+    model: process.env.CYRVIS_CODING_MODEL || 'deepseek-flash',
+  });
   const companionStore = getCompanionStore();
   const desktopHost = new LocalDesktopHost();
   const runtimeRefreshMs = Number(process.env.CYRVIS_SYSTEM_RUNTIME_REFRESH_MS);
@@ -1670,14 +1733,37 @@ export const startVoiceService = (): VoiceService | null => {
             fastToolMatrix?.router.isPendingConfirmationReply(text) === true;
           const explicitConfirmation =
             final && fastToolMatrix?.router.isConfirmationIntent(text) === true;
-          if (final && deferredBargeGuiStop) {
-            deferredBargeGuiStop = false;
-            const keepGuiRunning =
-              /暂停|继续|恢复|进度|第几步|pause|resume|progress|status/i.test(
-                text,
+          // Opt-in only: the enrolled embedding does not reliably match the
+          // Bluetooth/AEC microphone window on this machine (real user speech
+          // scored 0.01-0.05 against a 0.22 threshold). Keep the implementation
+          // for a re-enrolled/calibrated setup, but do not reject ASR by
+          // default.
+          const asrVoiceprintEnabled =
+            process.env.CYRVIS_ASR_VOICEPRINT_GATE === '1';
+          if (
+            final &&
+            asrVoiceprintEnabled &&
+            text.trim() &&
+            (speakerOutputMode || externalOutput) &&
+            keywordGate?.available &&
+            !pendingConfirmationReply &&
+            !explicitConfirmation
+          ) {
+            const score = keywordGate.verify(recentKeywordForVerification());
+            if (score !== null && score < keywordGate.speakerThreshold) {
+              logger.warn(
+                '[cyrvis voice] ASR transcript rejected by voiceprint',
+                {
+                  transcript: text.slice(0, 120),
+                  score: Number(score.toFixed(4)),
+                  threshold: keywordGate.speakerThreshold,
+                },
               );
-            if (!keepGuiRunning && service) {
-              service.brain.handleBargeStop();
+              provider?.cancelResponse();
+              provider?.clearAudioBuffer();
+              broadcast('cyrvis:voice:transcript', { text: '', final: true });
+              emitActivity('speech', '已忽略非用户语音，未触发指令');
+              return;
             }
           }
           if (
@@ -1820,6 +1906,7 @@ export const startVoiceService = (): VoiceService | null => {
       memoryContextProvider: async () =>
         `${await voiceMemoryService.getContext()}\n\n${systemState.getContext()}`,
       fastToolRouter: fastToolMatrix?.router,
+      codingAgent,
       rememberFact: async (text) => {
         const remembered = await voiceMemoryService.rememberFact(text);
         if (remembered) {
@@ -1829,6 +1916,25 @@ export const startVoiceService = (): VoiceService | null => {
       },
     },
   );
+
+  codingAgent.setStatusListener((snapshot) => {
+    if (snapshot.status === 'running' && snapshot.lastMessage) {
+      emitActivity('task', `编码进度：${snapshot.lastMessage}`);
+    }
+    brain.notifyCodingStatus(snapshot);
+    if (snapshot.status === 'done') {
+      const target =
+        snapshot.changedFiles[snapshot.changedFiles.length - 1] ||
+        snapshot.workspace;
+      emitActivity('task', `编码任务完成，正在打开 VS Code：${target}`);
+      void openApp('vscode', target).catch((error: unknown) => {
+        logger.warn('[cyrvis coding] open vscode failed', error);
+        return openApp('explorer', target).catch((fallbackError: unknown) => {
+          logger.warn('[cyrvis coding] open workspace failed', fallbackError);
+        });
+      });
+    }
+  });
 
   service = { brain, provider, controller, systemState };
   const unsubscribeSkin = companionStore.onDidChange('skinId', (skinId) => {
@@ -1897,7 +2003,7 @@ export const startVoiceService = (): VoiceService | null => {
     keywordGate = new KeywordGate({
       onTrigger: (keyword) => {
         logger.info('[cyrvis voice] keyword barge-in', { keyword });
-        triggerBargeIn();
+        triggerBargeIn(true);
       },
       onDetected: (keyword, at) => {
         if (bargeTrace) {
@@ -1933,7 +2039,9 @@ export const startVoiceService = (): VoiceService | null => {
 
   // Keyboard fallback for barge-in. Voice barge-in works by speaking, but this
   // is deterministic even when the mic/echo gate is misbehaving.
-  const stopShortcut = globalShortcut.register('Control+Alt+X', triggerBargeIn);
+  const stopShortcut = globalShortcut.register('Control+Alt+X', () =>
+    triggerBargeIn(true),
+  );
   logger.info('[cyrvis voice] stop-speaking shortcut', {
     accelerator: 'Control+Alt+X',
     registered: stopShortcut,

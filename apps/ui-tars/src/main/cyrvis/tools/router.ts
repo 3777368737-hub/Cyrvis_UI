@@ -6,19 +6,12 @@
 import path from 'node:path';
 
 import type { CapabilityBroker } from './capability-broker';
-import { SENSITIVE_CONFIRMATION_PROMPT } from './confirmation-policy';
 import { isSupportedApplicationAlias } from './desktop-host';
 import {
   createFastToolProviderCatalog,
   type FastToolProviderCatalog,
 } from './llm-tools';
-import type {
-  FastToolOutcome,
-  FastToolRoute,
-  PendingConfirmationSnapshot,
-  PreparedToolCall,
-  ToolContext,
-} from './types';
+import type { FastToolOutcome, FastToolRoute, ToolContext } from './types';
 import { ToolRegistry as Registry } from './registry';
 
 interface ParsedCommand {
@@ -27,56 +20,47 @@ interface ParsedCommand {
   summary: string;
 }
 
-interface PendingConfirmation {
-  prepared: PreparedToolCall;
-  route: FastToolRoute;
-  expiresAt: number;
-}
-
-const CONFIRM_COMMAND_PATTERN =
-  /^(?:确认|确定|确认执行|执行|执行吧|直行|可以|可以执行|同意|继续执行|好|是|yes|confirm|go ahead)$/i;
-const CANCEL_COMMAND_PATTERN =
-  /^(?:取消|算了|不要|不要执行|别执行|否|no|cancel)$/i;
-
-const compactCommand = (text: string): string =>
-  text
-    .normalize('NFKC')
-    .toLowerCase()
-    .replace(/[\s，。！？、,.!?;；:：""''“”‘’]/g, '');
-
-const isContextualConfirmation = (text: string): boolean => {
-  const raw = text.trim();
-  if (CONFIRM_COMMAND_PATTERN.test(raw)) {
-    return true;
+const parseLineNumber = (value: string): number | null => {
+  if (/^\d+$/.test(value)) {
+    return Math.max(1, Number(value));
   }
-  const compact = compactCommand(raw);
-  if (
-    /^(?:是的|是啊|对呀|嗯|嗯嗯|好的|行|当然|直接执行|直接删除|确认删除|我已确认|对|对的|对的对的|没问题|可以删|可以删了|删吧|删了吧|执行吧)$/.test(
-      compact,
-    )
-  ) {
-    return true;
+  const digits: Record<string, number> = {
+    一: 1,
+    二: 2,
+    三: 3,
+    四: 4,
+    五: 5,
+    六: 6,
+    七: 7,
+    八: 8,
+    九: 9,
+  };
+  let total = 0;
+  let current = 0;
+  for (const character of value) {
+    if (digits[character]) {
+      current = digits[character];
+    } else if (character === '十') {
+      total += (current || 1) * 10;
+      current = 0;
+    } else if (character === '百') {
+      total += (current || 1) * 100;
+      current = 0;
+    } else {
+      return null;
+    }
   }
-  return (
-    /(?:确认|对|可以|好)/.test(compact) &&
-    /(?:删除|删掉|执行|继续|处理)/.test(compact) &&
-    !/(?:不|别|取消|算了|否)/.test(compact)
-  );
-};
-
-const isContextualCancellation = (text: string): boolean => {
-  if (CANCEL_COMMAND_PATTERN.test(text.trim())) {
-    return true;
-  }
-  return /^(?:不要了|不要删|别删|不对|不行|不用了|停止|先不要)$/.test(
-    compactCommand(text),
-  );
+  const parsed = total + current;
+  return parsed > 0 ? parsed : null;
 };
 
 export interface FastToolRouterOptions {
-  confirmationTtlMs?: number;
   providerCatalog?: FastToolProviderCatalog;
   capabilityBroker?: CapabilityBroker;
+}
+
+export interface FastToolExecutionScheduler {
+  execute(route: FastToolRoute): Promise<FastToolOutcome>;
 }
 
 const KNOWN_FOLDER_NAMES = new Set([
@@ -93,6 +77,16 @@ const KNOWN_FOLDER_NAMES = new Set([
   '视频',
   'videos',
 ]);
+
+const ALWAYS_BACKGROUND_TOOLS = new Set([
+  'office.create_presentation',
+  'web.download',
+  'archive.create',
+  'archive.extract',
+  'document.extract_text',
+  'pdf.extract_text',
+]);
+const BACKGROUND_TIMEOUT_MS = 60_000;
 
 const normalize = (input: string): string => {
   let value = input
@@ -215,8 +209,7 @@ const command = (
 ): ParsedCommand => ({ tool, args, summary });
 
 export class FastToolRouter {
-  private pending: PendingConfirmation | null = null;
-  private readonly confirmationTtlMs: number;
+  private executionScheduler: FastToolExecutionScheduler | null = null;
   private readonly providerCatalog: FastToolProviderCatalog;
 
   constructor(
@@ -224,13 +217,12 @@ export class FastToolRouter {
     private readonly context: ToolContext,
     options: FastToolRouterOptions = {},
   ) {
-    this.confirmationTtlMs = options.confirmationTtlMs ?? 120_000;
     this.providerCatalog =
       options.providerCatalog || createFastToolProviderCatalog(registry);
-    options.capabilityBroker?.setConfirmationHandler(
-      async (prepared, summary) =>
-        this.requestPreparedConfirmation(prepared, summary),
-    );
+  }
+
+  setExecutionScheduler(scheduler: FastToolExecutionScheduler | null): void {
+    this.executionScheduler = scheduler;
   }
 
   async executeNavigationTool(toolId: string, args: Record<string, unknown>) {
@@ -244,70 +236,34 @@ export class FastToolRouter {
     return this.providerCatalog.resolve(providerName);
   }
 
-  hasPendingConfirmation(now = Date.now()): boolean {
-    return Boolean(this.validPending(now));
+  isLongRunningProviderTool(
+    providerName: string,
+    args: Record<string, unknown>,
+  ): boolean {
+    const localName = this.resolveProviderToolName(providerName);
+    return localName ? this.isLongRunningTool(localName, args) : false;
   }
 
-  getPendingConfirmation(now = Date.now()): PendingConfirmationSnapshot | null {
-    const pending = this.validPending(now);
-    return pending
-      ? {
-          tool: pending.route.tool,
-          risk: pending.route.risk,
-          domain: pending.route.domain,
-          confirmationReason: pending.route.confirmationReason,
-          expiresAt: pending.expiresAt,
-        }
-      : null;
-  }
-
-  async confirmPending(): Promise<FastToolOutcome> {
-    const pending = this.validPending(Date.now());
-    if (!pending) {
-      return {
-        handled: true,
-        ok: false,
-        speech: '确认已经过期，请重新发出指令。',
-      };
+  isLongRunningTool(tool: string, args: Record<string, unknown>): boolean {
+    const target =
+      tool === 'capability.invoke' && typeof args.toolId === 'string'
+        ? args.toolId
+        : tool;
+    const definition = this.registry.get(target);
+    if (!definition) return ALWAYS_BACKGROUND_TOOLS.has(target);
+    if (definition.capability?.latencyClass === 'slow') return true;
+    if ((definition.contract?.timeoutMs || 0) >= BACKGROUND_TIMEOUT_MS) {
+      return true;
     }
-    return this.execute({
-      ...pending.route,
-      kind: 'confirm',
-      requiresConfirmation: false,
-      confirmationReason: null,
-    });
-  }
-
-  async cancelPending(): Promise<FastToolOutcome> {
-    const pending = this.validPending(Date.now());
-    if (!pending) {
-      return { handled: false };
+    if (ALWAYS_BACKGROUND_TOOLS.has(target)) return true;
+    if (
+      target === 'process.run' &&
+      typeof args.timeoutMs === 'number' &&
+      args.timeoutMs >= BACKGROUND_TIMEOUT_MS
+    ) {
+      return true;
     }
-    return this.execute({
-      ...pending.route,
-      kind: 'cancel',
-      requiresConfirmation: false,
-      confirmationReason: null,
-      summary: `取消${pending.route.summary}`,
-    });
-  }
-
-  isPendingConfirmationReply(text: string, now = Date.now()): boolean {
-    if (!this.validPending(now)) {
-      return false;
-    }
-    return isContextualConfirmation(text) || isContextualCancellation(text);
-  }
-
-  isConfirmationIntent(text: string): boolean {
-    const normalized = normalize(text);
-    if (this.validPending()) {
-      return isContextualConfirmation(text) || isContextualCancellation(text);
-    }
-    return (
-      CONFIRM_COMMAND_PATTERN.test(normalized) ||
-      CANCEL_COMMAND_PATTERN.test(normalized)
-    );
+    return false;
   }
 
   async executeProviderToolCall(
@@ -335,34 +291,6 @@ export class FastToolRouter {
     };
   }
 
-  async executeConfirmedCommand(text: string): Promise<FastToolOutcome | null> {
-    const parsed = this.parse(text, Date.now());
-    if (!parsed || parsed.tool.startsWith('__')) {
-      return null;
-    }
-    const prepared = await this.registry.prepare(parsed.tool, parsed.args);
-    const result = await this.registry.execute(prepared.tool, prepared.args, {
-      confirmed: true,
-    });
-    const route: FastToolRoute = {
-      kind: 'execute',
-      tool: prepared.tool,
-      args: prepared.args,
-      summary: parsed.summary,
-      requiresConfirmation: false,
-      confirmationReason: null,
-      risk: prepared.risk,
-      domain: prepared.definition.domain,
-    };
-    return {
-      handled: true,
-      ok: result.ok,
-      speech: result.speech,
-      result,
-      route,
-    };
-  }
-
   canHandle(text: string): boolean {
     return this.parse(text, Date.now()) !== null;
   }
@@ -372,34 +300,6 @@ export class FastToolRouter {
     if (!parsed) {
       return null;
     }
-    if (parsed.tool === '__confirm__') {
-      const pending = this.validPending(now);
-      if (!pending) {
-        return null;
-      }
-      return {
-        ...pending.route,
-        kind: 'confirm',
-        requiresConfirmation: false,
-        confirmationReason: null,
-      };
-    }
-    if (parsed.tool === '__cancel__') {
-      const pending = this.validPending(now);
-      if (!pending) {
-        return null;
-      }
-      return {
-        ...pending.route,
-        kind: 'cancel',
-        requiresConfirmation: false,
-        confirmationReason: null,
-        summary: `取消${pending.route.summary}`,
-      };
-    }
-
-    // A new explicit command supersedes any older confirmation request.
-    this.pending = null;
     const prepared = await this.registry.prepare(parsed.tool, parsed.args);
     return {
       kind: 'execute',
@@ -414,49 +314,8 @@ export class FastToolRouter {
   }
 
   async execute(route: FastToolRoute): Promise<FastToolOutcome> {
-    if (route.kind === 'cancel') {
-      this.pending = null;
-      return {
-        handled: true,
-        ok: true,
-        speech: '已取消，没有执行这个操作。',
-        route,
-      };
-    }
-
-    if (route.kind === 'confirm') {
-      const pending = this.validPending(Date.now());
-      this.pending = null;
-      if (!pending) {
-        return {
-          handled: true,
-          ok: false,
-          speech: '确认已经过期，请重新发出指令。',
-          route,
-        };
-      }
-      const result = await this.registry.execute(
-        pending.prepared.tool,
-        pending.prepared.args,
-        { confirmed: true },
-      );
-      return {
-        handled: true,
-        ok: result.ok,
-        speech: result.speech,
-        result,
-        route,
-      };
-    }
-
-    if (route.requiresConfirmation) {
-      const prepared = await this.registry.prepare(route.tool, route.args);
-      return {
-        handled: true,
-        ok: true,
-        speech: this.requestPreparedConfirmation(prepared, route.summary),
-        route,
-      };
+    if (this.executionScheduler) {
+      return this.executionScheduler.execute(route);
     }
 
     const result = await this.registry.execute(route.tool, route.args, {
@@ -479,59 +338,15 @@ export class FastToolRouter {
     return this.execute(route);
   }
 
-  private validPending(now = Date.now()): PendingConfirmation | null {
-    if (!this.pending) {
-      return null;
-    }
-    if (this.pending.expiresAt < now) {
-      this.pending = null;
-      return null;
-    }
-    return this.pending;
-  }
-
-  private requestPreparedConfirmation(
-    prepared: PreparedToolCall,
-    summary: string,
-  ): string {
-    if (this.validPending(Date.now())) {
-      return SENSITIVE_CONFIRMATION_PROMPT;
-    }
-    const route: FastToolRoute = {
-      kind: 'execute',
-      tool: prepared.tool,
-      args: prepared.args,
-      summary,
-      requiresConfirmation: true,
-      confirmationReason: prepared.confirmationReason,
-      risk: prepared.risk,
-      domain: prepared.definition.domain,
-    };
-    this.pending = {
-      prepared,
-      route,
-      expiresAt: Date.now() + this.confirmationTtlMs,
-    };
-    return SENSITIVE_CONFIRMATION_PROMPT;
-  }
-
-  private parse(input: string, now: number): ParsedCommand | null {
+  private parse(input: string, _now: number): ParsedCommand | null {
     const text = normalize(input);
     if (!text) {
       return null;
     }
-    if (this.validPending(now)) {
-      if (isContextualConfirmation(text)) {
-        return command('__confirm__', {}, '确认执行');
-      }
-      if (isContextualCancellation(text)) {
-        return command('__cancel__', {}, '取消操作');
-      }
-    }
-
     return (
       this.parseClipboard(text) ||
       this.parseSystem(text) ||
+      this.parseBrowserPage(text) ||
       this.parseWindow(text) ||
       this.parseApplication(text) ||
       this.parseWeb(text) ||
@@ -540,6 +355,7 @@ export class FastToolRouter {
       this.parseCreateFile(text) ||
       this.parseWriteFile(text) ||
       this.parseAppendFile(text) ||
+      this.parseDeleteLines(text) ||
       this.parseReplaceText(text) ||
       this.parseCopy(text) ||
       this.parseMove(text) ||
@@ -708,6 +524,24 @@ export class FastToolRouter {
     return command('window.focus', { query }, `切换到窗口 ${query}`);
   }
 
+  private parseBrowserPage(text: string): ParsedCommand | null {
+    const forward = text.match(
+      /^(?:关闭|关掉)\s*(?:浏览器(?:里|中)?(?:的)?)?(.+?)\s*(?:网页|页面|标签页|标签)$/i,
+    );
+    const reverse = text.match(
+      /^(?:把|将)\s*(.+?)\s*(?:网页|页面|标签页|标签)\s*(?:关闭|关掉)$/i,
+    );
+    const raw = forward?.[1] || reverse?.[1] || '';
+    const query = unquote(raw)
+      .replace(/^(?:这个|那个|当前)\s*/i, '')
+      .replace(/\s*(?:这个|那个|当前)$/i, '')
+      .trim();
+    if (!query || /^(?:浏览器|网页|页面|标签页|标签)$/i.test(query)) {
+      return null;
+    }
+    return command('browser.close_page', { query }, `关闭网页 ${query}`);
+  }
+
   private parseApplication(text: string): ParsedCommand | null {
     if (
       /^(?:列出|查看|显示)?\s*(?:正在运行的|运行中的)?\s*(?:应用程序|应用|程序)(?:列表)?$/i.test(
@@ -782,6 +616,12 @@ export class FastToolRouter {
       /(?:关于|主题(?:是|为)?|标题(?:是|为)?)\s*(.+?)(?:的)?\s*(?:pptx?|powerpoint|演示文稿)/i,
     );
     const title = unquote(titleMatch?.[1] || 'CYRVIS 演示文稿');
+    const pageCountMatch = text.match(/(\d{1,2})\s*页/i);
+    const pageCount = pageCountMatch
+      ? Math.max(3, Math.min(30, Number(pageCountMatch[1]) || 10))
+      : 10;
+    const audience =
+      text.match(/(?:受众|面向|给)\s*([^，,。；;]{1,30})/i)?.[1]?.trim() || '';
     const locationMatch = text.match(
       /在\s*(.+?)\s*(?:上|里|中)?\s*(?:创建|新建|生成|制作|做)/i,
     );
@@ -811,7 +651,13 @@ export class FastToolRouter {
       {
         path: target,
         title,
-        subtitle: '由 CYRVIS 根据语音请求创建',
+        subtitle: '根据用户要求生成',
+        content: text,
+        ...(pageCountMatch ? { pageCount } : {}),
+        audience,
+        templateId: /(论文|学术)/i.test(text) ? 'thesis_01' : 'summary_01',
+        mode: /(创意|设计感|视觉|风格化)/i.test(text) ? 'creative' : 'general',
+        provider: 'auto',
       },
       `创建演示文稿 ${title}`,
     );
@@ -871,6 +717,32 @@ export class FastToolRouter {
   }
 
   private parseWriteFile(text: string): ParsedCommand | null {
+    const directWrite = text.match(
+      /^(?:往|向|在)\s*(.+?\.(?:txt|text|md|markdown|log|csv|json|ya?ml|ini|xml))\s*(?:里|中)?\s*(?:写入|写进|写)\s*(?:内容)?\s*(?:为|是|：|:)?\s*([\s\S]+)$/i,
+    );
+    if (directWrite?.[2]?.trim()) {
+      return command(
+        'fs.write_file',
+        {
+          path: unquote(directWrite[1]),
+          content: unquote(directWrite[2]),
+        },
+        `写入文件 ${unquote(directWrite[1])}`,
+      );
+    }
+    const contentFirst = text.match(
+      /^(?:把|将)\s*([\s\S]+?)\s*(?:写入|写进|写到)\s*(.+?\.(?:txt|text|md|markdown|log|csv|json|ya?ml|ini|xml))$/i,
+    );
+    if (contentFirst?.[1]?.trim()) {
+      return command(
+        'fs.write_file',
+        {
+          path: unquote(contentFirst[2]),
+          content: unquote(contentFirst[1]),
+        },
+        `写入文件 ${unquote(contentFirst[2])}`,
+      );
+    }
     const match =
       text.match(/^(?:写入|写入到|写文件|write)\s*(?:文件)?\s*(.+)$/i) ||
       text.match(/^(?:修改|编辑)\s*文件\s*(.+)$/i);
@@ -903,6 +775,74 @@ export class FastToolRouter {
       'fs.append_file',
       { path: split.target, content: split.content },
       `追加文件 ${split.target}`,
+    );
+  }
+
+  private parseDeleteLines(text: string): ParsedCommand | null {
+    if (
+      !/(?:删除|删掉|移除|delete)/i.test(text) ||
+      !/第\s*[\d一二三四五六七八九十百]+\s*行|(?:那|这)?一?行/i.test(text)
+    ) {
+      return null;
+    }
+    const fileMatch = text.match(
+      /((?:[A-Za-z]:[\\/]|~[\\/]|\.{0,2}[\\/])?[^，,。；;\n]+?\.(?:txt|text|md|markdown|log|csv|json|ya?ml|ini|xml))/i,
+    );
+    const target = unquote(fileMatch?.[1] || '')
+      .replace(/^(?:把|将|删除|删掉|移除|文件)\s*/i, '')
+      .replace(/^(?:把|将|删除|删掉|移除|文件)\s*/i, '')
+      .replace(/\s*(?:文件|文本文件)$/i, '')
+      .trim();
+    if (!target || !looksLikePath(target)) {
+      return null;
+    }
+
+    const rangeMatch = text.match(
+      /第\s*([\d一二三四五六七八九十百]+)\s*行\s*(?:到|至|-|~)\s*第?\s*([\d一二三四五六七八九十百]+)\s*行/i,
+    );
+    const singleLineMatch = text.match(
+      /第\s*([\d一二三四五六七八九十百]+)\s*行/i,
+    );
+    if (rangeMatch) {
+      const startLine = parseLineNumber(rangeMatch[1]);
+      const endLine = parseLineNumber(rangeMatch[2]);
+      if (startLine === null || endLine === null) {
+        return null;
+      }
+      return command(
+        'fs.delete_lines',
+        { path: target, startLine, endLine },
+        `删除 ${target} 第 ${startLine} 到 ${endLine} 行`,
+      );
+    }
+    if (singleLineMatch) {
+      const line = parseLineNumber(singleLineMatch[1]);
+      if (line === null) {
+        return null;
+      }
+      return command(
+        'fs.delete_lines',
+        { path: target, line },
+        `删除 ${target} 第 ${line} 行`,
+      );
+    }
+
+    const match =
+      text.match(
+        /(?:包含|含有|写着|内容为|是)\s*(.+?)\s*(?:的)?(?:那|这)?一?行/i,
+      ) || text.match(/(?:中|里)\s*(.+?)\s*(?:的)?(?:那|这)?一?行/i);
+    const needle = unquote(match?.[1] || '').trim();
+    if (!needle) {
+      return null;
+    }
+    return command(
+      'fs.delete_lines',
+      {
+        path: target,
+        match: needle,
+        all: /(?:所有|全部|每一|每个)/i.test(text),
+      },
+      `删除 ${target} 中包含 ${needle} 的行`,
     );
   }
 

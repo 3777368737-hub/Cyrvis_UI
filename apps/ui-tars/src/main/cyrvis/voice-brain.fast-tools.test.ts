@@ -10,12 +10,13 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CyrvisController } from './controller';
-import { createFastToolMatrix, SENSITIVE_CONFIRMATION_PROMPT } from './tools';
+import { createFastToolMatrix } from './tools';
 import type {
   DesktopHost,
   DiskInfo,
   ProcessInfo,
   SystemInfo,
+  ToolDefinition,
   WindowInfo,
 } from './tools';
 import type { GUIAdapter, GUIAdapterCallbacks } from './types';
@@ -242,7 +243,66 @@ async function setupNavigation(
 }
 
 describe('unified navigation', () => {
-  it('keeps sensitive-action confirmation ahead of a pending gaze menu', async () => {
+  it('returns a running result immediately and speaks when a slow capability finishes', async () => {
+    const x = await setupNavigation();
+    let finish!: (value: { ok: true; tool: string; speech: string }) => void;
+    const slowTool: ToolDefinition = {
+      name: 'test.long-running',
+      domain: 'system',
+      description: 'Slow test capability.',
+      risk: 'medium',
+      capability: {
+        providerId: 'test',
+        tier: 2,
+        activation: 'on-demand',
+        latencyClass: 'slow',
+      },
+      contract: {
+        timeoutMs: 2 * 60_000,
+        verification: 'none',
+      },
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false,
+      },
+      prepare: () => ({}),
+      execute: async () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    };
+    x.matrix.registry.register(slowTool, 'test');
+    x.matrix.surface.refresh();
+
+    try {
+      x.provider.toolCall({
+        callId: 'slow-capability',
+        name: 'cyrvis_capability_invoke',
+        args: {
+          toolId: 'test.long-running',
+          arguments: {},
+        },
+      });
+      await flush();
+      expect(x.provider.toolResults).toHaveLength(1);
+      expect(x.provider.toolResults[0].output).toContain('"status":"running"');
+      expect(x.provider.toolResults[0].output).toContain('"background":true');
+
+      finish({
+        ok: true,
+        tool: 'test.long-running',
+        speech: '长任务已经完成。',
+      });
+      await vi.waitFor(() =>
+        expect(x.provider.spoken.join('')).toContain('长任务已经完成'),
+      );
+    } finally {
+      x.dispose();
+    }
+  });
+
+  it('executes a sensitive action ahead of a pending gaze menu', async () => {
     const x = await setupNavigation();
     const directory = await fs.mkdtemp(
       path.join(os.tmpdir(), 'cyrvis-gaze-confirm-'),
@@ -261,16 +321,14 @@ describe('unified navigation', () => {
           Date.now(),
         )!,
       );
-      await x.matrix.router.handleText(`删除文件 ${file}`);
-      expect(x.matrix.router.hasPendingConfirmation()).toBe(true);
-      x.provider.transcript('是的');
+      const deleted = await x.matrix.router.handleText(`删除文件 ${file}`);
+      expect(deleted.ok).toBe(true);
       await vi.waitFor(
         async () => {
           await expect(fs.access(file)).rejects.toThrow();
         },
         { timeout: 5_000, interval: 50 },
       );
-      expect(x.matrix.router.hasPendingConfirmation()).toBe(false);
       expect(x.provider.spoken.join('')).not.toContain('选择哪一项');
       expect(x.adapter.started).toBe(false);
     } finally {
@@ -297,7 +355,7 @@ describe('unified navigation', () => {
     }
   });
 
-  it('does not open sensitive app targets or continue GUI before confirmation', async () => {
+  it('opens explicitly requested app targets directly', async () => {
     const x = await setupNavigation();
     try {
       x.provider.toolCall({
@@ -307,10 +365,8 @@ describe('unified navigation', () => {
       });
       await flush();
       await flush();
-      expect(x.desktop.launched).toEqual([]);
+      expect(x.desktop.launched).toEqual(['notepad']);
       expect(x.adapter.started).toBe(false);
-      expect(x.matrix.router.hasPendingConfirmation()).toBe(true);
-      expect(x.provider.spoken).toContain(SENSITIVE_CONFIRMATION_PROMPT);
     } finally {
       x.dispose();
     }
@@ -353,9 +409,13 @@ describe('unified navigation', () => {
       await flush();
       await flush();
 
-      expect(await fs.readFile(file, 'utf8')).toBe('1\n2\n3');
+      await vi.waitFor(async () => {
+        expect(await fs.readFile(file, 'utf8')).toBe('1\n2\n3');
+      });
       expect(x.adapter.started).toBe(false);
-      expect(x.provider.toolResults.at(-1)?.output).toContain('FILE_CREATED');
+      await vi.waitFor(() => {
+        expect(x.provider.toolResults.at(-1)?.output).toContain('FILE_CREATED');
+      });
     } finally {
       await fs.rm(directory, { recursive: true, force: true });
       x.dispose();
@@ -790,7 +850,7 @@ describe('VoiceBrain fast tool interception', () => {
     expect(provider.toolResults.at(-1)?.output).toContain('"status":"opened"');
   });
 
-  it('keeps high-risk tools behind confirmation and bypasses confirm self-echo filtering', async () => {
+  it('executes an explicit application close without redundant confirmation', async () => {
     const adapter = new NoopGUIAdapter();
     const controller = new CyrvisController(adapter, { stallTimeoutMs: 0 });
     const desktop = new FakeDesktopHost();
@@ -819,46 +879,37 @@ describe('VoiceBrain fast tool interception', () => {
     await flush();
     await flush();
 
-    expect(desktop.closed).toEqual([]);
-    expect(provider.toolResults).toEqual([]);
-    await vi.waitFor(() =>
-      expect(provider.spoken.at(-1)).toBe(SENSITIVE_CONFIRMATION_PROMPT),
-    );
-    expect(provider.canceled).toBeGreaterThan(0);
-
-    const confirmationPromptCount = provider.spoken.length;
-    provider.toolCall({
-      callId: 'model-close-app-repeat',
-      name: 'cyrvis_app_close',
-      args: { name: 'notepad' },
-    });
-    await flush();
-    await flush();
-    expect(provider.spoken).toHaveLength(confirmationPromptCount);
-
-    provider.assistantText(SENSITIVE_CONFIRMATION_PROMPT);
-    provider.audio();
-
-    const consumed = provider.transcript('是的，');
-    expect(consumed).toBe(true);
-    await flush();
-    await flush();
-
     expect(desktop.closed).toEqual(['notepad']);
+    expect(provider.toolResults.at(-1)?.output).toContain(
+      '"status":"completed"',
+    );
   });
 
-  it('uses semantic arbitration with pending memory for an unlisted confirmation phrase', async () => {
+  it('executes an unlisted high-risk tool without semantic confirmation', async () => {
     const adapter = new NoopGUIAdapter();
     const controller = new CyrvisController(adapter, { stallTimeoutMs: 0 });
     const desktop = new FakeDesktopHost();
     const matrix = createFastToolMatrix(desktop, process.cwd(), undefined, {
       builtinProviders: { tools: [], manifests: [] },
     });
-    const classifyPendingIntent = vi.fn(async () => ({
-      intent: 'confirm' as const,
-      confidence: 0.96,
-      reason: 'The user is agreeing to the pending action.',
-    }));
+    let executed = false;
+    matrix.registry.register({
+      name: 'test.confirm',
+      domain: 'system',
+      description: 'Test confirmation-gated operation.',
+      risk: 'high',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false,
+      },
+      prepare: () => ({}),
+      requiresConfirmation: () => 'confirm test operation',
+      execute: async () => {
+        executed = true;
+        return { ok: true, tool: 'test.confirm', speech: 'confirmed' };
+      },
+    });
     let provider!: FakeProvider;
     const brain = new VoiceBrain(
       controller,
@@ -870,89 +921,65 @@ describe('VoiceBrain fast tool interception', () => {
       {
         requireWakeWord: false,
         fastToolRouter: matrix.router,
-        classifyPendingIntent,
       },
     );
 
     try {
       await brain.start();
-      provider.transcript('关闭应用记事本');
+      provider.transcript('处理一下这个高敏感操作');
+      provider.toolCall({
+        callId: 'pending-confirm',
+        name: 'cyrvis_test_confirm',
+        args: {},
+      });
       await flush();
       await flush();
-      expect(matrix.router.hasPendingConfirmation()).toBe(true);
-
-      const consumed = provider.transcript('嗯，就按刚才说的处理吧。');
-      expect(consumed).toBe(true);
       await flush();
       await flush();
-
-      expect(classifyPendingIntent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          text: '嗯，就按刚才说的处理吧。',
-          pending: expect.objectContaining({
-            tool: 'app.close',
-          }),
-        }),
-      );
-      expect(desktop.closed).toEqual(['记事本']);
-      expect(matrix.router.hasPendingConfirmation()).toBe(false);
+      expect(executed).toBe(true);
     } finally {
       matrix.dispose();
       brain.dispose();
     }
   });
 
-  // app.close is explicitly Windows-only in the capability catalog.
-  it.skipIf(process.platform !== 'win32')(
-    'speaks confirmation for a high-risk capability invoked through the broker',
-    async () => {
-      const adapter = new NoopGUIAdapter();
-      const controller = new CyrvisController(adapter, { stallTimeoutMs: 0 });
-      const desktop = new FakeDesktopHost();
-      const matrix = createFastToolMatrix(desktop);
-      let provider!: FakeProvider;
-      const brain = new VoiceBrain(
-        controller,
-        {},
-        (callbacks) => {
-          provider = new FakeProvider(callbacks);
-          return provider;
-        },
-        {
-          requireWakeWord: false,
-          fastToolRouter: matrix.router,
-        },
-      );
-      await brain.start();
+  it('executes an irreversible capability through the broker directly', async () => {
+    const adapter = new NoopGUIAdapter();
+    const controller = new CyrvisController(adapter, { stallTimeoutMs: 0 });
+    const desktop = new FakeDesktopHost();
+    const matrix = createFastToolMatrix(desktop);
+    let provider!: FakeProvider;
+    const brain = new VoiceBrain(
+      controller,
+      {},
+      (callbacks) => {
+        provider = new FakeProvider(callbacks);
+        return provider;
+      },
+      {
+        requireWakeWord: false,
+        fastToolRouter: matrix.router,
+      },
+    );
+    await brain.start();
 
-      provider.transcript('处理一下记事本应用');
-      provider.toolCall({
-        callId: 'broker-close-app',
-        name: 'cyrvis_capability_invoke',
-        args: {
-          toolId: 'app.close',
-          arguments: { name: 'notepad' },
-        },
-      });
-      await flush();
-      await flush();
+    provider.transcript('结束一个进程');
+    provider.toolCall({
+      callId: 'broker-stop-process',
+      name: 'cyrvis_capability_invoke',
+      args: {
+        toolId: 'process.stop',
+        arguments: { pid: 2_147_483_647 },
+      },
+    });
+    await flush();
+    await flush();
 
-      expect(desktop.closed).toEqual([]);
-      expect(provider.toolResults).toEqual([]);
-      await vi.waitFor(() =>
-        expect(provider.spoken.at(-1)).toBe(SENSITIVE_CONFIRMATION_PROMPT),
-      );
-      expect(provider.canceled).toBeGreaterThan(0);
-      expect(matrix.router.hasPendingConfirmation()).toBe(true);
+    expect(provider.toolResults).toHaveLength(1);
+    expect(provider.spoken.join('')).not.toContain('敏感操作');
+  });
 
-      provider.transcript('确认执行');
-      await flush();
-      await flush();
-      expect(desktop.closed).toEqual(['notepad']);
-    },
-  );
-
-  it('recovers confirmation by replaying the last actionable command when pending is lost', async () => {
+  it('does not leave a stale confirmation after an explicit close command', async () => {
     const adapter = new NoopGUIAdapter();
     const controller = new CyrvisController(adapter, { stallTimeoutMs: 0 });
     const desktop = new FakeDesktopHost();
@@ -974,18 +1001,6 @@ describe('VoiceBrain fast tool interception', () => {
 
     provider.transcript('关闭应用记事本');
     await flush();
-    expect(desktop.closed).toEqual([]);
-    provider.assistantText(SENSITIVE_CONFIRMATION_PROMPT);
-
-    provider.transcript('取消');
-    await flush();
-    expect(desktop.closed).toEqual([]);
-
-    provider.assistantText(`取消完成。${SENSITIVE_CONFIRMATION_PROMPT}`);
-    provider.transcript('确认执行');
-    await flush();
-    await flush();
-
     expect(desktop.closed).toEqual(['记事本']);
   });
 
@@ -1072,6 +1087,6 @@ describe('VoiceBrain fast tool interception', () => {
     provider.transcript('请解释一个比较复杂的问题');
     await vi.advanceTimersByTimeAsync(6000);
 
-    expect(provider.spoken).toContain('我在，正在理解你的请求，请稍等。');
+    expect(provider.spoken).toContain('我在，马上回答。');
   });
 });

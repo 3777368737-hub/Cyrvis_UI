@@ -15,7 +15,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFastToolMatrix } from './matrix';
 import { createFastToolMcpServer } from './mcp-server';
 import { PathPolicy } from './path-policy';
-import { SENSITIVE_CONFIRMATION_PROMPT } from './confirmation-policy';
 import type {
   DesktopHost,
   DiskInfo,
@@ -103,6 +102,7 @@ class FakeDesktopHost implements DesktopHost {
     subtitle?: string;
   }): Promise<void> {
     this.presentations.push(input);
+    await fs.writeFile(input.path, Buffer.from([0x50, 0x4b, 0x03, 0x04]));
   }
 
   async systemInfo(): Promise<SystemInfo> {
@@ -137,9 +137,13 @@ describe('FastToolRouter', () => {
       await fs.mkdtemp(path.join(os.tmpdir(), 'cyrvis-fast-tools-')),
     );
     desktop = new FakeDesktopHost();
+    vi.stubEnv('CYRVIS_QWEN_DOC_API_KEY', '');
+    vi.stubEnv('DASHSCOPE_API_KEY', '');
+    vi.stubEnv('QWEN_API_KEY', '');
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await fs.rm(root, { recursive: true, force: true });
   });
 
@@ -170,10 +174,38 @@ describe('FastToolRouter', () => {
     const overwrite = await router.handleText(
       `写入文件 ${file} 内容 replacement`,
     );
-    expect(overwrite.speech).toBe(SENSITIVE_CONFIRMATION_PROMPT);
-    expect(await fs.readFile(file, 'utf8')).toBe('开头第二行');
-    expect((await router.handleText('执行')).ok).toBe(true);
+    expect(overwrite.ok).toBe(true);
     expect(await fs.readFile(file, 'utf8')).toBe('replacement');
+    const backups = (await fs.readdir(root)).filter((entry) =>
+      entry.includes('.cyrvis-backup-'),
+    );
+    expect(backups).toHaveLength(1);
+  });
+
+  it('deletes requested text lines directly by number, range, or content', async () => {
+    const { router } = matrix();
+    const file = path.join(root, 'lines.txt');
+    await fs.writeFile(file, 'first\nsecond\nremove-me\nfourth', 'utf8');
+
+    const byNumber = await router.handleText(`删除文件 ${file} 第2行`);
+    expect(byNumber.ok).toBe(true);
+    expect(await fs.readFile(file, 'utf8')).toBe('first\nremove-me\nfourth');
+
+    const byContent = await router.handleText(
+      `删除文件 ${file} 中 remove-me 的那一行`,
+    );
+    expect(byContent.ok).toBe(true);
+    expect(await fs.readFile(file, 'utf8')).toBe('first\nfourth');
+
+    const rangeCommand = `把文件 ${file} 第一行到第二行删掉`;
+    await expect(router.match(rangeCommand)).resolves.toMatchObject({
+      tool: 'fs.delete_lines',
+      args: { lineNumbers: [1, 2] },
+    });
+    const byRange = await router.handleText(rangeCommand);
+    expect(byRange.ok).toBe(true);
+    expect(byRange.result?.data).toMatchObject({ removedCount: 2 });
+    expect(await fs.readFile(file, 'utf8')).toBe('');
   });
 
   it('accepts compact speech-to-text commands and quoted paths with spaces', async () => {
@@ -262,56 +294,21 @@ describe('FastToolRouter', () => {
     }
   });
 
-  it('requires confirmation before destructive operations', async () => {
+  it('executes destructive operations directly', async () => {
     const { router } = matrix();
     const file = path.join(root, 'delete-me.txt');
     await fs.writeFile(file, 'keep', 'utf8');
 
-    const pending = await router.handleText(`删除文件 ${file}`);
-    expect(pending.ok).toBe(true);
-    expect(pending.speech).toBe(SENSITIVE_CONFIRMATION_PROMPT);
-    expect(pending.speech).not.toContain(file);
-    expect(router.isPendingConfirmationReply('确认执行')).toBe(true);
-    expect(router.isPendingConfirmationReply('执行')).toBe(true);
-    expect(router.isPendingConfirmationReply('直行')).toBe(true);
-    expect(router.isPendingConfirmationReply('是')).toBe(true);
-    expect(router.isPendingConfirmationReply('是的，')).toBe(true);
-    expect(
-      router.isPendingConfirmationReply('对的对的，你就把这个删掉就可以。'),
-    ).toBe(true);
-    expect(
-      router.isPendingConfirmationReply('直接删除这个文件，我已确认。'),
-    ).toBe(true);
-    expect(router.isPendingConfirmationReply('取消')).toBe(true);
-    expect(router.isPendingConfirmationReply('我在')).toBe(false);
-    expect(await fs.readFile(file, 'utf8')).toBe('keep');
-
-    const cancelled = await router.handleText('取消');
-    expect(cancelled.ok).toBe(true);
-    expect(await fs.readFile(file, 'utf8')).toBe('keep');
-
-    await router.handleText(`删除文件 ${file}`);
-    await router.handleText('把 replaced 写入剪贴板');
-    expect(await router.handleText('确认执行')).toEqual({ handled: false });
-    expect(await fs.readFile(file, 'utf8')).toBe('keep');
-  });
-
-  it('executes the pending deletion after a natural-language confirmation', async () => {
-    const { router } = matrix();
-    const file = path.join(root, 'natural-confirmation.txt');
-    await fs.writeFile(file, 'delete', 'utf8');
-
-    const pending = await router.handleText(`删除文件 ${file}`);
-    expect(pending.speech).toBe(SENSITIVE_CONFIRMATION_PROMPT);
-    const confirmed = await router.handleText('直接删除这个文件，我已确认。');
-    expect(confirmed).toMatchObject({
+    const deleted = await router.handleText(`删除文件 ${file}`);
+    expect(deleted).toMatchObject({
       handled: true,
       ok: true,
     });
+    expect(deleted.speech).toContain('回收站');
     await expect(fs.access(file)).rejects.toThrow();
   });
 
-  it('requires confirmation outside configured roots and for sensitive files', async () => {
+  it('prepares writes outside roots and sensitive files without confirmation', async () => {
     const { router } = matrix();
     const outside =
       process.platform === 'win32'
@@ -325,10 +322,10 @@ describe('FastToolRouter', () => {
     expect(
       (await router.match(`创建文件 ${outside} 内容 test`))
         ?.requiresConfirmation,
-    ).toBe(true);
+    ).toBe(false);
     expect(
       (await router.match(`读取文件 ${sensitive}`))?.requiresConfirmation,
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it('allows read-only system inspection outside configured roots', async () => {
@@ -355,7 +352,7 @@ describe('FastToolRouter', () => {
         path: path.join(directory, 'blocked.txt'),
         content: 'x',
       }),
-    ).resolves.toMatchObject({ requiresConfirmation: true });
+    ).resolves.toMatchObject({ requiresConfirmation: false });
   });
 
   it('intercepts application, window, clipboard, system, and web commands', async () => {
@@ -393,6 +390,10 @@ describe('FastToolRouter', () => {
       tool: 'window.close',
       args: { query: '记事本' },
     });
+    expect(await router.match('关闭 Project Docs 网页')).toMatchObject({
+      tool: 'browser.close_page',
+      args: { query: 'Project Docs' },
+    });
 
     expect((await router.handleText('切换到窗口 demo.txt')).ok).toBe(true);
     expect(desktop.windowActions.at(-1)).toEqual({
@@ -427,16 +428,13 @@ describe('FastToolRouter', () => {
     const presentation = await router.handleText(
       `在 ${root} 创建一个关于人工智能的PPT`,
     );
-    expect(presentation.ok).toBe(true);
+    expect(presentation.ok, presentation.speech).toBe(true);
     expect(desktop.presentations.at(-1)?.title).toBe('人工智能');
     expect(desktop.presentations.at(-1)?.path).toContain('.pptx');
   });
 
   it('leaves non-command chat outside the fast tool matrix', async () => {
     const { router } = matrix();
-    expect(router.isConfirmationIntent('确认执行')).toBe(true);
-    expect(router.isConfirmationIntent('直行')).toBe(true);
-    expect(router.isConfirmationIntent('取消')).toBe(true);
     expect((await router.match('查看桌面下有什么'))?.tool).toBe(
       'fs.list_directory',
     );
@@ -478,18 +476,11 @@ describe('FastToolRouter', () => {
     expect(result.isError).not.toBe(true);
     expect(desktop.clipboard).toBe('through-mcp');
 
-    const denied = await client.callTool({
+    const closed = await client.callTool({
       name: 'app.close',
       arguments: { name: 'notepad' },
     });
-    expect(denied.isError).toBe(true);
-    expect(desktop.closedApplications).toEqual([]);
-
-    const confirmed = await client.callTool({
-      name: 'app.close',
-      arguments: { name: 'notepad', __confirmed: true },
-    });
-    expect(confirmed.isError).not.toBe(true);
+    expect(closed.isError).not.toBe(true);
     expect(desktop.closedApplications).toEqual(['notepad']);
 
     registry.register({

@@ -115,6 +115,15 @@ const setup = (options?: {
   awakeTimeoutMs?: number;
   rememberFact?: (text: string) => Promise<string | null>;
   codingAgent?: CodingAgentService;
+  getWorkflowStatus?: () => {
+    name: string;
+    status: string;
+    currentStepId: string | null;
+    pendingConfirmation: { stepId: string; reason: string } | null;
+    totalSteps: number;
+    completedSteps: number;
+  } | null;
+  cancelWorkflow?: () => Promise<boolean>;
 }) => {
   const adapter = new FakeGUIAdapter();
   const controller = new CyrvisController(adapter, {
@@ -147,6 +156,8 @@ const setup = (options?: {
       inspectGaze: options?.inspectGaze,
       getGazeActionContext: options?.getGazeActionContext,
       codingAgent: options?.codingAgent,
+      getWorkflowStatus: options?.getWorkflowStatus,
+      cancelWorkflow: options?.cancelWorkflow,
     },
   );
 
@@ -286,8 +297,8 @@ describe('VoiceBrain', () => {
     await flush();
     expect(controller.getStatus().status).toBe('executing');
     expect(adapter.instruction).toContain('[已绑定注视对象]');
-    expect(adapter.instruction).toContain('不要求先从封面认出作品名');
-    expect(adapter.instruction).toContain('确认播放器');
+    expect(adapter.instruction).toContain('点击该对象并执行用户要求的播放操作');
+    expect(adapter.instruction).toContain('依据实际界面变化报告结果');
     expect(provider.submitted).toEqual([]);
     expect(provider.spoken.join('')).not.toContain('播放成功');
     provider.emitToolCall({
@@ -800,6 +811,53 @@ describe('VoiceBrain', () => {
     expect(provider.spoken.at(-1)).toContain('打开记事本窗口');
   });
 
+  it('answers workflow progress queries before GUI task status', async () => {
+    const { brain, provider } = setup({
+      requireWakeWord: false,
+      getWorkflowStatus: () => ({
+        name: '资料整理',
+        status: 'running',
+        currentStepId: 'extract',
+        pendingConfirmation: null,
+        totalSteps: 4,
+        completedSteps: 2,
+      }),
+    });
+    await brain.start();
+    provider.emitTranscript('工作流进度');
+    await flush();
+    expect(provider.spoken.at(-1)).toContain('资料整理');
+    expect(provider.spoken.at(-1)).toContain('2/4');
+  });
+
+  it('cancels a waiting workflow with a bare cancellation reply', async () => {
+    let status = 'waiting_confirmation';
+    const cancelWorkflow = vi.fn(async () => {
+      status = 'cancelled';
+      return true;
+    });
+    const { brain, provider } = setup({
+      requireWakeWord: false,
+      getWorkflowStatus: () => ({
+        name: '敏感整理',
+        status,
+        currentStepId: 'move',
+        pendingConfirmation: {
+          stepId: 'move',
+          reason: '移动文件需要确认',
+        },
+        totalSteps: 2,
+        completedSteps: 1,
+      }),
+      cancelWorkflow,
+    });
+    await brain.start();
+    provider.emitTranscript('取消');
+    await flush();
+    expect(cancelWorkflow).toHaveBeenCalledOnce();
+    expect(provider.spoken.at(-1)).toContain('已取消工作流');
+  });
+
   it('allows a short continuation after an earlier task request', async () => {
     const { brain, provider, adapter } = setup();
     await brain.start();
@@ -1191,7 +1249,7 @@ describe('VoiceBrain', () => {
     provider.emitTranscript('Hello CYRVIS', true);
 
     expect(brain.getState().awake).toBe(true);
-    vi.advanceTimersByTime(1000);
+    vi.advanceTimersByTime(2000);
     expect(brain.getState().awake).toBe(false);
     expect(wakeEvents).toContain('sleep');
   });

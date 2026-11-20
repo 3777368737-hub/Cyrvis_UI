@@ -4,7 +4,7 @@
  */
 import path from 'node:path';
 
-import type { CyrvisController } from './controller';
+import type { TaskController } from './controller';
 import {
   gazeDesktopAction,
   gazeDesktopInstruction,
@@ -18,7 +18,7 @@ import {
   type GazeSuggestion,
 } from './gaze/suggestions';
 import { TaskBusyError } from './controller';
-import type { CodingAgentService, CodingTaskSnapshot } from './coding-agent';
+import type { CodingAgentController, CodingTaskSnapshot } from './coding-agent';
 import type { AllowedApp, SearchEngine } from './desktop-actions';
 import { buildSearchUrl, defaultSearchEngine } from './navigation';
 import { resolveSite, buildSiteSearchUrl } from './site-registry';
@@ -44,8 +44,9 @@ import {
 } from './travel/travel-search';
 import type { ControllerEvent } from './types';
 import {
-  SENSITIVE_CONFIRMATION_PROMPT,
   extractBrowserSearchQuery,
+  type FastToolOutcome,
+  type FastToolRoute,
   type FastToolRouter,
 } from './tools';
 import type { CyrvisVoiceState } from '@shared/cyrvis';
@@ -54,10 +55,6 @@ import type {
   VoiceProviderCallbacks,
   VoiceToolCallWithId,
 } from './voice/provider';
-import type {
-  PendingIntentDecision,
-  PendingIntentInput,
-} from './voice/pending-intent-classifier';
 import type { TravelPlanSnapshot } from './travel/travel-planner';
 
 export type VoiceBrainState = CyrvisVoiceState;
@@ -137,10 +134,16 @@ export interface VoiceBrainOptions {
   memoryContextProvider?: () => Promise<string>;
   rememberFact?: (text: string) => Promise<string | null>;
   fastToolRouter?: FastToolRouter;
-  codingAgent?: CodingAgentService;
-  classifyPendingIntent?: (
-    input: PendingIntentInput,
-  ) => Promise<PendingIntentDecision>;
+  codingAgent?: CodingAgentController;
+  getWorkflowStatus?: () => {
+    name: string;
+    status: string;
+    currentStepId: string | null;
+    pendingConfirmation: { stepId: string; reason: string } | null;
+    totalSteps: number;
+    completedSteps: number;
+  } | null;
+  cancelWorkflow?: () => Promise<boolean>;
 }
 
 const DEFAULT_WAKE_PATTERNS: RegExp[] = [
@@ -152,7 +155,7 @@ const DEFAULT_WAKE_PATTERNS: RegExp[] = [
   /(赛维斯|瑟维斯|瑟尔维斯|赛勒斯|塞勒斯|赛鲁斯|塞维斯)/i,
 ];
 
-const USER_RESPONSE_FALLBACK_MS = 6000;
+const USER_RESPONSE_FALLBACK_MS = 900;
 
 const normalize = (text: string) =>
   text
@@ -177,16 +180,6 @@ const GUI_INTERACTION_PATTERNS: RegExp[] = [
   /\b(click|select|book|order|fill|login|scroll|compare|screenshot|add to cart|pay|purchase|submit)\b/i,
 ];
 
-const shouldClassifyPendingReply = (text: string): boolean => {
-  const trimmed = text.trim();
-  if (!trimmed || Array.from(trimmed).length > 40) {
-    return false;
-  }
-  return /(?:对|是|好|行|嗯|可以|确认|执行|删|取消|不要|不是|别|yes|no|ok|continue)/i.test(
-    trimmed,
-  );
-};
-
 /**
  * The conversational brain.
  *
@@ -209,11 +202,11 @@ export class VoiceBrain {
   private lastUserText = '';
   private lastVoiceIntent: VoiceIntentDecision | null = null;
   private lastActionableUserText = '';
-  private conversationConfirmationUntil = 0;
   private partialUserText = '';
   private assistantTextBuffer = '';
   private lastFinalTranscript = '';
   private lastFinalAt = 0;
+  private lastEmptyReplyAt = 0;
   private inspectionGeneration = 0;
   private gazeSuggestion: { value: GazeSuggestion; expiresAt: number } | null =
     null;
@@ -250,6 +243,7 @@ export class VoiceBrain {
   private userResponseOutputSeen = false;
   private lastAssistantText = '';
   private lastAssistantAudioAt = 0;
+  private lastAssistantTextAt = 0;
   // After a bare "停/暂停", do not let the model speak an acknowledgment.
   // The user expects the audio to stop, not a new reply confirming it.
   private suppressReplyUntil = 0;
@@ -268,6 +262,13 @@ export class VoiceBrain {
   private lastCodingProgressMessage = '';
   private lastHardStopAt = 0;
   private navigationExecutions = new Set<string>();
+  private readonly backgroundToolJobs = new Map<
+    string,
+    {
+      heartbeat: ReturnType<typeof setInterval>;
+      startFallback: ReturnType<typeof setTimeout> | null;
+    }
+  >();
   private readonly unsubscribeController: () => void;
   private readonly completionClaimPattern =
     /(已经打开|已经输入|已经完成|已完成|完成了|打开了|输入了|opened|typed|completed|finished|done|succeeded)/i;
@@ -277,7 +278,7 @@ export class VoiceBrain {
   private readonly wakePatterns: RegExp[];
 
   constructor(
-    private readonly controller: CyrvisController,
+    private readonly controller: TaskController,
     private readonly callbacks: VoiceBrainCallbacks = {},
     providerFactory: (callbacks: VoiceProviderCallbacks) => VoiceProvider,
     private readonly options: VoiceBrainOptions = {},
@@ -357,6 +358,15 @@ export class VoiceBrain {
     this.wake();
   }
 
+  /** Progress from long-running non-GUI tools uses the same voice path. */
+  announceProgress(text: string): void {
+    const message = text.trim();
+    if (!message || this.userSpeaking || this.ttsSpeaking) return;
+    this.wake();
+    this.taskSpeechGuardUntil = Date.now() + 1_800;
+    this.speak(message);
+  }
+
   /** A button/hotkey is an explicit reply request even when voice is asleep. */
   speakRequestedReply(text: string): void {
     this.suppressReplyUntil = 0;
@@ -413,7 +423,7 @@ export class VoiceBrain {
     if (!pending.value.actions.some((item) => item.kind === action))
       return {
         ok: false,
-        message: '这个对象暂不支持该操作，请先确认作品名称。',
+        message: '这个对象暂不支持该操作，请先确认目标名称。',
       };
     if (
       (action === 'play' || action === 'open') &&
@@ -426,8 +436,8 @@ export class VoiceBrain {
         : this.options.getGazeActionContext?.('刚才的这个对象') || null;
       const started = this.routeGazeDesktopAction(
         action === 'play'
-          ? '播放刚才注视的这个作品'
-          : '打开刚才注视的这个对象查看详情',
+          ? '执行刚才注视对象的播放操作'
+          : '打开刚才注视的对象查看详情',
         action === 'play' ? 'play' : 'click',
         context,
       );
@@ -448,7 +458,7 @@ export class VoiceBrain {
     this.armUserResponseWatchdog();
     if (this.provider.submitText?.(request) !== true) {
       this.speak(
-        '当前语音引擎无法接收这条上下文请求，请直接说出作品名称和要做的操作。',
+        '当前语音引擎无法接收这条上下文请求，请直接说出目标名称和要做的操作。',
       );
       return { ok: false, message: '当前语音引擎不支持上下文请求' };
     }
@@ -495,11 +505,32 @@ export class VoiceBrain {
       );
       this.markUserResponseOutput();
       this.speak(
-        taskActive
-          ? '我在处理，请稍等，完成后我会告诉你。'
-          : '我在，正在理解你的请求，请稍等。',
+        taskActive ? '我在处理，完成后我会告诉你。' : this.fallbackReply(),
       );
     }, USER_RESPONSE_FALLBACK_MS);
+  }
+
+  private fallbackReply(): string {
+    const text = this.lastUserText.trim();
+    if (/(?:pptx?|powerpoint|演示文稿)/i.test(text)) {
+      return '好，PPT 任务已开始。';
+    }
+    if (/(?:写入|写到|写进|保存|文本文件|\.txt\b|txt文件)/i.test(text)) {
+      return '好，正在写入文件。';
+    }
+    if (/(?:关闭|关掉|退出)/i.test(text)) {
+      return '好，正在关闭。';
+    }
+    if (/(?:打开|启动|运行)/i.test(text)) {
+      return '好，正在打开。';
+    }
+    if (/(?:搜索|搜一下|查一下|查找)/i.test(text)) {
+      return '好，正在查找。';
+    }
+    if (/(?:创建|新建|制作|生成)/i.test(text)) {
+      return '好，正在处理。';
+    }
+    return '我在，马上回答。';
   }
 
   /**
@@ -560,6 +591,11 @@ export class VoiceBrain {
       clearTimeout(this.speakWatchdog);
       this.speakWatchdog = null;
     }
+    for (const job of this.backgroundToolJobs.values()) {
+      clearInterval(job.heartbeat);
+      if (job.startFallback) clearTimeout(job.startFallback);
+    }
+    this.backgroundToolJobs.clear();
     this.unsubscribeController();
     this.proactivity.reset();
     this.provider.close();
@@ -607,6 +643,7 @@ export class VoiceBrain {
           return;
         }
         if (text.trim()) {
+          this.lastAssistantTextAt = Date.now();
           this.responseHadText = true;
           this.taskConversation.noteAssistantOutput();
           this.currentResponseText = final
@@ -616,9 +653,6 @@ export class VoiceBrain {
         }
         if (final && text.trim()) {
           this.lastAssistantText = text;
-          if (/确认执行|是否执行|是否确认|需要确认|请确认|确认吗/i.test(text)) {
-            this.conversationConfirmationUntil = Date.now() + 120_000;
-          }
         }
         this.guardCompletionClaim(text);
         this.callbacks.onAssistantText?.(text, final);
@@ -732,6 +766,10 @@ export class VoiceBrain {
       return true;
     }
     this.callbacks.onTranscript?.(text, final);
+    const workflowWaiting =
+      this.options.getWorkflowStatus?.()?.status === 'waiting_confirmation';
+    const deferStopToWorkflow =
+      workflowWaiting || /工作流|多步骤任务/i.test(text);
 
     if (!final) {
       this.partialUserText += text;
@@ -739,10 +777,7 @@ export class VoiceBrain {
       // the GUI/coding task has already taken another action. Act on the
       // partial as soon as it is unambiguous. A pending sensitive-action
       // confirmation keeps "取消" for its own cancel path.
-      if (
-        this.isStopCommand(this.partialUserText) &&
-        this.options.fastToolRouter?.hasPendingConfirmation() !== true
-      ) {
+      if (this.isStopCommand(this.partialUserText) && !deferStopToWorkflow) {
         this.partialUserText = '';
         this.handleStopCommand();
         return true;
@@ -758,13 +793,25 @@ export class VoiceBrain {
     if (!text.trim()) {
       // Empty finals are server-side VAD noise or a dropped short word. The
       // barge/KWS path already handles real stops; cancelling here cut every
-      // ongoing answer after a few words. Ignore them entirely.
+      // ongoing answer after a few words. Only answer when local VAD proves the
+      // user actually spoke and no assistant response is active.
       console.log('[cyrvis voice] empty transcript ignored', {
         sinceSpeechMs: this.lastUserSpeechAt
           ? Date.now() - this.lastUserSpeechAt
           : null,
         speechMs: this.lastUserSpeechDurationMs,
       });
+      const now = Date.now();
+      if (
+        this.awake &&
+        !this.ttsSpeaking &&
+        this.lastUserSpeechDurationMs >= 700 &&
+        now - this.lastAssistantAudioAt > 5_000 &&
+        now - this.lastEmptyReplyAt > 10_000
+      ) {
+        this.lastEmptyReplyAt = now;
+        this.speak('我没听清，请再说一遍。');
+      }
       return true;
     }
 
@@ -791,17 +838,11 @@ export class VoiceBrain {
       /^(?:呃|啊|哦|嗯|唉|诶|好|ok)?[，,\s]*(先停一下|先停|停一下|停一停|停下来|停下|停止|停|别说了|不要说了|取消|算了|stop|cancel|abort)[，,\s]*(.*)$/i.exec(
         text,
       );
-    if (
-      leadingStop &&
-      this.options.fastToolRouter?.hasPendingConfirmation() !== true
-    ) {
+    if (leadingStop && !deferStopToWorkflow) {
       this.handleStopCommand();
       return true;
     }
-    if (
-      this.isStopCommand(text) &&
-      this.options.fastToolRouter?.hasPendingConfirmation() !== true
-    ) {
+    if (this.isStopCommand(text) && !deferStopToWorkflow) {
       this.handleStopCommand();
       return true;
     }
@@ -823,36 +864,16 @@ export class VoiceBrain {
     this.lastFinalTranscript = transcriptKey;
     this.lastFinalAt = now;
     this.navigationExecutions = new Set();
-    const desktopAction =
-      !this.options.fastToolRouter?.hasPendingConfirmation() &&
-      this.options.getGazeActionContext
-        ? gazeDesktopAction(text)
-        : null;
+    const gazeAction = this.options.getGazeActionContext
+      ? gazeDesktopAction(text)
+      : null;
     // Snapshot the referent before clearing the spoken suggestion/cooldown.
-    const desktopContext = desktopAction
+    const desktopContext = gazeAction
       ? this.options.getGazeActionContext?.(text)
       : null;
+    const desktopAction = gazeAction;
 
-    const pending = this.options.fastToolRouter?.getPendingConfirmation();
-    if (
-      pending &&
-      this.options.classifyPendingIntent &&
-      this.options.fastToolRouter?.canHandle(text) !== true &&
-      shouldClassifyPendingReply(text)
-    ) {
-      this.lastUserText = text;
-      this.armUserResponseWatchdog();
-      this.notifyState();
-      this.handleSemanticPendingReply(text, pending);
-      return true;
-    }
-
-    if (
-      !this.options.fastToolRouter?.hasPendingConfirmation() &&
-      !desktopAction &&
-      this.isGazeFollowup(text) &&
-      this.gazeSuggestion
-    ) {
+    if (!desktopAction && this.isGazeFollowup(text) && this.gazeSuggestion) {
       const pending = this.gazeSuggestion.value;
       const action = resolveGazeReply(text, pending);
       if (action === 'clarify') {
@@ -879,17 +900,21 @@ export class VoiceBrain {
     // not let the dynamic fast-tool router consume those turns.
     const canHandleFastTool =
       !semanticMode && this.options.fastToolRouter?.canHandle(text) === true;
-    const explicitConfirmation =
-      this.options.fastToolRouter?.isConfirmationIntent(text) === true;
+    const workflowCancellation =
+      workflowWaiting && /^(?:取消|不要|算了|否|no|cancel)$/i.test(text.trim());
+    const actionableVoiceTurn =
+      canHandleFastTool ||
+      ['task', 'control'].includes(classifyIntent(text).kind) ||
+      (['task', 'navigate', 'search', 'compare'].includes(voiceIntent.mode) &&
+        voiceIntent.confidence === 'high');
 
     // Speaker mode: the mic can pick up the assistant's own voice. If ASR
     // returns a short echo of the last reply ("我在", "我来", "我"), do not
     // start another turn; otherwise the model answers itself forever.
-    // Pending confirmation is explicit control input and must bypass this
-    // filter because the assistant itself just spoke "confirm execution".
     if (
       !canHandleFastTool &&
-      !explicitConfirmation &&
+      !actionableVoiceTurn &&
+      !workflowCancellation &&
       this.isSelfEchoTranscript(text)
     ) {
       console.log('[cyrvis voice] self-echo transcript ignored', text);
@@ -1036,17 +1061,42 @@ export class VoiceBrain {
     }
 
     const isStatusQuery = this.isTaskStatusQuery(text);
-    if (!explicitConfirmation && !bareStop && !isStatusQuery) {
+    if (!bareStop && !isStatusQuery) {
       this.lastActionableUserText = text;
-      this.conversationConfirmationUntil = 0;
+    }
+
+    if (workflowCancellation && this.options.cancelWorkflow) {
+      this.provider.cancelResponse();
+      void this.options
+        .cancelWorkflow()
+        .then((cancelled) => {
+          this.speak(cancelled ? '已取消工作流。' : '当前没有可取消的工作流。');
+        })
+        .catch((error: unknown) => {
+          this.speak(
+            `取消工作流失败：${error instanceof Error ? error.message : String(error)}`,
+          );
+        });
+      return true;
     }
 
     if (
-      explicitConfirmation &&
-      !canHandleFastTool &&
-      Date.now() < this.conversationConfirmationUntil &&
-      this.tryRecoveredConfirmation()
+      /(?:取消|停止|终止).{0,8}(?:工作流|多步骤任务)|(?:工作流|多步骤任务).{0,8}(?:取消|停止)/i.test(
+        text,
+      ) &&
+      this.options.cancelWorkflow
     ) {
+      this.provider.cancelResponse();
+      void this.options
+        .cancelWorkflow()
+        .then((cancelled) => {
+          this.speak(cancelled ? '已取消工作流。' : '当前没有可取消的工作流。');
+        })
+        .catch((error: unknown) => {
+          this.speak(
+            `取消工作流失败：${error instanceof Error ? error.message : String(error)}`,
+          );
+        });
       return true;
     }
 
@@ -1100,7 +1150,7 @@ export class VoiceBrain {
       Date.now() - context.observedAt > 60_000 ||
       !context.gaze.target
     ) {
-      this.speak('请先看向要操作的对象，等绿框锁定，或者告诉我歌单名称。');
+      this.speak('请先看向要操作的对象，等绿框锁定，或者直接说出目标名称。');
       return false;
     }
     if (this.controller.isBusy()) {
@@ -1118,8 +1168,8 @@ export class VoiceBrain {
       );
       this.speak(
         action === 'click'
-          ? '好，我来点击你刚才选中的对象。'
-          : '好，我来操作你选中的歌单，检查播放结果后告诉你。',
+          ? '好，正在操作你选中的对象。'
+          : '好，正在执行选定对象的操作，完成后告诉你。',
       );
       return true;
     } catch (error) {
@@ -1135,6 +1185,15 @@ export class VoiceBrain {
   private handleTaskStatusQuery(text: string): boolean {
     if (!this.isTaskStatusQuery(text)) {
       return false;
+    }
+    const workflow = this.options.getWorkflowStatus?.();
+    if (workflow) {
+      this.provider.cancelResponse();
+      const progress = `${workflow.completedSteps}/${workflow.totalSteps}`;
+      this.speak(
+        `工作流 ${workflow.name} 状态：${workflow.status}，已完成 ${progress} 步${workflow.currentStepId ? `，当前步骤 ${workflow.currentStepId}` : ''}。`,
+      );
+      return true;
     }
     const coding = this.options.codingAgent?.getStatus();
     const codingIsRecent =
@@ -1233,57 +1292,9 @@ export class VoiceBrain {
   }
 
   private isTaskStatusQuery(text: string): boolean {
-    return /(?:任务.*(?:进度|状态|到哪|第几步)|(?:进度|第几步|执行到哪|做到哪|进行.{0,3}哪一步|现在在做什么)|(?:任务|你).*怎么样了|(?:开始|做完|完成|执行完|跑完|弄完|创建完).{0,3}(?:了)?(?:吗|没|没有)|(?:还在|仍在).{0,4}(?:做|执行|运行|处理))/i.test(
+    return /(?:任务|工作流).*(?:进度|状态|到哪|第几步)|(?:进度|第几步|执行到哪|做到哪|进行.{0,3}哪一步|现在在做什么)|(?:任务|工作流|你).*怎么样了|(?:开始|做完|完成|执行完|跑完|弄完|创建完).{0,3}(?:了)?(?:吗|没|没有)|(?:还在|仍在).{0,4}(?:做|执行|运行|处理)/i.test(
       text,
     );
-  }
-
-  private tryRecoveredConfirmation(): boolean {
-    const router = this.options.fastToolRouter;
-    const lastCommand = this.lastActionableUserText.trim();
-    if (!router || !lastCommand) {
-      return false;
-    }
-    if (router.canHandle(lastCommand)) {
-      this.fastToolGuardUntil = Date.now() + 8000;
-      this.deterministicFastToolGuardUntil = Date.now() + 8000;
-      this.provider.cancelResponse();
-      void router
-        .executeConfirmedCommand(lastCommand)
-        .then((outcome) => {
-          if (!outcome?.handled || !outcome.speech) {
-            return;
-          }
-          this.conversationConfirmationUntil = 0;
-          this.fastToolGuardUntil = Date.now() + 3000;
-          this.deterministicFastToolGuardUntil = Date.now() + 3000;
-          this.speak(outcome.speech);
-        })
-        .catch((error: unknown) => {
-          this.fastToolGuardUntil = 0;
-          this.deterministicFastToolGuardUntil = 0;
-          const normalized =
-            error instanceof Error ? error : new Error(String(error));
-          this.callbacks.onError?.(normalized);
-          this.speak(`操作失败：${normalized.message}`);
-        });
-      return true;
-    }
-    if (
-      !this.controller.isBusy() &&
-      classifyIntent(lastCommand).kind === 'task'
-    ) {
-      try {
-        this.conversationConfirmationUntil = 0;
-        this.controller.startTask(lastCommand, 'voice');
-        return true;
-      } catch (error) {
-        this.callbacks.onError?.(
-          error instanceof Error ? error : new Error(String(error)),
-        );
-      }
-    }
-    return false;
   }
 
   private resolveSiteTarget(value: string, query?: string) {
@@ -1332,17 +1343,8 @@ export class VoiceBrain {
       await fallback();
       return true;
     }
-    if (router.hasPendingConfirmation()) {
-      this.provider.cancelResponse();
-      return false;
-    }
     const execution = await router.executeNavigationTool(tool, args);
     const outcome = execution?.outcome;
-    if (outcome?.result?.error?.code === 'CONFIRMATION_REQUIRED') {
-      this.provider.cancelResponse();
-      this.speak(outcome.speech || SENSITIVE_CONFIRMATION_PROMPT);
-      return false;
-    }
     if (!outcome?.ok) {
       this.provider.sendToolResult(
         call.callId,
@@ -1563,14 +1565,6 @@ export class VoiceBrain {
       }
     }
     if (localFastTool) {
-      if (this.options.fastToolRouter?.hasPendingConfirmation()) {
-        this.provider.cancelResponse();
-        console.info('[cyrvis fast-tools] ignored tool call while confirming', {
-          providerTool: call.name,
-          tool: localFastTool,
-        });
-        return;
-      }
       const canonical = effectiveTool && NAVIGATION_TOOL_ALIASES[effectiveTool];
       if (canonical) {
         const args =
@@ -2074,6 +2068,7 @@ export class VoiceBrain {
           );
           return;
         }
+        this.speak('好，正在写入文件。');
         try {
           if (
             !(await this.executeNavigation(
@@ -2143,6 +2138,143 @@ export class VoiceBrain {
           this.provider.sendToolResult(
             call.callId,
             `ERROR: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        break;
+      }
+      case 'close_webpage': {
+        const query = String(call.args.query || '').trim();
+        if (!query || !this.options.fastToolRouter) {
+          this.provider.sendToolResult(
+            call.callId,
+            JSON.stringify({
+              ok: false,
+              status: 'invalid_request',
+              message: 'close_webpage requires a page title or URL.',
+            }),
+          );
+          break;
+        }
+        this.speak(`好，正在关闭${query}。`);
+        try {
+          const execution =
+            await this.options.fastToolRouter.executeNavigationTool(
+              'browser.close_page',
+              { query },
+            );
+          const outcome = execution?.outcome;
+          this.provider.sendToolResult(
+            call.callId,
+            JSON.stringify({
+              ok: outcome?.ok === true,
+              status: outcome?.ok === true ? 'closed' : 'failed',
+              query,
+              message: outcome?.speech,
+              data: outcome?.result?.data,
+              error: outcome?.result?.error,
+            }),
+          );
+        } catch (error) {
+          this.provider.sendToolResult(
+            call.callId,
+            JSON.stringify({
+              ok: false,
+              status: 'failed',
+              query,
+              message: `关闭网页失败：${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            }),
+          );
+        }
+        break;
+      }
+      case 'create_presentation': {
+        if (!this.options.fastToolRouter) {
+          this.provider.sendToolResult(
+            call.callId,
+            JSON.stringify({
+              ok: false,
+              status: 'unavailable',
+              message: '本地演示文稿工具不可用。',
+            }),
+          );
+          break;
+        }
+        const title =
+          String(call.args.title || '').trim() ||
+          this.lastActionableUserText ||
+          'CYRVIS 演示文稿';
+        const requestedPath = String(call.args.path || '').trim();
+        const targetPath =
+          requestedPath ||
+          `桌面/CYRVIS-${title
+            .replace(/[<>:"/\\|?*]/g, '-')
+            .replace(/\s+/g, ' ')
+            .slice(0, 60)}-${Date.now()}.pptx`;
+        const presentationArgs = {
+          path: targetPath,
+          title,
+          content:
+            String(call.args.content || '').trim() ||
+            this.lastActionableUserText,
+          ...(call.args.sourcePath
+            ? { sourcePath: String(call.args.sourcePath) }
+            : {}),
+          ...(typeof call.args.pageCount === 'number'
+            ? { pageCount: call.args.pageCount }
+            : {}),
+          ...(call.args.audience
+            ? { audience: String(call.args.audience) }
+            : {}),
+          ...(call.args.templateId
+            ? { templateId: String(call.args.templateId) }
+            : {}),
+          ...(call.args.mode ? { mode: call.args.mode } : {}),
+          provider: call.args.provider || 'auto',
+        };
+        if (
+          this.options.fastToolRouter.isLongRunningTool(
+            'office.create_presentation',
+            presentationArgs,
+          )
+        ) {
+          this.startBackgroundProviderToolCall(
+            call,
+            'office.create_presentation',
+            presentationArgs,
+          );
+          break;
+        }
+        try {
+          const execution =
+            await this.options.fastToolRouter.executeNavigationTool(
+              'office.create_presentation',
+              presentationArgs,
+            );
+          const outcome = execution?.outcome;
+          this.provider.sendToolResult(
+            call.callId,
+            JSON.stringify({
+              ok: outcome?.ok === true,
+              status: outcome?.ok === true ? 'completed' : 'failed',
+              path: targetPath,
+              message: outcome?.speech,
+              data: outcome?.result?.data,
+              error: outcome?.result?.error,
+            }),
+          );
+        } catch (error) {
+          this.provider.sendToolResult(
+            call.callId,
+            JSON.stringify({
+              ok: false,
+              status: 'failed',
+              path: targetPath,
+              message: `PPT 制作失败：${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            }),
           );
         }
         break;
@@ -2683,13 +2815,6 @@ export class VoiceBrain {
         }
         break;
       }
-      case 'confirm_action': {
-        this.provider.sendToolResult(
-          call.callId,
-          'ERROR: confirmation is not implemented yet.',
-        );
-        break;
-      }
       default: {
         const unknown = call as { callId: string; name: string };
         this.provider.sendToolResult(
@@ -2721,25 +2846,23 @@ export class VoiceBrain {
           tool: route.tool,
           domain: route.domain,
           risk: route.risk,
-          requiresConfirmation: route.requiresConfirmation,
         });
+        const acknowledgement = this.fastToolAcknowledgement(route.tool);
+        if (acknowledgement) this.speak(acknowledgement);
+        if (router.isLongRunningTool(route.tool, route.args)) {
+          this.startBackgroundRoute(route);
+          return null;
+        }
         return router.execute(route);
       })
       .then((outcome) => {
         if (!outcome?.handled || !outcome.speech) {
           return;
         }
-        if (
-          outcome.route?.kind === 'confirm' ||
-          outcome.route?.kind === 'cancel'
-        ) {
-          this.conversationConfirmationUntil = 0;
-        }
         console.info('[cyrvis fast-tools] result', {
           kind: outcome.route?.kind,
           tool: outcome.route?.tool,
           ok: outcome.ok,
-          confirmationRequired: outcome.route?.requiresConfirmation === true,
           durationMs: Date.now() - startedAt,
         });
         this.fastToolGuardUntil = Date.now() + 3000;
@@ -2757,70 +2880,129 @@ export class VoiceBrain {
     return true;
   }
 
-  private handleSemanticPendingReply(
-    text: string,
-    pending: NonNullable<ReturnType<FastToolRouter['getPendingConfirmation']>>,
+  private startBackgroundRoute(route: FastToolRoute): void {
+    this.runBackgroundFastTool(
+      `route:${route.tool}:${Date.now()}`,
+      this.backgroundToolLabel(route.tool),
+      () => this.options.fastToolRouter!.execute(route),
+    );
+  }
+
+  private startBackgroundProviderToolCall(
+    call: VoiceToolCallWithId,
+    localName: string,
+    args: Record<string, unknown>,
   ): void {
-    const router = this.options.fastToolRouter;
-    const classify = this.options.classifyPendingIntent;
-    if (!router || !classify) {
-      return;
-    }
-    this.fastToolGuardUntil = Date.now() + 8_000;
-    this.deterministicFastToolGuardUntil = Date.now() + 8_000;
-    this.provider.cancelResponse();
-    const context = [
-      this.lastActionableUserText,
-      this.taskConversation.describeStatus(),
-    ]
-      .filter(Boolean)
-      .join('\n');
-    void classify({ text, pending, context })
-      .then(async (decision) => {
-        const threshold = pending.risk === 'high' ? 0.9 : 0.82;
-        if (decision.intent === 'confirm' && decision.confidence >= threshold) {
-          const outcome = await router.confirmPending();
-          this.markUserResponseOutput();
-          this.speak(outcome.speech || '操作已执行。');
-          console.info('[cyrvis intent-arbiter] confirmed', {
-            tool: pending.tool,
-            confidence: decision.confidence,
-            reason: decision.reason,
-          });
+    if (this.backgroundToolJobs.has(call.callId)) return;
+    const label = this.backgroundToolLabel(localName);
+    const startMessage = `好，${label}已开始，完成后我会向你汇报。`;
+    this.provider.sendToolResult(
+      call.callId,
+      JSON.stringify({
+        ok: true,
+        status: 'running',
+        background: true,
+        tool: localName,
+        message: `${label}已在后台启动。请立即简短确认已开始，并告诉用户完成后会汇报；不要说任务已经完成。`,
+        startMessage,
+      }),
+    );
+    this.fastToolGuardUntil = Date.now() + 3_000;
+    this.runBackgroundFastTool(
+      call.callId,
+      label,
+      async () => {
+        const execution =
+          await this.options.fastToolRouter!.executeProviderToolCall(
+            call.name,
+            args,
+          );
+        return execution?.outcome || null;
+      },
+      startMessage,
+    );
+  }
+
+  private runBackgroundFastTool(
+    key: string,
+    label: string,
+    operation: () => Promise<FastToolOutcome | null>,
+    startMessage?: string,
+  ): void {
+    if (this.backgroundToolJobs.has(key)) return;
+    const heartbeat = setInterval(() => {
+      this.announceProgress(`${label}仍在处理中，完成后会告诉你。`);
+    }, 30_000);
+    heartbeat.unref?.();
+    const startFallback = startMessage
+      ? setTimeout(() => {
+          const job = this.backgroundToolJobs.get(key);
+          if (!job || this.userSpeaking || this.ttsSpeaking) return;
+          if (Date.now() - this.lastAssistantTextAt < 5_000) return;
+          this.speakRequestedReply(startMessage);
+        }, 2_000)
+      : null;
+    startFallback?.unref?.();
+    this.backgroundToolJobs.set(key, { heartbeat, startFallback });
+    void operation()
+      .then((outcome) => {
+        if (!this.backgroundToolJobs.has(key)) return;
+        if (!outcome) {
+          this.speakRequestedReply(`${label}没有返回执行结果。`);
           return;
         }
-        if (decision.intent === 'cancel' && decision.confidence >= 0.82) {
-          const outcome = await router.cancelPending();
-          this.markUserResponseOutput();
-          this.speak(outcome.speech || '已取消。');
-          console.info('[cyrvis intent-arbiter] cancelled', {
-            tool: pending.tool,
-            confidence: decision.confidence,
-            reason: decision.reason,
-          });
-          return;
-        }
-        this.markUserResponseOutput();
-        this.speak('待确认操作尚未执行。请明确说“执行”或“取消”。');
-        console.info('[cyrvis intent-arbiter] ambiguous pending reply', {
-          tool: pending.tool,
-          intent: decision.intent,
-          confidence: decision.confidence,
-          reason: decision.reason,
-        });
+        const detail = outcome.speech?.trim();
+        const message = outcome.ok
+          ? `${label}已完成。${detail || ''}`
+          : `${label}未完成。${detail || '请查看任务详情。'}`;
+        this.speakRequestedReply(message);
       })
       .catch((error: unknown) => {
-        const normalized =
-          error instanceof Error ? error : new Error(String(error));
-        this.callbacks.onError?.(normalized);
-        this.markUserResponseOutput();
-        this.speak('没有判断出是否确认。请说“执行”或“取消”。');
+        if (!this.backgroundToolJobs.has(key)) return;
+        const message = error instanceof Error ? error.message : String(error);
+        this.speakRequestedReply(`${label}执行失败：${message}`);
       })
       .finally(() => {
+        const job = this.backgroundToolJobs.get(key);
+        if (job) {
+          clearInterval(job.heartbeat);
+          if (job.startFallback) clearTimeout(job.startFallback);
+        }
+        this.backgroundToolJobs.delete(key);
         this.fastToolGuardUntil = Date.now() + 3_000;
         this.deterministicFastToolGuardUntil = Date.now() + 3_000;
-        this.notifyState();
       });
+  }
+
+  private backgroundToolLabel(tool: string): string {
+    if (tool === 'office.create_presentation') return 'PPT 制作';
+    if (tool === 'workflow.start') return '工作流任务';
+    if (tool === 'web.download') return '文件下载';
+    if (tool === 'archive.create') return '压缩任务';
+    if (tool === 'archive.extract') return '解压任务';
+    if (tool === 'document.extract_text' || tool === 'pdf.extract_text') {
+      return '文档解析';
+    }
+    if (tool === 'capability.invoke') return '长程任务';
+    return '任务';
+  }
+
+  private fastToolAcknowledgement(tool: string): string | null {
+    if (tool === 'office.create_presentation') {
+      return '好，PPT 已开始制作，我会汇报进度。';
+    }
+    if (tool === 'web.download' || tool === 'network.download') {
+      return '好，正在下载。';
+    }
+    if (
+      tool === 'document.archive' ||
+      tool === 'document.extract' ||
+      tool === 'fs.copy' ||
+      tool === 'fs.move'
+    ) {
+      return '好，正在处理文件。';
+    }
+    return null;
   }
 
   private async handleFastProviderToolCall(
@@ -2838,6 +3020,15 @@ export class VoiceBrain {
 
     const discoveryOnly =
       localName === 'capability.search' || localName === 'capability.describe';
+    const toolArgs = call.args as Record<string, unknown>;
+    if (!discoveryOnly && router.isLongRunningTool(localName, toolArgs)) {
+      const backgroundName =
+        localName === 'capability.invoke' && typeof toolArgs.toolId === 'string'
+          ? toolArgs.toolId
+          : localName;
+      this.startBackgroundProviderToolCall(call, backgroundName, toolArgs);
+      return;
+    }
     this.fastToolGuardUntil = discoveryOnly ? 0 : Date.now() + 8000;
     try {
       const execution = await router.executeProviderToolCall(
@@ -2852,21 +3043,6 @@ export class VoiceBrain {
         return;
       }
       const outcome = execution.outcome;
-      const confirmationRequired =
-        outcome.route?.requiresConfirmation === true ||
-        outcome.result?.error?.code === 'CONFIRMATION_REQUIRED';
-      if (confirmationRequired) {
-        // Returning another tool result starts a new model response, which
-        // commonly calls the same tool again and repeats "confirm". Cancel the
-        // model turn and ask directly from the deterministic confirmation state.
-        this.provider.cancelResponse();
-        this.speak(outcome.speech || SENSITIVE_CONFIRMATION_PROMPT);
-        console.info('[cyrvis fast-tools] confirmation required', {
-          providerTool: call.name,
-          tool: localName,
-        });
-        return;
-      }
       const payload = {
         ok: outcome.ok === true,
         status: outcome.ok === true ? 'completed' : 'failed',
@@ -2882,16 +3058,12 @@ export class VoiceBrain {
           ? `${serialized.slice(0, 12_000)}...TRUNCATED`
           : serialized,
       );
-      const handledLocally =
-        !discoveryOnly &&
-        (outcome.ok === true ||
-          outcome.result?.error?.code === 'CONFIRMATION_REQUIRED');
+      const handledLocally = !discoveryOnly && outcome.ok === true;
       this.fastToolGuardUntil = handledLocally ? Date.now() + 3000 : 0;
       console.info('[cyrvis fast-tools] model tool result', {
         providerTool: call.name,
         tool: localName,
         ok: outcome.ok,
-        confirmationRequired,
       });
     } catch (error) {
       this.fastToolGuardUntil = 0;
@@ -3187,11 +3359,28 @@ export class VoiceBrain {
   }
 
   private notifyCodingProgress(snapshot: CodingTaskSnapshot): void {
-    if (!this.awake || this.userSpeaking) {
+    if (this.userSpeaking) {
       return;
     }
+    if (!this.awake) this.wake();
+    const now = Date.now();
     const event = snapshot.lastEvent;
     if (!event?.tool) {
+      const fallback = snapshot.lastMessage.trim();
+      if (!this.lastCodingProgressAt) {
+        this.lastCodingProgressAt = now;
+        this.lastCodingProgressMessage = fallback;
+        return;
+      }
+      if (
+        fallback &&
+        now - this.lastCodingProgressAt >= 15_000 &&
+        fallback !== this.lastCodingProgressMessage
+      ) {
+        this.lastCodingProgressAt = now;
+        this.lastCodingProgressMessage = fallback;
+        this.speak(`编码进度：${fallback}`);
+      }
       return;
     }
 
@@ -3220,10 +3409,15 @@ export class VoiceBrain {
           : `运行失败：${output || '未知错误'}`;
       }
     } else {
-      return;
+      if (!this.lastCodingProgressAt) {
+        this.lastCodingProgressAt = now;
+        this.lastCodingProgressMessage = event.message || snapshot.lastMessage;
+        return;
+      }
+      if (now - this.lastCodingProgressAt < 15_000) return;
+      text = `编码进度：${event.message || snapshot.lastMessage}`.trim();
     }
 
-    const now = Date.now();
     if (!isResult && now - this.lastCodingProgressAt < 1_500) {
       return;
     }

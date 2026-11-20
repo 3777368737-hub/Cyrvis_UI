@@ -10,6 +10,7 @@ import {
   Volume2,
 } from 'lucide-react';
 
+import { LinkifiedText } from './LinkifiedText';
 import { useVoiceAudio } from './useVoiceAudio';
 import { useDynamicContext } from './useDynamicContext';
 
@@ -124,13 +125,15 @@ export function CyrvisVoiceBar() {
             </div>
             <div className="flex min-w-0 items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
               <span className="truncate">
-                {error
-                  ? error
-                  : assistantText ||
-                    transcript ||
-                    (state.awake
-                      ? 'Listening… say a command.'
-                      : 'Say “Hello CYRVIS” to wake me.')}
+                {error ? (
+                  error
+                ) : assistantText || transcript ? (
+                  <LinkifiedText text={assistantText || transcript} />
+                ) : state.awake ? (
+                  'Listening… say a command.'
+                ) : (
+                  'Say “Hello CYRVIS” to wake me.'
+                )}
               </span>
               {context?.activeApplication && (
                 <span

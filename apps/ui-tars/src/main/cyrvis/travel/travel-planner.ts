@@ -6,7 +6,9 @@ import {
   buildDayPlanFromCatalog,
   formatCatalogOption,
   isSkiOriented,
+  matchSelectedCatalogPlace,
   resolveBookableOptions,
+  type CatalogPlace,
 } from './travel-catalog';
 
 export type TravelPhase =
@@ -80,6 +82,8 @@ export interface TravelPlanSnapshot {
   lastSearchQuery: string | null;
   softBridge: string;
   speakHint: string;
+  /** Booking links only for options the user has explicitly confirmed. */
+  confirmedBookings: Array<{ name: string; url: string; blurb: string }>;
 }
 
 export interface TravelUpdateInput {
@@ -304,6 +308,11 @@ export class TravelPlanner {
   private lastSearchQuery: string | null = null;
   private lastIdleSuggestion = '';
   private preferenceAsked = false;
+  private confirmedBookings: Array<{
+    name: string;
+    url: string;
+    blurb: string;
+  }> = [];
 
   reset(): void {
     this.phase = 'idle';
@@ -316,6 +325,21 @@ export class TravelPlanner {
     this.lastSearchQuery = null;
     this.lastIdleSuggestion = '';
     this.preferenceAsked = false;
+    this.confirmedBookings = [];
+  }
+
+  /** Clear plan progress but keep the current framework shell. */
+  clearPlanProgress(): void {
+    this.aspects = [];
+    this.highlights = [];
+    this.primaryInterest = null;
+    this.constraints = {};
+    this.currentAspect = null;
+    this.lastSearchQuery = null;
+    this.lastIdleSuggestion = '';
+    this.preferenceAsked = false;
+    this.confirmedBookings = [];
+    if (this.phase !== 'idle') this.phase = 'collecting_framework';
   }
 
   getSnapshot(speakHint?: string): TravelPlanSnapshot {
@@ -362,6 +386,7 @@ export class TravelPlanner {
       ),
       speakHint:
         speakHint || this.defaultSpeakHint(missingFramework, remainingAspects),
+      confirmedBookings: this.confirmedBookings.map((item) => ({ ...item })),
     };
   }
 
@@ -370,12 +395,31 @@ export class TravelPlanner {
       this.phase = 'collecting_framework';
     }
 
+    const previousDest = this.framework.destination;
     for (const key of FRAMEWORK_FIELDS) {
       const value = clean(input[key]);
       if (value) this.framework[key] = value;
     }
 
     this.inferFromUserText(clean(input.userText));
+
+    const nextDest = this.framework.destination;
+    const userBlob = clean(input.userText) || '';
+    const wantsFreshTrip =
+      /(重新规划|换个目的地|另外去|改去|不[去到]了|新的旅行)/.test(userBlob);
+    if (
+      wantsFreshTrip ||
+      (previousDest &&
+        nextDest &&
+        previousDest.replace(/\s+/g, '').toLowerCase() !==
+          nextDest.replace(/\s+/g, '').toLowerCase())
+    ) {
+      // Keep the newly inferred framework; drop old aspects/bookings/preference.
+      const kept = { ...this.framework };
+      this.clearPlanProgress();
+      this.framework = kept;
+      this.phase = 'collecting_framework';
+    }
 
     // If user already states a strong interest while filling slots, remember it.
     const earlyInterest = parseTravelInterest(clean(input.userText) || '');
@@ -414,7 +458,7 @@ export class TravelPlanner {
         this.phase = 'probing_preferences';
       }
       return this.getSnapshot(
-        `${this.buildSkeleton()}。基础框架齐了。下一步我会按这个目的地和时间，每个大类只提一个亮点（美食、网红打卡、经典必去、当地体验）供你挑；请先调用 travel_probe_highlights 检索后再问用户更偏向哪一类。`,
+        `${this.buildSkeleton()}。目的地和时间有了。下一步按这个行程，每个大类只提一个亮点（美食、网红打卡、经典必去、当地体验）供你挑；请先调用 travel_probe_highlights 检索后再问用户更偏向哪一类。`,
       );
     }
 
@@ -431,7 +475,7 @@ export class TravelPlanner {
     if (missing.length > 0) {
       this.phase = 'collecting_framework';
       return this.getSnapshot(
-        `还缺${this.describeMissing(missing)}，先补基础框架再试探偏好。`,
+        `还缺${this.describeMissing(missing)}，先把时间和地点对一下，再聊偏好。`,
       );
     }
 
@@ -455,9 +499,11 @@ export class TravelPlanner {
     // If preference was already chosen earlier in the chat, do not re-ask.
     if (this.primaryInterest) {
       this.ensureReadyToExpand();
-      const next = preferredAspectOrder(this.primaryInterest)[0];
-      return this.getSnapshot(
-        `${this.buildSkeleton()}。你的偏好我按「${interestLabel(this.primaryInterest)}」来。${softBridgePhrase('next')}我先给你${aspectLabel(next)}的具体推荐。`,
+      return this.expandAspect(
+        preferredAspectOrder(this.primaryInterest)[0] || 'daily_itinerary',
+        undefined,
+        [],
+        interestLabel(this.primaryInterest),
       );
     }
 
@@ -466,14 +512,14 @@ export class TravelPlanner {
         ? this.highlights
             .map(
               (item) =>
-                `${interestLabel(item.interest)}：${item.title}${item.detail ? `（${item.detail}）` : ''}`,
+                `${interestLabel(item.interest)}可以走「${item.title}」这条`,
             )
             .join('；')
-        : '暂时没搜到足够亮点，仍可按美食、打卡、经典景点、当地体验四类来选';
+        : '美食、打卡、经典景点、当地体验四类都行';
 
     this.preferenceAsked = true;
     return this.getSnapshot(
-      `${this.buildSkeleton()}。按这个时间和地点，我各提一个方向：${lines}。你更想主打哪一类？选定后我会直接给可执行推荐，不再反复确认。`,
+      `这边有几条具体线：${lines}。你更想主打哪一类？选定后我直接给你按天可执行的安排（点位名会说清楚）。`,
     );
   }
 
@@ -482,7 +528,7 @@ export class TravelPlanner {
     if (missing.length > 0) {
       this.phase = 'collecting_framework';
       return this.getSnapshot(
-        `基础框架还没齐（缺${this.describeMissing(missing)}），先补这些。`,
+        `还有几项没对上（缺${this.describeMissing(missing)}），先补这些。`,
       );
     }
 
@@ -501,13 +547,23 @@ export class TravelPlanner {
     this.primaryInterest = interest;
     this.framework.purpose = interestLabel(interest);
     const noteText = clean(notes);
-    const highlight = this.highlights.find(
-      (item) => item.interest === interest,
-    );
-    this.phase = 'collecting_constraints';
-
-    return this.getSnapshot(
-      `好，后续会更侧重${interestLabel(interest)}${highlight ? `（例如 ${highlight.title}）` : ''}${noteText ? `，并参考你说的：${noteText}` : ''}。${softBridgePhrase('hold')}接下来用一张很短的约束卡片对齐一下节奏：${CONSTRAINT_CARD_PROMPT}`,
+    // Soft defaults — don't make the constraint card the main reply.
+    this.constraints = {
+      okWithWalking: this.constraints.okWithWalking ?? true,
+      okWithEarlyStart: this.constraints.okWithEarlyStart ?? false,
+      okWithQueues: this.constraints.okWithQueues ?? true,
+      notes:
+        this.constraints.notes ||
+        noteText ||
+        '节奏备注：偏轻松、不赶早（可随时改）',
+    };
+    // Jump straight to a concrete day plan — scheme first, meta in notes.
+    this.ensureReadyToExpand(noteText || interestLabel(interest));
+    return this.expandAspect(
+      'daily_itinerary',
+      noteText,
+      [],
+      noteText || interestLabel(interest),
     );
   }
 
@@ -551,10 +607,13 @@ export class TravelPlanner {
       this.constraints.okWithQueues ??= true;
     }
 
-    this.phase = 'awaiting_expand_choice';
-    const next = preferredAspectOrder(this.primaryInterest)[0];
-    return this.getSnapshot(
-      `约束记下了：${this.describeConstraints()}。${softBridgePhrase('next')}建议先完善${aspectLabel(next)}；当然，你想先看别的板块也可以直接说。`,
+    this.ensureReadyToExpand(clean(input.userText));
+    // Constraints are notes — immediately return an executable plan as the body.
+    return this.expandAspect(
+      preferredAspectOrder(this.primaryInterest)[0] || 'daily_itinerary',
+      clean(input.notes) || clean(input.userText),
+      [],
+      clean(input.userText),
     );
   }
 
@@ -604,7 +663,9 @@ export class TravelPlanner {
     const details: string[] = [];
     const skeleton = this.buildSkeleton();
     if (skeleton) {
-      details.push(`当时定的框架是${skeleton.replace(/^骨架攻略：/, '')}`);
+      details.push(
+        `当时定的框架是${skeleton.replace(/^骨架攻略：|^行程要点：/, '')}`,
+      );
     } else if (destination) {
       const bits = [
         this.framework.origin ? `从${this.framework.origin}出发` : null,
@@ -645,7 +706,7 @@ export class TravelPlanner {
       this.phase === 'collecting_constraints' ||
       this.phase === 'skeleton_ready'
     ) {
-      details.push('基础框架有了，偏好和可执行推荐还没完全展开');
+      details.push('时间和地点有了，偏好和可执行推荐还没完全展开');
     } else if (this.phase === 'collecting_framework') {
       details.push('目的地和时间还在收齐，具体方案还没铺开');
     }
@@ -680,20 +741,24 @@ export class TravelPlanner {
     }
   }
 
-  /** When user already asks for a concrete section, do not block on cards. */
+  /** Soft-fill constraints; never silently invent a preference. */
   ensureReadyToExpand(userText?: string): void {
     this.syncFromConversation([userText || '', this.framework.purpose || '']);
     if (!this.primaryInterest) {
-      this.primaryInterest = 'landmark';
-      this.framework.purpose ||= interestLabel('landmark');
+      const found =
+        parseUserTravelInterest(userText || '') ||
+        parseTravelInterest(userText || '');
+      if (found) {
+        this.primaryInterest = found;
+        this.framework.purpose ||= interestLabel(found);
+      }
     }
     if (!this.hasConstraintAnswers()) {
       this.constraints = {
         okWithWalking: this.constraints.okWithWalking ?? true,
         okWithEarlyStart: this.constraints.okWithEarlyStart ?? false,
         okWithQueues: this.constraints.okWithQueues ?? true,
-        notes:
-          this.constraints.notes || '未单独确认约束，先按轻松不赶早的默认节奏',
+        notes: this.constraints.notes || '节奏备注：偏轻松、不赶早（可随时改）',
       };
     }
     if (
@@ -716,14 +781,34 @@ export class TravelPlanner {
     if (missing.length > 0) {
       this.phase = 'collecting_framework';
       return this.getSnapshot(
-        `基础框架还没齐（缺${this.describeMissing(missing)}），先补这些再展开。`,
+        `还有几项没对上（缺${this.describeMissing(missing)}），先补这些再展开。`,
       );
     }
 
     const aspect =
       this.parseAspect(aspectRaw) || this.parseAspect(userText || '');
+    const expandContext = `${userText || ''} ${aspectRaw} ${notes || ''}`;
+    const bookableAspect =
+      aspect === 'tickets' ||
+      aspect === 'accommodation' ||
+      aspect === 'budget_booking' ||
+      aspect === 'daily_itinerary';
+
+    // Preference first — do not dump restaurant/ticket options before the user chooses a direction.
+    if (
+      bookableAspect &&
+      !this.primaryInterest &&
+      !parseUserTravelInterest(expandContext)
+    ) {
+      this.phase = 'probing_preferences';
+      this.preferenceAsked = true;
+      return this.getSnapshot(
+        '想先主打哪一类？美食、网红打卡、经典必去，或当地体验——你定一个方向后，我再给你具体选项；选定某一项后才会发预订链接。',
+      );
+    }
+
     // User already asked for a concrete section: never bounce back to preference.
-    this.ensureReadyToExpand(`${userText || ''} ${aspectRaw} ${notes || ''}`);
+    this.ensureReadyToExpand(expandContext);
 
     if (!aspect) {
       this.phase = 'awaiting_expand_choice';
@@ -734,7 +819,12 @@ export class TravelPlanner {
 
     this.phase = 'expanding';
     this.currentAspect = aspect;
-    const summary = this.buildAspectSummary(aspect, notes, searchSnippets);
+    const summary = this.buildAspectSummary(
+      aspect,
+      notes,
+      searchSnippets,
+      userText,
+    );
     const existing = this.aspects.findIndex((item) => item.aspect === aspect);
     const draft: TravelAspectDraft = {
       aspect,
@@ -853,7 +943,7 @@ export class TravelPlanner {
         );
       }
       return this.dedupeIdle(
-        '基础框架有了。我可以先按经典必去给你一版可执行草案，你要换方向再说。',
+        '时间和地点有了。我可以先按经典必去给你一版可执行草案，你要换方向再说。',
       );
     }
     if (this.phase === 'collecting_constraints') {
@@ -950,7 +1040,7 @@ export class TravelPlanner {
     const budget = f.budget || '预算待定';
     const transport = f.transport || '大交通待定';
     const purpose = f.purpose ? `，主题偏${f.purpose}` : '';
-    return `骨架攻略：${f.origin || '出发地待定'}出发去${f.destination || '目的地待定'}，${when || '日期待定'}，${people}，${budget}，${transport}${purpose}`;
+    return `行程要点：${f.origin || '出发地待定'}出发去${f.destination || '目的地待定'}，${when || '日期待定'}，${people}，${budget}，${transport}${purpose}`;
   }
 
   private buildExpandMenu(remaining: TravelAspect[]): string {
@@ -966,7 +1056,17 @@ export class TravelPlanner {
     remaining: TravelAspect[],
   ): string {
     if (missing.length) {
-      return `先把基础框架立住。${this.buildNextQuestion(missing)}`;
+      const question = this.buildNextQuestion(missing);
+      const dest = this.framework.destination;
+      if (dest) {
+        const leads = [
+          `去${dest}可以呀。`,
+          `行，${dest}这边我先跟你对一下。`,
+          `${dest}挺好的。`,
+        ];
+        return `${leads[softBridgeCursor % leads.length]}${question}`;
+      }
+      return question ?? '';
     }
     if (this.phase === 'probing_preferences') {
       if (this.highlights.length) {
@@ -983,7 +1083,7 @@ export class TravelPlanner {
     if (this.phase === 'done') {
       return `${softBridgePhrase('done')}若要桌面摘要，调用 travel_finalize_plan。`;
     }
-    return this.buildSkeleton() || '我们先从旅行基础框架开始。';
+    return this.buildSkeleton() || '想去哪玩？我先跟你对一下时间和地点。';
   }
 
   private parseAspect(raw: string): TravelAspect | null {
@@ -1022,6 +1122,7 @@ export class TravelPlanner {
     aspect: TravelAspect,
     notes: string | undefined,
     snippets: string[],
+    userText?: string,
   ): string {
     const f = this.framework;
     const noteText = clean(notes);
@@ -1030,13 +1131,7 @@ export class TravelPlanner {
     const picked = interest
       ? this.highlights.find((item) => item.interest === interest)
       : undefined;
-    const places = this.pickConcretePlaces(snippets, aspect, notes);
-    const placeLine =
-      places.length > 0
-        ? `可执行选项：${places.map((place, index) => `${index + 1}) ${place}`).join('；')}`
-        : picked
-          ? `可执行选项：1) ${picked.title}${picked.detail ? `（${picked.detail}）` : ''}；2) 同区域再备一个相近备选`
-          : `可执行选项：先锁定${f.destination || '目的地'}市中心/景点步行圈 2 个候选，今晚先订可免费取消的那家`;
+    const placeLine = this.buildPlaceLine(aspect, snippets, notes, userText);
     const constraintLead = this.describeConstraintsInline();
     const pace =
       this.constraints.okWithEarlyStart === false ? '出发偏晚、不赶早。' : '';
@@ -1048,21 +1143,27 @@ export class TravelPlanner {
 
     switch (aspect) {
       case 'accommodation':
-        return `${aspectLabel(aspect)}：${constraintLead}${pace}${walk}围绕「${interestText || (ski ? '滑雪' : '行程')}」${picked ? `靠近 ${picked.title}` : '靠近主活动区'}。酒店/民宿也只给预订链接，不代你下单、不开浏览器点订。${placeLine}。预算按${f.budget || '你的预算'}控制；${noteText || '优先可免费取消。'} 你选一个，我写进笔记；你自己点开链接下单即可。`;
+        return `${aspectLabel(aspect)}：${constraintLead}${pace}${walk}围绕「${interestText || (ski ? '滑雪' : '行程')}」${picked ? `靠近 ${picked.title}` : '靠近主活动区'}。${placeLine}预算按${f.budget || '你的预算'}控制；${noteText || '优先可免费取消。'}`;
       case 'daily_itinerary': {
+        const blob = `${f.purpose || ''} ${notes || ''} ${userText || ''}`;
         const dayPlan = buildDayPlanFromCatalog({
           destination: f.destination,
           interest,
-          userText: `${f.purpose || ''} ${notes || ''}`,
+          userText: blob,
           preferLateStart: this.constraints.okWithEarlyStart === false,
-          dayCount: 2,
+          dayCount: /(一天|一日|1\s*天|当日|就一天)/.test(blob) ? 1 : 2,
         });
-        return `${aspectLabel(aspect)}：${constraintLead}${pace}${walk}${f.startDate || '出发日'}到${f.endDate || '返程日'}。按天草案：${dayPlan}。${placeLine}。${noteText || ''} 你点头哪一天的主线，或说“就按 Day1”，我就锁定。`;
+        const paceBits = [
+          this.constraints.okWithEarlyStart === false ? '不赶早' : null,
+          this.constraints.okWithWalking === false ? '少走路' : null,
+        ].filter(Boolean);
+        const paceNote = paceBits.length ? `（${paceBits.join('、')}）` : '';
+        return `${dayPlan}${paceNote}`;
       }
       case 'tickets':
-        return `${aspectLabel(aspect)}：${constraintLead}${this.constraints.okWithQueues === false ? '优先可预约/快速通道。' : ''}所有需要预约或订票的项目，我都只给方案和网址，不代你下单、也不开浏览器点来点去。${placeLine}。${noteText || '选一个，我写进待订清单和最终笔记；你自己点开链接完成支付即可。'}`;
+        return `${aspectLabel(aspect)}：${constraintLead}${this.constraints.okWithQueues === false ? '优先可预约/快速通道。' : ''}${placeLine}${noteText || ''}`;
       case 'budget_booking':
-        return `${aspectLabel(aspect)}：总预算${f.budget || '待定'}。建议今天就定：大交通+住宿；给「${interestText || '主线'}」留弹性。${placeLine}。${noteText || ''}`;
+        return `${aspectLabel(aspect)}：总预算${f.budget || '待定'}。建议今天就定：大交通+住宿；给「${interestText || '主线'}」留弹性。${placeLine}${noteText || ''}`;
       case 'emergency':
         return `${aspectLabel(aspect)}：护照页/订单离线备份、旅行保险、当地急救与改签思路各准备一条。${noteText || '这份先作保底，不占用游玩时间。'}`;
       default:
@@ -1070,28 +1171,57 @@ export class TravelPlanner {
     }
   }
 
-  private pickConcretePlaces(
-    snippets: string[],
+  /**
+   * Options first (no URLs). Booking links only after the user confirms one.
+   */
+  private buildPlaceLine(
     aspect: TravelAspect,
+    snippets: string[],
     notes?: string,
-  ): string[] {
-    const fromCatalog = resolveBookableOptions({
+    userText?: string,
+  ): string {
+    const catalogPlaces = resolveBookableOptions({
       destination: this.framework.destination,
       aspect,
       interest: this.primaryInterest,
-      userText: `${this.framework.purpose || ''} ${notes || ''}`,
+      userText: `${this.framework.purpose || ''} ${notes || ''} ${userText || ''}`,
       preferLateStart: this.constraints.okWithEarlyStart === false,
       limit: 3,
-    }).map(formatCatalogOption);
-    if (fromCatalog.length) return fromCatalog;
+    });
 
-    // Snippets are secondary: Instant Answer is often empty for CN booking.
+    if (catalogPlaces.length) {
+      const selectionBlob = this.selectionTextForConfirm(notes, userText);
+      const selected = selectionBlob
+        ? matchSelectedCatalogPlace(catalogPlaces, selectionBlob)
+        : null;
+
+      if (selected?.url) {
+        this.rememberConfirmedBooking(selected);
+        return `你选定了「${selected.name}」。预订链接：${selected.url}（请自己打开下单，我不代订）。`;
+      }
+
+      const listed = catalogPlaces
+        .map(
+          (place, index) =>
+            `${index + 1}) ${formatCatalogOption(place, { withUrl: false })}`,
+        )
+        .join('；');
+      return `可执行选项：${listed}。你先定一个（可以说选项名或“选1”）；选定后我再发对应预订链接。`;
+    }
+
     const fromSnippets = snippets
-      .map((item) => item.replace(/\s+/g, ' ').trim())
+      .map((item) =>
+        item
+          .replace(/https?:\/\/\S+/gi, '')
+          .replace(/\s+/g, ' ')
+          .trim(),
+      )
       .filter(Boolean)
       .map((item) => (item.length > 36 ? `${item.slice(0, 34)}…` : item))
       .slice(0, 3);
-    if (fromSnippets.length) return fromSnippets;
+    if (fromSnippets.length) {
+      return `可执行选项：${fromSnippets.map((place, index) => `${index + 1}) ${place}`).join('；')}。你先定一个，选定后再给你预订入口。`;
+    }
 
     const fromHighlights = this.highlights
       .filter((item) => {
@@ -1109,7 +1239,29 @@ export class TravelPlanner {
         item.detail ? `${item.title}（${item.detail}）` : item.title,
       )
       .slice(0, 3);
-    return fromHighlights;
+    if (fromHighlights.length) {
+      return `可执行选项：${fromHighlights.map((place, index) => `${index + 1}) ${place}`).join('；')}。你先定一个，选定后再给你预订入口。`;
+    }
+
+    return `可执行选项：先锁定${this.framework.destination || '目的地'}附近 2～3 个候选。你先说更偏向哪一类，选定具体项后我再发链接。`;
+  }
+
+  private rememberConfirmedBooking(place: CatalogPlace): void {
+    if (!place.url) return;
+    if (this.confirmedBookings.some((item) => item.url === place.url)) return;
+    this.confirmedBookings.push({
+      name: place.name,
+      url: place.url,
+      blurb: place.blurb,
+    });
+  }
+
+  /**
+   * Confirm only via `notes` (or a pure “选1” promoted into notes by the voice
+   * layer). Ignore expand-request userText so links never bleed across aspects.
+   */
+  private selectionTextForConfirm(notes?: string, _userText?: string): string {
+    return clean(notes) || '';
   }
 
   private hasConstraintAnswers(): boolean {
@@ -1120,25 +1272,14 @@ export class TravelPlanner {
     );
   }
 
-  private describeConstraints(): string {
-    const parts = [
-      `步行${this.formatConstraintShort(this.constraints.okWithWalking)}`,
-      `早起${this.formatConstraintShort(this.constraints.okWithEarlyStart)}`,
-      `排队${this.formatConstraintShort(this.constraints.okWithQueues)}`,
-    ];
-    if (this.constraints.notes) parts.push(`补充：${this.constraints.notes}`);
-    return parts.join('，');
-  }
-
   private describeConstraintsInline(): string {
     if (!this.hasConstraintAnswers()) return '';
-    return `结合约束（${this.describeConstraints()}），`;
-  }
-
-  private formatConstraintShort(value?: boolean | null): string {
-    if (value === true) return '可接受';
-    if (value === false) return '尽量避免';
-    return '未定';
+    const bits = [
+      this.constraints.okWithWalking === false ? '少走路' : null,
+      this.constraints.okWithEarlyStart === false ? '不赶早' : null,
+      this.constraints.okWithQueues === false ? '少排队' : null,
+    ].filter(Boolean);
+    return bits.length ? `${bits.join('、')}。` : '';
   }
 
   private inferConstraintsFromText(text?: string): TravelConstraints {

@@ -8,8 +8,9 @@ import {
   TravelPlanner,
   isExplicitTravelGuiRequest,
   isTravelPlanningText,
-  softBridgePhrase,
 } from './travel-planner';
+import { buildDayPlanFromCatalog } from './travel-catalog';
+import { formatTravelPlanHtml } from './travel-memo';
 import { buildSeasonContext, inferTravelMonth } from './travel-season';
 
 describe('TravelPlanner', () => {
@@ -45,25 +46,31 @@ describe('TravelPlanner', () => {
     expect(second.speakHint).toMatch(/travel_probe_highlights|亮点|偏好/);
   });
 
-  it('probes highlights, sets preference, then constraint card before expand', () => {
+  it('sets preference and returns a concrete day plan immediately', () => {
     planner.updateFramework({
-      destination: '巴黎',
-      origin: '上海',
-      startDate: '12月20日',
-      endDate: '12月27日',
+      destination: '北京',
+      origin: '深圳',
+      startDate: '下周一',
+      endDate: '下下周一',
     });
 
     planner.setHighlights([
-      { interest: 'food', title: '法式小酒馆' },
-      { interest: 'checkin', title: '圣心堂阶梯' },
-      { interest: 'landmark', title: '卢浮宫' },
-      { interest: 'experience', title: '圣诞市场' },
+      { interest: 'food', title: '簋街小龙虾' },
+      { interest: 'checkin', title: '三里屯太古里' },
+      { interest: 'landmark', title: '故宫博物院' },
+      { interest: 'experience', title: '什刹海酒吧街' },
     ]);
 
-    const preferred = planner.setPreference('我更喜欢吃美食');
-    expect(preferred.primaryInterest).toBe('food');
-    expect(preferred.phase).toBe('collecting_constraints');
-    expect(preferred.speakHint).toMatch(/约束卡片|走路|早起|排队/);
+    const preferred = planner.setPreference('网红打卡');
+    expect(preferred.primaryInterest).toBe('checkin');
+    expect(preferred.speakHint).toMatch(/三里屯|南锣|故宫|798|什刹海/);
+    expect(preferred.speakHint).not.toMatch(
+      /约束卡片|我帮你整理|十一月网红打卡/,
+    );
+    expect(preferred.speakHint).not.toMatch(/https?:\/\//);
+    expect(
+      preferred.aspects.some((item) => item.aspect === 'daily_itinerary'),
+    ).toBe(true);
 
     const constrained = planner.setConstraints({
       userText: '不能走太多，不早起，排队还可以',
@@ -71,18 +78,8 @@ describe('TravelPlanner', () => {
     expect(constrained.constraints.okWithWalking).toBe(false);
     expect(constrained.constraints.okWithEarlyStart).toBe(false);
     expect(constrained.constraints.okWithQueues).toBe(true);
-    expect(constrained.phase).toBe('awaiting_expand_choice');
-    expect(constrained.speakHint).toMatch(/先记到这里|再加上|完善/);
-
-    const expanded = planner.expandAspect('每日行程', undefined, [
-      '法式小酒馆 Le Comptoir',
-      '马莱区咖啡馆散步',
-    ]);
-    expect(expanded.speakHint).toMatch(/可执行选项/);
-    expect(expanded.speakHint).toMatch(/法式小酒馆|马莱/);
-    expect(expanded.speakHint).toMatch(/出发偏晚|少步行|地铁/);
-    expect(softBridgePhrase('done')).toMatch(
-      /先考虑到这里|先停在这版|先这样收/,
+    expect(constrained.speakHint).toMatch(
+      /三里屯|南锣|故宫|798|什刹海|餐厅|打卡/,
     );
   });
 
@@ -152,10 +149,10 @@ describe('TravelPlanner', () => {
     planner.syncFromConversation(['主打美食', '不早起', '看一下行程']);
     const itinerary = planner.expandAspect('每日行程', undefined, [], '看行程');
     expect(itinerary.speakHint).toMatch(/Day1/);
-    expect(itinerary.speakHint).toMatch(/可执行选项/);
     expect(itinerary.speakHint).toMatch(
       /卢浮宫|圣心|塞纳|Comptoir|马莱|拉丁|圣日耳曼/,
     );
+    expect(itinerary.speakHint).not.toMatch(/主预约点|当地简餐|备份点/);
   });
 
   it('ticket-first ski intent expands from catalog without preference loop', () => {
@@ -179,12 +176,23 @@ describe('TravelPlanner', () => {
     );
     expect(tickets.speakHint).toMatch(/可执行选项/);
     expect(tickets.speakHint).toMatch(/雪票|太舞|云顶/);
-    expect(tickets.speakHint).toMatch(/https?:\/\//);
-    expect(tickets.speakHint).toMatch(/不代你下单|不代订|自己点开/);
+    // Options first — no booking URL until the user picks one.
+    expect(tickets.speakHint).not.toMatch(/https?:\/\//);
+    expect(tickets.speakHint).toMatch(/选定后.*链接|先定一个/);
     expect(tickets.speakHint).not.toMatch(/还没选定旅行偏好/);
+
+    const confirmed = planner.expandAspect(
+      'tickets',
+      '选1',
+      [],
+      '帮我预订滑雪场的票',
+    );
+    expect(confirmed.speakHint).toMatch(/https?:\/\//);
+    expect(confirmed.speakHint).toMatch(/选定了|预订链接/);
+    expect(confirmed.confirmedBookings.length).toBeGreaterThan(0);
   });
 
-  it('any destination reservation gets link-only options without Paris/ski leak', () => {
+  it('any destination reservation gets options first, link only after pick', () => {
     planner.updateFramework({
       destination: '东京',
       origin: '上海',
@@ -199,12 +207,21 @@ describe('TravelPlanner', () => {
     );
     expect(tickets.speakHint).toMatch(/可执行选项/);
     expect(tickets.speakHint).toMatch(/东京/);
-    expect(tickets.speakHint).toMatch(/https?:\/\//);
-    expect(tickets.speakHint).toMatch(/不代你下单/);
+    expect(tickets.speakHint).not.toMatch(/https?:\/\//);
     expect(tickets.speakHint).not.toMatch(/巴黎|太舞|卢浮宫/);
+
+    const confirmed = planner.expandAspect(
+      'tickets',
+      '选第一个',
+      [],
+      '预约博物馆门票',
+    );
+    expect(confirmed.speakHint).toMatch(/https?:\/\//);
+    expect(confirmed.speakHint).toMatch(/trip\.com|ctrip\.com|damai\.cn/);
+    expect(confirmed.speakHint).not.toMatch(/bing\.com/);
   });
 
-  it('hotels are link-only for any destination without GUI booking', () => {
+  it('hotels list options first; link only after the user confirms', () => {
     planner.updateFramework({
       destination: '大阪',
       origin: '上海',
@@ -214,9 +231,26 @@ describe('TravelPlanner', () => {
     const stays = planner.expandAspect('住宿', undefined, [], '看一下住宿');
     expect(stays.speakHint).toMatch(/可执行选项/);
     expect(stays.speakHint).toMatch(/大阪/);
-    expect(stays.speakHint).toMatch(/https?:\/\//);
-    expect(stays.speakHint).toMatch(/不代你下单|预订链接/);
+    expect(stays.speakHint).not.toMatch(/https?:\/\//);
     expect(stays.speakHint).not.toMatch(/巴黎|太舞/);
+
+    const confirmed = planner.expandAspect('住宿', '选2', [], '看一下住宿');
+    expect(confirmed.speakHint).toMatch(/https?:\/\//);
+    expect(confirmed.speakHint).toMatch(/booking\.com|trip\.com|ctrip\.com/);
+    expect(confirmed.speakHint).not.toMatch(/bing\.com/);
+  });
+
+  it('asks preference before dumping ticket options when none chosen', () => {
+    planner.updateFramework({
+      destination: '佛山',
+      origin: '广州',
+      startDate: '下周',
+      userText: '我想去佛山旅行',
+    });
+    const blocked = planner.expandAspect('门票', undefined, [], '看看门票');
+    expect(blocked.phase).toBe('probing_preferences');
+    expect(blocked.speakHint).toMatch(/主打哪一类|美食|打卡/);
+    expect(blocked.speakHint).not.toMatch(/https?:\/\//);
   });
 
   it('does not lock preference from assistant highlight menus', () => {
@@ -266,5 +300,107 @@ describe('TravelPlanner', () => {
     expect(overview).not.toBeNull();
     expect(overview?.headline).toMatch(/去北京的旅行计划/);
     expect(overview?.details.join('')).toMatch(/美食|框架|上海|五一/);
+  });
+
+  it('clears previous trip progress when destination changes', () => {
+    planner.updateFramework({
+      destination: '巴黎',
+      origin: '上海',
+      startDate: '12月20日',
+      userText: '去巴黎玩，主打美食',
+    });
+    planner.setPreference('food');
+    expect(planner.getSnapshot().aspects.length).toBeGreaterThan(0);
+
+    planner.updateFramework({
+      destination: '北京',
+      origin: '深圳',
+      startDate: '下周一',
+      userText: '改去北京',
+    });
+    const next = planner.getSnapshot();
+    expect(next.framework.destination).toBe('北京');
+    expect(next.aspects).toHaveLength(0);
+    expect(next.confirmedBookings).toHaveLength(0);
+    expect(next.primaryInterest).toBeNull();
+  });
+
+  it('does not treat expand requests as option confirmations across aspects', () => {
+    planner.updateFramework({
+      destination: '东京',
+      origin: '上海',
+      startDate: '5月1日',
+      userText: '帮我预约东京的博物馆门票',
+    });
+    const listed = planner.expandAspect(
+      'tickets',
+      undefined,
+      [],
+      '预约博物馆门票',
+    );
+    expect(listed.speakHint).not.toMatch(/https?:\/\//);
+
+    // Stale userText “选1” without notes must NOT confirm hotels.
+    const hotelList = planner.expandAspect('住宿', undefined, [], '选1');
+    expect(hotelList.speakHint).not.toMatch(/https?:\/\//);
+    expect(hotelList.speakHint).toMatch(/可执行选项/);
+
+    const confirmed = planner.expandAspect('住宿', '选1', [], '看一下住宿');
+    expect(confirmed.speakHint).toMatch(/https?:\/\//);
+    expect(confirmed.speakHint).toMatch(/选定了|预订链接/);
+
+    const again = planner.expandAspect(
+      'tickets',
+      undefined,
+      [],
+      '帮我再看看门票',
+    );
+    expect(again.speakHint).not.toMatch(/https?:\/\//);
+  });
+
+  it('builds distinct Foshan day slots and skips process-memo dump in HTML', () => {
+    const planText = buildDayPlanFromCatalog({
+      destination: '佛山',
+      interest: 'food',
+      preferLateStart: true,
+      dayCount: 2,
+    });
+    expect(planText).toMatch(/Day1/);
+    expect(planText).toMatch(/Day2/);
+    expect(planText).not.toMatch(/主预约点|结合约束/);
+    const day1 = planText.match(/Day1[^D]*/)?.[0] || '';
+    const day2 = planText.match(/Day2.*/)?.[0] || '';
+    expect(day1).not.toEqual(day2);
+    expect(day1).toMatch(/上午去(.+?)，/);
+    const morning1 = day1.match(/上午去(.+?)，/)?.[1];
+    const afternoon1 = day1.match(/下午去(.+?)[。？]/)?.[1];
+    expect(morning1).toBeTruthy();
+    expect(afternoon1).toBeTruthy();
+    expect(morning1).not.toEqual(afternoon1);
+
+    planner.updateFramework({
+      destination: '佛山',
+      origin: '深圳',
+      startDate: '下周一',
+      userText: '深圳出发去佛山，不早起少走路',
+    });
+    planner.setPreference('food');
+    planner.setConstraints({
+      okWithWalking: false,
+      okWithEarlyStart: false,
+      okWithQueues: false,
+    });
+    const snap = planner.expandAspect('每日行程', undefined, [], '看行程');
+    const html = formatTravelPlanHtml(snap, [
+      {
+        id: 'memo-junk',
+        createdAt: Date.now(),
+        kind: 'aspect',
+        title: 'daily_itinerary',
+        body: '结合约束（步行尽量避免），废话',
+      },
+    ]);
+    expect(html).not.toMatch(/过程要点|结合约束|daily_itinerary/);
+    expect(snap.speakHint).not.toMatch(/结合约束/);
   });
 });

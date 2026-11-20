@@ -8,7 +8,6 @@ import { randomUUID } from 'node:crypto';
 
 import { app, shell } from 'electron';
 
-import { listBookingLinks } from './travel-catalog';
 import type { TravelPlanSnapshot } from './travel-planner';
 import { aspectLabel, interestLabel } from './travel-planner';
 
@@ -128,41 +127,26 @@ export const formatTravelPlanSummary = (
   for (const item of plan.aspects) {
     lines.push(`${aspectLabel(item.aspect)}：${item.summary}`);
   }
-  const bookingLinks = listBookingLinks({
-    destination: f.destination,
-    userText: f.purpose || plan.interestLabel || '',
-    limit: 5,
-  });
-  for (const link of bookingLinks) {
+  for (const link of plan.confirmedBookings || []) {
     lines.push(`${link.name}：${link.url}`);
   }
-  const shortMemos = recentMemos
-    .filter((memo) => memo.kind !== 'finalize')
-    .slice(-4);
-  for (const memo of shortMemos) {
-    lines.push(`${memo.title}`);
-  }
+  void recentMemos;
   return lines.join('\n');
 };
 
 export const formatTravelPlanHtml = (
   plan: TravelPlanSnapshot,
-  recentMemos: TravelMemoEntry[] = [],
+  _recentMemos: TravelMemoEntry[] = [],
 ): string => {
   const f = plan.framework;
   const generatedAt = new Date().toLocaleString('zh-CN', { hour12: false });
   const route = `${f.origin || '待定'} → ${f.destination || '待定'}`;
   const when =
     [f.startDate, f.endDate].filter(Boolean).join(' ~ ') || '日期待定';
-  const bookingLinks = listBookingLinks({
-    destination: f.destination,
-    userText: f.purpose || plan.interestLabel || '',
-    limit: 6,
-  });
-  const shortMemos = recentMemos
-    .filter((memo) => memo.kind !== 'finalize')
-    .slice(-6);
-
+  // Desktop HTML only lists links the user has already confirmed in chat.
+  const bookingLinks = plan.confirmedBookings?.length
+    ? plan.confirmedBookings
+    : [];
   const metaChips = [
     ['时间', when],
     ['同行', f.companions || '待定'],
@@ -176,46 +160,10 @@ export const formatTravelPlanHtml = (
     )
     .join('\n');
 
-  const constraintBlock = plan.constraints
-    ? `<section class="panel">
-        <h2>行程节奏</h2>
-        <ul class="facts">
-          <li><span>步行较多</span><strong>${escapeHtml(formatConstraint(plan.constraints.okWithWalking))}</strong></li>
-          <li><span>早起出行</span><strong>${escapeHtml(formatConstraint(plan.constraints.okWithEarlyStart))}</strong></li>
-          <li><span>热门排队</span><strong>${escapeHtml(formatConstraint(plan.constraints.okWithQueues))}</strong></li>
-          ${
-            plan.constraints.notes
-              ? `<li><span>补充</span><strong>${escapeHtml(plan.constraints.notes)}</strong></li>`
-              : ''
-          }
-        </ul>
-      </section>`
-    : '';
-
-  const preferenceBlock = plan.primaryInterest
-    ? `<div class="pref">偏好主线：<strong>${escapeHtml(interestLabel(plan.primaryInterest))}</strong></div>`
-    : '';
-
-  const highlightsBlock = plan.highlights.length
-    ? `<section class="panel">
-        <h2>亮点方向</h2>
-        <div class="grid">
-          ${plan.highlights
-            .map(
-              (item) => `<article class="card soft">
-              <div class="eyebrow">${escapeHtml(interestLabel(item.interest))}</div>
-              <h3>${escapeHtml(item.title)}</h3>
-              ${item.detail ? `<p>${escapeHtml(item.detail)}</p>` : ''}
-            </article>`,
-            )
-            .join('\n')}
-        </div>
-      </section>`
-    : '';
-
+  // Scheme first: aspects are the body. Constraints / preference are footnotes.
   const aspectsBlock = plan.aspects.length
-    ? `<section class="panel">
-        <h2>可执行安排</h2>
+    ? `<section class="panel hero-plan">
+        <h2>可执行方案</h2>
         <div class="stack">
           ${plan.aspects
             .map(
@@ -228,6 +176,45 @@ export const formatTravelPlanHtml = (
         </div>
       </section>`
     : '';
+
+  const preferenceBlock = plan.primaryInterest
+    ? `<p class="pref note">主线偏好：${escapeHtml(interestLabel(plan.primaryInterest))}（备注，可改）</p>`
+    : '';
+
+  const constraintBlock = plan.constraints
+    ? `<section class="panel muted">
+        <h2>方案备注 · 节奏</h2>
+        <ul class="facts">
+          <li><span>步行</span><strong>${escapeHtml(formatConstraint(plan.constraints.okWithWalking))}</strong></li>
+          <li><span>早起</span><strong>${escapeHtml(formatConstraint(plan.constraints.okWithEarlyStart))}</strong></li>
+          <li><span>排队</span><strong>${escapeHtml(formatConstraint(plan.constraints.okWithQueues))}</strong></li>
+          ${
+            plan.constraints.notes
+              ? `<li><span>补充</span><strong>${escapeHtml(plan.constraints.notes)}</strong></li>`
+              : ''
+          }
+        </ul>
+      </section>`
+    : '';
+
+  // Only show highlight chips when we don't yet have a real day plan.
+  const highlightsBlock =
+    !plan.aspects.length && plan.highlights.length
+      ? `<section class="panel">
+        <h2>可选主线（点位示例）</h2>
+        <div class="grid">
+          ${plan.highlights
+            .map(
+              (item) => `<article class="card soft">
+              <div class="eyebrow">${escapeHtml(interestLabel(item.interest))}</div>
+              <h3>${escapeHtml(item.title)}</h3>
+              ${item.detail ? `<p>${escapeHtml(item.detail)}</p>` : ''}
+            </article>`,
+            )
+            .join('\n')}
+        </div>
+      </section>`
+      : '';
 
   const linksBlock = bookingLinks.length
     ? `<section class="panel">
@@ -251,26 +238,11 @@ export const formatTravelPlanHtml = (
       </section>`
     : '';
 
-  const memoBlock = shortMemos.length
-    ? `<section class="panel muted">
-        <h2>过程要点</h2>
-        <ul class="timeline">
-          ${shortMemos
-            .map((memo) => {
-              const oneLine = memo.body
-                .replace(/\s+/g, ' ')
-                .trim()
-                .slice(0, 90);
-              return `<li><strong>${escapeHtml(memo.title)}</strong><span>${escapeHtml(oneLine)}</span></li>`;
-            })
-            .join('\n')}
-        </ul>
-      </section>`
-    : '';
-
-  const skeletonBlock = plan.skeleton
-    ? `<p class="skeleton">${escapeHtml(plan.skeleton)}</p>`
-    : '';
+  // Skeleton is only a quiet footnote — never the main content.
+  const skeletonBlock =
+    plan.skeleton && !plan.aspects.length
+      ? `<p class="skeleton note">${escapeHtml(plan.skeleton.replace(/^骨架攻略：/, '行程要点：').replace(/^行程要点：/, '行程要点：'))}</p>`
+      : '';
 
   return `<!doctype html>
 <html lang="zh-CN">
@@ -519,13 +491,12 @@ export const formatTravelPlanHtml = (
       <div class="chips">${metaChips}</div>
     </header>
 
-    ${preferenceBlock}
-    ${skeletonBlock}
-    ${constraintBlock}
-    ${highlightsBlock}
     ${aspectsBlock}
+    ${highlightsBlock}
     ${linksBlock}
-    ${memoBlock}
+    ${preferenceBlock}
+    ${constraintBlock}
+    ${skeletonBlock}
 
     <footer>
       由 CYRVIS 于 ${escapeHtml(generatedAt)} 生成 · 价格与开放时间以链接页面为准 · 可随时让我继续补充

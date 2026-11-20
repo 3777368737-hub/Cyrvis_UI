@@ -32,6 +32,7 @@ import {
   useFloatingVoice,
   type FloatingEntry,
 } from '@renderer/components/CyrvisVoice/useFloatingVoice';
+import { LinkifiedText } from '@renderer/components/CyrvisVoice/LinkifiedText';
 import { useSetting } from '@renderer/hooks/useSetting';
 import { Operator } from '@main/store/types';
 import type { TaskStatus } from '@shared/cyrvis';
@@ -127,7 +128,10 @@ function ChatEntry({
             : 'border border-slate-200 bg-white text-slate-800'
         }`}
       >
-        <span className="whitespace-pre-wrap break-words">{entry.text}</span>
+        <LinkifiedText
+          text={entry.text}
+          className="whitespace-pre-wrap break-words"
+        />
         {streaming && (
           <span className="ml-1 inline-block h-3 w-1 animate-pulse rounded-sm bg-current align-middle" />
         )}
@@ -186,7 +190,7 @@ function ActivityEntry({ entry }: { entry: FloatingEntry }) {
           failed ? 'text-red-500' : 'text-cyan-600'
         }`}
       />
-      <p className="min-w-0 flex-1 break-words">{entry.text}</p>
+      <LinkifiedText text={entry.text} className="min-w-0 flex-1 break-words" />
       <span className="shrink-0 text-[10px] text-slate-400">
         {formatEntryTime(entry.timestamp)}
       </span>

@@ -9,6 +9,7 @@ import type {
   TravelInterest,
 } from './travel-planner';
 import { INTEREST_LABEL, INTEREST_ORDER, aspectLabel } from './travel-planner';
+import { cityHighlightSeeds } from './travel-catalog';
 import { buildSeasonContext } from './travel-season';
 
 export interface TravelSearchHit {
@@ -130,8 +131,12 @@ export const searchTravelInfo = async (
 
 export const hitsToSnippets = (hits: TravelSearchHit[]): string[] =>
   hits.map((hit) => {
-    const body = hit.snippet || hit.title;
-    return hit.url ? `${body} (${hit.url})` : body;
+    // Never leak URLs into pre-confirm option lists.
+    const body = (hit.snippet || hit.title || '')
+      .replace(/https?:\/\/\S+/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return body;
   });
 
 const INTEREST_QUERY_HINT: Record<TravelInterest, string> = {
@@ -191,20 +196,35 @@ export const probeTravelHighlights = async (
       errors.push(`${row.interest}:${row.result.error}`);
     }
     const top = row.result.hits[0];
-    if (top?.title) {
+    const seed = cityHighlightSeeds(framework.destination)[row.interest];
+    const hitTitle = top?.title?.slice(0, 80) || '';
+    const looksLikeCategoryFluff =
+      !hitTitle ||
+      /(十一月|美食|网红打卡|经典必去|当地特色|必去景点)$/.test(
+        hitTitle.replace(/\s+/g, ''),
+      ) ||
+      (framework.destination &&
+        hitTitle.replace(/\s+/g, '').startsWith(framework.destination) &&
+        hitTitle.length < (framework.destination.length || 0) + 12);
+    if (seed && (!hitTitle || looksLikeCategoryFluff)) {
       highlights.push({
         interest: row.interest,
-        title: top.title.slice(0, 80),
-        detail: (top.snippet || INTEREST_LABEL[row.interest]).slice(0, 100),
+        title: seed.title,
+        detail: seed.detail,
+      });
+    } else if (hitTitle) {
+      highlights.push({
+        interest: row.interest,
+        title: hitTitle,
+        detail: (top?.snippet || INTEREST_LABEL[row.interest]).slice(0, 100),
       });
     } else {
-      // Fallback stub so probing still works offline / empty search.
       highlights.push({
         interest: row.interest,
-        title: `${framework.destination || '当地'}${season.monthLabel || ''}${INTEREST_LABEL[row.interest]}`,
+        title: `${framework.destination || '当地'}热门${INTEREST_LABEL[row.interest]}点`,
         detail: season.festivalHints[0]
-          ? `${season.festivalHints[0]}时节参考`
-          : '检索暂无结果，先用类别占位，可再细查',
+          ? `${season.festivalHints[0]}可参考`
+          : '具体点位展开后给你',
       });
     }
   }

@@ -364,7 +364,7 @@ export const CYRVIS_VOICE_TOOLS: QwenToolDefinition[] = [
     function: {
       name: 'travel_set_preference',
       description:
-        'Record the user travel preference after probing (food / checkin / landmark / experience). Then ask the short constraint card before expanding details.',
+        'Record the user travel preference after probing (food / checkin / landmark / experience). Runtime immediately returns a concrete Day1/Day2 plan with named places — speak that plan; do not ask a constraint card first; do not only promise to organize later.',
       parameters: {
         type: 'object',
         properties: {
@@ -384,7 +384,7 @@ export const CYRVIS_VOICE_TOOLS: QwenToolDefinition[] = [
     function: {
       name: 'travel_set_constraints',
       description:
-        'Save the short constraint card answers: walking a lot, early starts, waiting in queues. Softly bridge into the next planning section afterward.',
+        'Optional pace notes (walking / early starts / queues). Runtime soft-defaults and returns an executable plan — speak the plan first; keep pace as a short aside, never dump JSON.',
       parameters: {
         type: 'object',
         properties: {
@@ -403,7 +403,7 @@ export const CYRVIS_VOICE_TOOLS: QwenToolDefinition[] = [
     function: {
       name: 'travel_expand_aspect',
       description:
-        'Expand one travel aspect with 2-3 concrete options + URLs (any destination). For 门票/预约/订票 AND 住宿/酒店/民宿 set with_search=false and only speak/write booking links—never GUI-book. For 行程 include Day1/Day2 draft. Soft handoff.',
+        'Expand one travel aspect. First call: speak 2-3 named options WITHOUT URLs. Only after the user confirms (选1 / option name) pass that confirmation in notes and then include that one booking link. For 门票/酒店 always with_search=false; never GUI-book. For 行程 speak concrete Day1/Day2 places.',
       parameters: {
         type: 'object',
         properties: {
@@ -412,11 +412,15 @@ export const CYRVIS_VOICE_TOOLS: QwenToolDefinition[] = [
             description:
               'accommodation | daily_itinerary | tickets | budget_booking | emergency, or Chinese labels like 住宿/每日行程.',
           },
-          notes: { type: 'string' },
+          notes: {
+            type: 'string',
+            description:
+              'User confirmation only, e.g. 选1 / 三里屯. Do not put expand requests here.',
+          },
           with_search: {
             type: 'boolean',
             description:
-              'If true, run a lightweight web search to enrich the aspect.',
+              'Must be false for tickets/hotels. Avoid true before the user confirms an option (URLs must not appear early).',
           },
         },
         required: ['aspect'],

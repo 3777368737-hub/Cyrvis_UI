@@ -43,6 +43,7 @@ export interface GUIAdapter {
 }
 
 export type VoiceToolCall =
+  | { name: 'inspect_gaze_target'; args: { question?: string } }
   | {
       name: 'start_gui_task';
       args: { instruction: string; confidence?: number };

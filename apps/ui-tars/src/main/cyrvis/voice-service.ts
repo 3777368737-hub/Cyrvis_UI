@@ -1,3 +1,15 @@
+import { DesktopGazeCursor } from './gaze/cursor';
+import { gazeInspector } from './gaze/desktop-inspector';
+import { getDesktopGaze, setDesktopGaze } from './gaze/context';
+import { ProactiveGaze } from './gaze/proactive';
+import type { GazeAction } from './gaze/suggestions';
+import {
+  selectGazeActionContext,
+  type GazeActionContext,
+} from './gaze/actions';
+import { GazeObjectTracker } from './gaze/object-tracker';
+import { NativeGazeObjects } from './gaze/native-objects';
+import { showCompanion } from '@main/window';
 /*
  * Copyright (c) 2025 Bytedance, Inc. and its affiliates.
  * SPDX-License-Identifier: Apache-2.0
@@ -7,7 +19,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { app, BrowserWindow, globalShortcut, ipcMain } from 'electron';
+import { app, BrowserWindow, globalShortcut, ipcMain, screen } from 'electron';
 
 import * as env from '@main/env';
 import { logger } from '@main/logger';
@@ -55,6 +67,32 @@ interface VoiceService {
 }
 
 let service: VoiceService | null = null;
+let lastGazeVoiceActivityAt = 0;
+const proactiveGaze = new ProactiveGaze({
+  onEvent: (event, detail) =>
+    logger.info('[cyrvis gaze proactive]', { event, detail }),
+  inspect: () => gazeInspector.suggest(),
+  cancel: () => gazeInspector.cancelProactive(),
+  canInspect: () => !proactiveGazeBlockReason(),
+  blockedReason: () => proactiveGazeBlockReason() || '',
+  onSuggestion: (suggestion) => {
+    service?.brain.offerGazeSuggestion(suggestion);
+    emitActivity('speech', suggestion.speech);
+  },
+});
+function proactiveGazeBlockReason(): string | undefined {
+  if (!service || !captureReady) return '请先开启语音助手和麦克风。';
+  if (!gazeInspector.getStatus().enabled) return '请先开启 AI 看屏。';
+  if (service.provider.isReady?.() === false)
+    return '语音正在连接，连好后恢复提醒。';
+  const reason = service.brain.gazeSuggestionBlockReason();
+  if (reason) return reason;
+  if (['capturing', 'thinking'].includes(gazeInspector.getStatus().phase))
+    return '正在处理上一张截图，完成后恢复提醒。';
+  if (Date.now() - lastGazeVoiceActivityAt < 3000)
+    return '对话刚结束，稍后恢复注视计时。';
+  return undefined;
+}
 const providerContextMaxChars = (() => {
   const value = Number(process.env.CYRVIS_CONTEXT_MAX_CHARS);
   return Number.isFinite(value) && value >= 2_000 ? value : 12_000;
@@ -176,6 +214,7 @@ const findAudioScript = (): string | null =>
 const switchWindowsDefaultOutput = async (
   kind: 'headset' | 'speaker',
 ): Promise<void> => {
+  if (process.platform !== 'win32') return;
   const script = findAudioScript();
   if (!script) {
     logger.warn('[cyrvis voice] audio endpoint script not found');
@@ -1139,6 +1178,181 @@ const registerVoiceIpc = () => {
   }
   ipcRegistered = true;
 
+  const desktopCursor = new DesktopGazeCursor();
+  const nativeObjects = new NativeGazeObjects((capture) =>
+    desktopCursor.withHiddenOverlay(capture),
+  );
+  const objectTracker = new GazeObjectTracker({
+    scan: (gaze) => nativeObjects.scan(gaze),
+    render: (state) => desktopCursor.updateTarget(state),
+    onGaze: (gaze) => {
+      const value = gazeInspector.getStatus().enabled ? gaze : null;
+      setDesktopGaze(value);
+      proactiveGaze.update(value);
+    },
+  });
+  const rawGaze = (
+    sample: { x: number; y: number; timestamp: number } | null,
+  ) => {
+    if (
+      !sample ||
+      !Number.isFinite(sample.x) ||
+      !Number.isFinite(sample.y) ||
+      !Number.isFinite(sample.timestamp) ||
+      sample.x < 0 ||
+      sample.x > 1 ||
+      sample.y < 0 ||
+      sample.y > 1 ||
+      Math.abs(Date.now() - sample.timestamp) > 800
+    )
+      return null;
+    const display = screen.getPrimaryDisplay();
+    return {
+      x: sample.x,
+      y: sample.y,
+      at: sample.timestamp,
+      displayId: display.id,
+      bounds: { ...display.bounds },
+    };
+  };
+  ipcMain.handle('cyrvis:gaze:object-status', () => objectTracker.getStatus());
+  ipcMain.handle('cyrvis:gaze:object-configure', (_event, enabled) =>
+    objectTracker.configure(enabled !== false),
+  );
+  ipcMain.handle('cyrvis:gaze:inspect-enabled', (_event, enabled) => {
+    if (enabled !== true) {
+      proactiveGaze.configure(false);
+      service?.brain.clearGazeSuggestion();
+    }
+    return gazeInspector.setEnabled(enabled === true);
+  });
+  ipcMain.handle('cyrvis:gaze:proactive-status', () =>
+    proactiveGaze.getStatus(),
+  );
+  ipcMain.handle('cyrvis:gaze:proactive-configure', (_event, config) => {
+    const enabled =
+      config?.enabled === true && gazeInspector.getStatus().enabled;
+    if (!enabled) service?.brain.clearGazeSuggestion();
+    return proactiveGaze.configure(enabled, Number(config?.dwellMs) || 4500);
+  });
+  ipcMain.handle('cyrvis:gaze:proactive-action', (_event, id, action) => {
+    if (
+      !['play', 'explain', 'story', 'open', 'summarize', 'dismiss'].includes(
+        action,
+      )
+    )
+      return { ok: false, message: '无效操作' };
+    if (!service) return { ok: false, message: '请先开启语音助手' };
+    broadcast('cyrvis:voice:response-stopped');
+    return service.brain.followGazeSuggestion(
+      String(id),
+      action as GazeAction | 'dismiss',
+    );
+  });
+  ipcMain.handle('cyrvis:gaze:inspection-status', () =>
+    gazeInspector.getStatus(),
+  );
+  ipcMain.handle('cyrvis:gaze:inspect', async () => {
+    proactiveGaze.snooze();
+    service?.brain.clearGazeSuggestion();
+    try {
+      const answer = await gazeInspector.inspect();
+      service?.brain.speakRequestedReply(answer);
+    } catch {
+      /* Error is displayed in the inspection panel. */
+    }
+    return gazeInspector.getStatus();
+  });
+  globalShortcut.register('CommandOrControl+Alt+I', () => {
+    proactiveGaze.snooze();
+    service?.brain.clearGazeSuggestion();
+    void gazeInspector
+      .inspect()
+      .then((answer) => {
+        service?.brain.speakRequestedReply(answer);
+      })
+      .catch((error) => {
+        service?.brain.speakRequestedReply(
+          error instanceof Error ? error.message : '看屏识别失败',
+        );
+      });
+  });
+  ipcMain.handle('cyrvis:gaze:cursor', (_event, sample) => {
+    if (objectTracker.getStatus().enabled)
+      objectTracker.update(rawGaze(sample));
+    else desktopCursor.update(sample);
+  });
+  ipcMain.handle('cyrvis:gaze:cursor-enabled', (_event, enabled) =>
+    desktopCursor.setEnabled(enabled === true),
+  );
+  ipcMain.handle('cyrvis:gaze:cursor-preview', async () => {
+    desktopCursor.setEnabled(true);
+    desktopCursor.update({ x: 0.5, y: 0.5, timestamp: Date.now() }, 5000);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return { visible: desktopCursor.isVisible() };
+  });
+  globalShortcut.register('CommandOrControl+Alt+G', () =>
+    desktopCursor.toggle(),
+  );
+  screen.on('display-metrics-changed', () => {
+    objectTracker.clear();
+    proactiveGaze.resetObservation();
+    desktopCursor.hide();
+    setDesktopGaze(null);
+  });
+  screen.on('display-removed', () => {
+    objectTracker.clear();
+    proactiveGaze.resetObservation();
+    desktopCursor.hide();
+    setDesktopGaze(null);
+  });
+  ipcMain.handle('cyrvis:gaze:calibrate-screen', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) return;
+    objectTracker.clear();
+    desktopCursor.hide();
+    // Transparent/vibrant windows can become blank in macOS simple fullscreen.
+    // Cover the primary screen with a normal opaque window instead.
+    if (win.isSimpleFullScreen()) win.setSimpleFullScreen(false);
+    if (win.isFullScreen()) win.setFullScreen(false);
+    win.setVibrancy(null);
+    win.setBackgroundColor('#ffffff');
+    const bounds = screen.getPrimaryDisplay().bounds;
+    win.setBounds(bounds);
+    win.show();
+    win.focus();
+    win.webContents.invalidate();
+  });
+  ipcMain.handle('cyrvis:gaze:hide', (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.hide();
+    showCompanion();
+  });
+  ipcMain.handle('cyrvis:gaze:update', (_event, sample) => {
+    if (objectTracker.getStatus().enabled) {
+      objectTracker.update(rawGaze(sample));
+      return;
+    }
+    if (!sample) {
+      setDesktopGaze(null);
+      proactiveGaze.update(null);
+      return;
+    }
+    if (
+      !Number.isFinite(sample.x) ||
+      !Number.isFinite(sample.y) ||
+      sample.x < 0 ||
+      sample.x > 1 ||
+      sample.y < 0 ||
+      sample.y > 1 ||
+      Math.abs(Date.now() - sample.timestamp) > 3000
+    )
+      return;
+    setDesktopGaze({ x: sample.x, y: sample.y });
+    proactiveGaze.update(getDesktopGaze());
+    // Read the current sample at tool invocation. Repeated session.update calls
+    // can overwrite the voice provider's in-flight speech instructions.
+  });
+
   ipcMain.handle('cyrvis:voice:toggle-ptt', () => {
     setPttActive(!pttActive);
     return { active: pttActive, mode: pttMode };
@@ -1151,7 +1365,11 @@ const registerVoiceIpc = () => {
 
   ipcMain.handle('cyrvis:voice:start', async () => {
     if (!service) {
-      return { ok: false, error: 'voice service is not configured' };
+      return {
+        ok: false,
+        error:
+          '未配置语音模型：请在 apps/ui-tars/.env 填写 QWEN_API_KEY，保存后完全退出并重新启动 CYRVIS。',
+      };
     }
     try {
       await service.brain.start();
@@ -1743,10 +1961,12 @@ export const startVoiceService = (): VoiceService | null => {
         broadcast('cyrvis:voice:audio', copy.buffer);
       },
       onSpeechStarted: () => {
+        lastGazeVoiceActivityAt = Date.now();
         logger.info('[cyrvis voice] speech started');
         broadcast('cyrvis:voice:speech-started');
       },
       onSpeechStopped: () => {
+        lastGazeVoiceActivityAt = Date.now();
         logger.info('[cyrvis voice] speech stopped');
         broadcast('cyrvis:voice:speech-stopped');
       },
@@ -1758,6 +1978,7 @@ export const startVoiceService = (): VoiceService | null => {
         }
       },
       onAssistantText: (text, final) => {
+        lastGazeVoiceActivityAt = Date.now();
         logger.info('[cyrvis voice] assistant text', { text, final });
         broadcast('cyrvis:voice:assistant', { text, final });
         lastAssistantAt = Date.now();
@@ -1812,6 +2033,11 @@ export const startVoiceService = (): VoiceService | null => {
             fastToolMatrix?.router.isPendingConfirmationReply(text) === true;
           const explicitConfirmation =
             final && fastToolMatrix?.router.isConfirmationIntent(text) === true;
+          const gazeConfirmation =
+            final &&
+            !assistantPlaybackActive &&
+            Date.now() >= speakerGuardUntil &&
+            service?.brain.isGazeFollowup(text) === true;
           // Opt-in only: the enrolled embedding does not reliably match the
           // Bluetooth/AEC microphone window on this machine (real user speech
           // scored 0.01-0.05 against a 0.22 threshold). Keep the implementation
@@ -1849,6 +2075,7 @@ export const startVoiceService = (): VoiceService | null => {
             final &&
             !pendingConfirmationReply &&
             !explicitConfirmation &&
+            !gazeConfirmation &&
             isLikelySpeakerEcho(
               text,
               lastAssistantText,
@@ -1960,7 +2187,10 @@ export const startVoiceService = (): VoiceService | null => {
           : new QwenOmniProvider({
               apiKey,
               model: process.env.QWEN_MODEL || 'qwen3.8-omni-flash-realtime',
-              endpoint: process.env.QWEN_REALTIME_URL || undefined,
+              endpoint:
+                process.env.QWEN_REALTIME_URL ||
+                process.env.QWEN_ENDPOINT ||
+                undefined,
               voice:
                 process.env.QWEN_VOICE?.trim() ||
                 resolveCompanionSkin(companionStore.get('skinId')).voice,
@@ -1976,6 +2206,40 @@ export const startVoiceService = (): VoiceService | null => {
     },
     {
       requireWakeWord,
+      getGazeActionContext: (text) => {
+        const inspection = gazeInspector.getStatus(),
+          suggestion = proactiveGaze.getStatus().suggestion;
+        const display = screen.getPrimaryDisplay();
+        const history: GazeActionContext[] = [];
+        if (suggestion?.gaze)
+          history.push({
+            gaze: suggestion.gaze,
+            observedAt: suggestion.gaze.at,
+          });
+        if (inspection.gaze && inspection.capturedAt)
+          history.push({
+            gaze: inspection.gaze,
+            observedAt: inspection.capturedAt,
+          });
+        return selectGazeActionContext(
+          text,
+          getDesktopGaze(),
+          history.filter(
+            (item) =>
+              item.gaze.displayId === display.id &&
+              Object.keys(display.bounds).every(
+                (key) =>
+                  item.gaze.bounds[key as keyof typeof display.bounds] ===
+                  display.bounds[key as keyof typeof display.bounds],
+              ),
+          ),
+        );
+      },
+      inspectGaze: (question) => {
+        proactiveGaze.snooze();
+        return gazeInspector.inspect(question);
+      },
+      snoozeProactiveGaze: (ms) => proactiveGaze.snooze(ms),
       awakeTimeoutMs: requireWakeWord ? 20_000 : 0,
       wakePatterns,
       proactivity: {

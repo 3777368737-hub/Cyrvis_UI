@@ -5,6 +5,18 @@
 import path from 'node:path';
 
 import type { CyrvisController } from './controller';
+import {
+  gazeDesktopAction,
+  gazeDesktopInstruction,
+  type GazeActionContext,
+  type GazeDesktopAction,
+} from './gaze/actions';
+import {
+  gazeActionRequest,
+  resolveGazeReply,
+  type GazeAction,
+  type GazeSuggestion,
+} from './gaze/suggestions';
 import { TaskBusyError } from './controller';
 import type { CodingAgentService, CodingTaskSnapshot } from './coding-agent';
 import type { AllowedApp, SearchEngine } from './desktop-actions';
@@ -112,6 +124,9 @@ export interface VoiceBrainCallbacks {
 }
 
 export interface VoiceBrainOptions {
+  getGazeActionContext?: (text: string) => GazeActionContext | null;
+  inspectGaze?: (question: string) => Promise<string>;
+  snoozeProactiveGaze?: (ms?: number) => void;
   requireWakeWord?: boolean;
   awakeTimeoutMs?: number;
   wakePatterns?: RegExp[];
@@ -199,6 +214,28 @@ export class VoiceBrain {
   private assistantTextBuffer = '';
   private lastFinalTranscript = '';
   private lastFinalAt = 0;
+  private inspectionGeneration = 0;
+  private gazeSuggestion: { value: GazeSuggestion; expiresAt: number } | null =
+    null;
+  private gazeActionHandledUntil = 0;
+  private speechAwaitingTranscript = false;
+  private speechTurn = 0;
+  private pendingGazeRequests = 0;
+  private gazeToolTurn: {
+    generation: number;
+    speechTurn: number;
+    awaitingTranscript: boolean;
+  } | null = null;
+  private lastInspection: {
+    question: string;
+    at: number;
+    result: Promise<string>;
+  } | null = null;
+  private deterministicInspection: {
+    generation: number;
+    toolReply: boolean;
+    answered: boolean;
+  } | null = null;
   private suppressAudioUntilResponseDone = false;
   private completionGuardTriggered = false;
   private awakeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -320,6 +357,104 @@ export class VoiceBrain {
     this.wake();
   }
 
+  /** A button/hotkey is an explicit reply request even when voice is asleep. */
+  speakRequestedReply(text: string): void {
+    this.suppressReplyUntil = 0;
+    this.wake();
+    this.speak(text);
+  }
+
+  clearGazeSuggestion(): void {
+    this.gazeSuggestion = null;
+  }
+  canOfferGazeSuggestion(): boolean {
+    return !this.gazeSuggestionBlockReason();
+  }
+  gazeSuggestionBlockReason(): string | undefined {
+    if (this.options.codingAgent?.isBusy())
+      return '编码任务正在执行，结束后恢复主动提醒。';
+    if (this.controller.isBusy())
+      return '桌面任务正在执行或等待模型，结束后恢复主动提醒。';
+    if (this.userSpeaking) return '正在听你说话，结束后恢复注视计时。';
+    if (this.ttsSpeaking) return '正在播报，播报结束后恢复注视计时。';
+    if (this.waitingForUserResponse || this.pendingGazeRequests > 0)
+      return '正在处理你的请求，完成后恢复主动提醒。';
+    return undefined;
+  }
+  offerGazeSuggestion(value: GazeSuggestion): void {
+    this.gazeSuggestion = { value, expiresAt: Date.now() + 120_000 };
+    this.speakRequestedReply(value.speech);
+  }
+  isGazeFollowup(text: string): boolean {
+    const pending = this.gazeSuggestion;
+    return (
+      !!pending &&
+      Date.now() < pending.expiresAt &&
+      resolveGazeReply(text, pending.value) !== null
+    );
+  }
+  followGazeSuggestion(
+    id: string,
+    action: GazeAction | 'dismiss',
+  ): { ok: boolean; message?: string } {
+    const pending = this.gazeSuggestion;
+    if (!pending || pending.value.id !== id || Date.now() >= pending.expiresAt)
+      return {
+        ok: false,
+        message: '这条建议已过期，请重新看向目标或直接说出完整请求。',
+      };
+    if (action === 'dismiss') {
+      this.gazeSuggestion = null;
+      this.options.snoozeProactiveGaze?.(60_000);
+      this.provider.cancelResponse();
+      this.speakRequestedReply('好，先不打扰你。');
+      return { ok: true };
+    }
+    if (!pending.value.actions.some((item) => item.kind === action))
+      return {
+        ok: false,
+        message: '这个对象暂不支持该操作，请先确认作品名称。',
+      };
+    if (
+      (action === 'play' || action === 'open') &&
+      (this.options.getGazeActionContext ||
+        action === 'open' ||
+        !pending.value.identified)
+    ) {
+      const context = pending.value.gaze
+        ? { gaze: pending.value.gaze, observedAt: pending.value.gaze.at }
+        : this.options.getGazeActionContext?.('刚才的这个对象') || null;
+      const started = this.routeGazeDesktopAction(
+        action === 'play'
+          ? '播放刚才注视的这个作品'
+          : '打开刚才注视的这个对象查看详情',
+        action === 'play' ? 'play' : 'click',
+        context,
+      );
+      return started
+        ? { ok: true }
+        : { ok: false, message: '请重新锁定目标或先处理当前桌面任务。' };
+    }
+    const request = gazeActionRequest(pending.value, action);
+    this.gazeSuggestion = null;
+    this.options.snoozeProactiveGaze?.();
+    this.inspectionGeneration++;
+    this.lastUserText = request;
+    this.lastActionableUserText = request;
+    this.lastVoiceIntent = classifyVoiceIntent(request);
+    this.suppressReplyUntil = 0;
+    this.wake();
+    this.provider.cancelResponse();
+    this.armUserResponseWatchdog();
+    if (this.provider.submitText?.(request) !== true) {
+      this.speak(
+        '当前语音引擎无法接收这条上下文请求，请直接说出作品名称和要做的操作。',
+      );
+      return { ok: false, message: '当前语音引擎不支持上下文请求' };
+    }
+    return { ok: true };
+  }
+
   isTaskSpeechActive(): boolean {
     return Date.now() < this.taskSpeechGuardUntil;
   }
@@ -373,6 +508,15 @@ export class VoiceBrain {
    * a short window so it cannot answer with "好的，已暂停…".
    */
   markUserStop(): void {
+    this.inspectionGeneration++;
+    this.gazeToolTurn = null;
+    this.deterministicInspection = null;
+    this.lastInspection = null;
+    this.gazeActionHandledUntil = 0;
+    this.options.snoozeProactiveGaze?.(60_000);
+    if (this.gazeSuggestion) {
+      this.gazeSuggestion = null;
+    }
     // Qwen can start a follow-up response 2-3s after the barge audio was
     // cancelled. 3s covers the observed 2.3s follow-up while still allowing
     // a real new command to clear the window immediately.
@@ -396,6 +540,7 @@ export class VoiceBrain {
   }
 
   sleep(): void {
+    this.inspectionGeneration++;
     if (!this.awake) {
       return;
     }
@@ -407,6 +552,7 @@ export class VoiceBrain {
   }
 
   dispose(): void {
+    this.inspectionGeneration++;
     this.clearAwakeTimer();
     this.clearPlaybackWatchdog();
     this.clearUserResponseWatchdog();
@@ -432,6 +578,10 @@ export class VoiceBrain {
         this.notifyState();
       },
       onSpeechStarted: () => {
+        if (!this.userSpeaking) {
+          this.speechTurn++;
+          this.speechAwaitingTranscript = true;
+        }
         this.userSpeaking = true;
         this.userSpeechStartedAt = Date.now();
         this.ttsSpeaking = false;
@@ -453,7 +603,7 @@ export class VoiceBrain {
       },
       onTranscript: (text, final) => this.handleTranscript(text, final),
       onAssistantText: (text, final) => {
-        if (this.shouldSuppressReply()) {
+        if (!this.awake || this.shouldSuppressReply()) {
           return;
         }
         if (text.trim()) {
@@ -474,7 +624,7 @@ export class VoiceBrain {
         this.callbacks.onAssistantText?.(text, final);
       },
       onSpeechText: (text, final) => {
-        if (!this.shouldSuppressReply()) {
+        if (this.awake && !this.shouldSuppressReply()) {
           if (text.trim()) {
             this.responseHadSpeechOutput = true;
             this.taskConversation.noteAssistantOutput();
@@ -524,6 +674,7 @@ export class VoiceBrain {
       },
       onResponseDone: () => {
         const textOnlyFallback =
+          this.awake &&
           !this.suppressAudioUntilResponseDone &&
           !this.shouldSuppressReply() &&
           this.responseHadText &&
@@ -575,6 +726,11 @@ export class VoiceBrain {
   }
 
   private handleTranscript(text: string, final: boolean): boolean {
+    if (final && !text.trim()) {
+      // Buffer clear/trim acknowledgements can arrive while an earlier tool
+      // result is being spoken. Silence is not an explicit user stop.
+      return true;
+    }
     this.callbacks.onTranscript?.(text, final);
 
     if (!final) {
@@ -667,6 +823,15 @@ export class VoiceBrain {
     this.lastFinalTranscript = transcriptKey;
     this.lastFinalAt = now;
     this.navigationExecutions = new Set();
+    const desktopAction =
+      !this.options.fastToolRouter?.hasPendingConfirmation() &&
+      this.options.getGazeActionContext
+        ? gazeDesktopAction(text)
+        : null;
+    // Snapshot the referent before clearing the spoken suggestion/cooldown.
+    const desktopContext = desktopAction
+      ? this.options.getGazeActionContext?.(text)
+      : null;
 
     const pending = this.options.fastToolRouter?.getPendingConfirmation();
     if (
@@ -682,6 +847,27 @@ export class VoiceBrain {
       return true;
     }
 
+    if (
+      !this.options.fastToolRouter?.hasPendingConfirmation() &&
+      !desktopAction &&
+      this.isGazeFollowup(text) &&
+      this.gazeSuggestion
+    ) {
+      const pending = this.gazeSuggestion.value;
+      const action = resolveGazeReply(text, pending);
+      if (action === 'clarify') {
+        this.provider.cancelResponse();
+        this.speakRequestedReply(
+          `你想选择哪一项：${pending.actions.map((item) => item.label).join('，')}？`,
+        );
+      } else if (action) this.followGazeSuggestion(pending.id, action);
+      return true;
+    }
+
+    if (this.gazeSuggestion) {
+      this.clearGazeSuggestion();
+      this.options.snoozeProactiveGaze?.();
+    }
     const voiceIntent = classifyVoiceIntent(text);
     this.lastVoiceIntent = voiceIntent;
     const semanticMode =
@@ -713,6 +899,16 @@ export class VoiceBrain {
     }
 
     this.lastUserText = text;
+    // Realtime tools can precede the final ASR event for the same speech.
+    // Keep that turn's generation instead of invalidating its pending result.
+    const joinsEarlyGazeTool =
+      this.speechAwaitingTranscript &&
+      this.gazeToolTurn?.awaitingTranscript &&
+      this.gazeToolTurn.speechTurn === this.speechTurn;
+    if (joinsEarlyGazeTool) this.gazeToolTurn!.awaitingTranscript = false;
+    else this.inspectionGeneration++;
+    this.speechAwaitingTranscript = false;
+    const inspectionGeneration = this.inspectionGeneration;
     if (voiceIntent.mode !== 'chat') {
       console.log(
         '[cyrvis intent]',
@@ -761,6 +957,7 @@ export class VoiceBrain {
         (decision.kind === 'task' ||
           decision.kind === 'control' ||
           canHandleFastTool ||
+          !!desktopAction ||
           ((voiceIntent.mode === 'search' ||
             voiceIntent.mode === 'compare' ||
             voiceIntent.mode === 'answer') &&
@@ -776,8 +973,66 @@ export class VoiceBrain {
       this.notifyState();
     }
 
+    if (desktopAction) {
+      this.routeGazeDesktopAction(text, desktopAction, desktopContext || null);
+      return true;
+    }
+    this.gazeActionHandledUntil = 0;
+
+    if (this.gazeToolTurn?.generation === inspectionGeneration) {
+      this.markUserResponseOutput();
+      this.resetAwakeTimer();
+      this.notifyState();
+      return true;
+    }
+
     if (!bareStop) {
       this.armUserResponseWatchdog();
+    }
+
+    // Consume gaze questions before fast tools. Cascade must skip its own
+    // LLM turn when this handler returns true.
+    if (
+      this.options.inspectGaze &&
+      /(我(?:现在在|正在|在)看什么|我看(?:的|着的)(?:是)?什么|看看我在看|这个是什么|帮我看看这里)/.test(
+        text,
+      )
+    ) {
+      this.provider.cancelResponse();
+      this.markUserResponseOutput();
+      const request = {
+        generation: inspectionGeneration,
+        toolReply: false,
+        answered: false,
+      };
+      this.deterministicInspection = request;
+      void this.inspectGaze(text).then(
+        (answer) => {
+          if (
+            this.awake &&
+            inspectionGeneration === this.inspectionGeneration &&
+            !request.toolReply
+          ) {
+            request.answered = true;
+            this.speak(answer);
+          }
+        },
+        (error) => {
+          if (
+            this.awake &&
+            inspectionGeneration === this.inspectionGeneration &&
+            !request.toolReply
+          ) {
+            request.answered = true;
+            this.speak(
+              error instanceof Error ? error.message : '看屏识别失败，请重试。',
+            );
+          }
+        },
+      );
+      this.resetAwakeTimer();
+      this.notifyState();
+      return true;
     }
 
     const isStatusQuery = this.isTaskStatusQuery(text);
@@ -824,6 +1079,57 @@ export class VoiceBrain {
     this.resetAwakeTimer();
     this.notifyState();
     return Boolean(bareStop);
+  }
+
+  private routeGazeDesktopAction(
+    text: string,
+    action: GazeDesktopAction,
+    context: GazeActionContext | null,
+  ): boolean {
+    this.provider.cancelResponse();
+    this.markUserResponseOutput();
+    this.inspectionGeneration++;
+    this.gazeActionHandledUntil = Date.now() + 8000;
+    this.options.snoozeProactiveGaze?.();
+    this.gazeSuggestion = null;
+    this.lastActionableUserText = text;
+    this.suppressReplyUntil = 0;
+    this.wake();
+    if (
+      !context ||
+      Date.now() - context.observedAt > 60_000 ||
+      !context.gaze.target
+    ) {
+      this.speak('请先看向要操作的对象，等绿框锁定，或者告诉我歌单名称。');
+      return false;
+    }
+    if (this.controller.isBusy()) {
+      this.speak('桌面任务正在执行。请先停止当前任务，再操作这个对象。');
+      return false;
+    }
+    if (this.options.codingAgent?.isBusy()) {
+      this.speak('编码任务正在执行。请先停止当前任务，再操作这个对象。');
+      return false;
+    }
+    try {
+      this.controller.startTask(
+        gazeDesktopInstruction(text, action, context),
+        'voice',
+      );
+      this.speak(
+        action === 'click'
+          ? '好，我来点击你刚才选中的对象。'
+          : '好，我来操作你选中的歌单，检查播放结果后告诉你。',
+      );
+      return true;
+    } catch (error) {
+      this.speak(
+        error instanceof Error
+          ? `桌面任务未启动：${error.message}`
+          : '桌面任务未启动，请重试。',
+      );
+      return false;
+    }
   }
 
   private handleTaskStatusQuery(text: string): boolean {
@@ -927,7 +1233,7 @@ export class VoiceBrain {
   }
 
   private isTaskStatusQuery(text: string): boolean {
-    return /(?:任务.*(?:进度|状态|到哪|第几步)|(?:进度|第几步|执行到哪|做到哪|现在在做什么)|(?:任务|你).*怎么样了|(?:开始|做完|完成|执行完|跑完|弄完|创建完).{0,3}(?:了)?(?:吗|没|没有)|(?:还在|仍在).{0,4}(?:做|执行|运行|处理))/i.test(
+    return /(?:任务.*(?:进度|状态|到哪|第几步)|(?:进度|第几步|执行到哪|做到哪|进行.{0,3}哪一步|现在在做什么)|(?:任务|你).*怎么样了|(?:开始|做完|完成|执行完|跑完|弄完|创建完).{0,3}(?:了)?(?:吗|没|没有)|(?:还在|仍在).{0,4}(?:做|执行|运行|处理))/i.test(
       text,
     );
   }
@@ -1136,6 +1442,18 @@ export class VoiceBrain {
       });
       return;
     }
+    if (
+      Date.now() < this.gazeActionHandledUntil &&
+      ['start_gui_task', 'inspect_gaze_target'].includes(call.name)
+    ) {
+      this.provider.sendToolResult(
+        call.callId,
+        this.controller.isBusy()
+          ? 'ALREADY_ROUTED_TO_GUI: 用户确认的注视对象操作已经交给桌面 Agent，等待执行结果，不要重复启动或声称无法操作。'
+          : 'GAZE_ACTION_HANDLED: 该轮已由确定性路径处理，请等待用户明确目标。',
+      );
+      return;
+    }
     const localFastTool = this.options.fastToolRouter?.resolveProviderToolName(
       call.name,
     );
@@ -1278,6 +1596,52 @@ export class VoiceBrain {
     }
 
     switch (call.name) {
+      case 'inspect_gaze_target': {
+        const generation = this.inspectionGeneration;
+        const deterministic =
+          this.deterministicInspection?.generation === generation
+            ? this.deterministicInspection
+            : null;
+        // Join an in-flight local request, instead of taking a second screenshot.
+        // Once spoken, cancel a late duplicate response so the mic is not left muted.
+        if (deterministic?.answered || deterministic?.toolReply) {
+          this.provider.cancelResponse();
+          return;
+        }
+        if (deterministic) deterministic.toolReply = true;
+        const turn = {
+          generation,
+          speechTurn: this.speechTurn,
+          awaitingTranscript: this.speechAwaitingTranscript,
+        };
+        this.gazeToolTurn = turn;
+        this.markUserResponseOutput();
+        try {
+          const answer = await (deterministic && this.lastInspection
+            ? this.lastInspection.result
+            : this.inspectGaze(
+                call.args.question || this.lastUserText || '我在看什么？',
+              ));
+          if (this.awake && generation === this.inspectionGeneration)
+            this.provider.sendToolResult(
+              call.callId,
+              JSON.stringify({ ok: true, answer, read_only: true }),
+            );
+        } catch (error) {
+          if (this.awake && generation === this.inspectionGeneration)
+            this.provider.sendToolResult(
+              call.callId,
+              JSON.stringify({
+                ok: false,
+                error: error instanceof Error ? error.message : '看屏识别失败',
+              }),
+            );
+        } finally {
+          if (this.gazeToolTurn === turn) this.gazeToolTurn = null;
+          this.resetAwakeTimer();
+        }
+        break;
+      }
       case 'start_gui_task': {
         if (this.options.codingAgent?.isBusy()) {
           this.provider.sendToolResult(
@@ -2549,6 +2913,24 @@ export class VoiceBrain {
     }
   }
 
+  private inspectGaze(question: string): Promise<string> {
+    if (!this.options.inspectGaze)
+      return Promise.reject(new Error('当前未配置AI看屏功能。'));
+    this.pendingGazeRequests++;
+    let operation: Promise<string>;
+    try {
+      operation = this.options.inspectGaze(question);
+    } catch (error) {
+      operation = Promise.reject(error);
+    }
+    const result = operation.finally(() => {
+      this.pendingGazeRequests--;
+      this.resetAwakeTimer();
+    });
+    this.lastInspection = { question, at: Date.now(), result };
+    return result;
+  }
+
   private handleContinueCommand(text: string): boolean {
     const isContinueOnly =
       /^(?:啊|呃|哦|嗯|好|ok)?[，,\s]*(?:继续|恢复|接着做|继续任务|continue|resume)(?:吧|啊|呀|刚刚那个任务|刚才那个任务|之前的任务)?[。！？!?，,\s]*$/i.test(
@@ -2885,6 +3267,7 @@ export class VoiceBrain {
   }
 
   private speak(text: string): void {
+    if (!this.awake) return;
     this.taskConversation.noteAssistantOutput();
     this.markUserResponseOutput();
     this.ttsSpeaking = true;
@@ -2926,6 +3309,14 @@ export class VoiceBrain {
       return;
     }
     this.awakeTimer = setTimeout(() => {
+      if (
+        this.pendingGazeRequests > 0 ||
+        this.ttsSpeaking ||
+        this.controller.isBusy()
+      ) {
+        this.resetAwakeTimer();
+        return;
+      }
       this.sleep();
     }, this.awakeTimeoutMs);
   }

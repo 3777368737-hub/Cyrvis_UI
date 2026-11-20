@@ -60,17 +60,19 @@ vi.mock('ws', () => ({
 }));
 
 const providers: QwenOmniProvider[] = [];
-const setup = (model?: string) => {
+const setup = (model?: string, endpoint?: string) => {
   vi.useFakeTimers();
   const callbacks = {
     onError: vi.fn(),
     onClose: vi.fn(),
     onReady: vi.fn(),
     onAudio: vi.fn(),
+    onToolCall: vi.fn(),
   };
   const provider = new QwenOmniProvider({
     apiKey: 'test-key',
     model,
+    endpoint,
     callbacks,
     connectTimeoutMs: 100,
   });
@@ -90,6 +92,132 @@ const sent = (socket: FakeWebSocket) =>
   socket.send.mock.calls.map(([data]) => JSON.parse(data));
 
 describe('Qwen companion voices', () => {
+  it('can speak first in a fresh Audio session by creating a read-only input before response.create', async () => {
+    const { provider } = setup('qwen-audio-3.0-realtime-plus');
+    const connected = provider.connect();
+    sockets[0].ready();
+    await connected;
+    provider.speak('这是一张封面，暂时不能确认作品名称。');
+    const messages = sent(sockets[0]);
+    const index = messages.findIndex(
+      (item) => item.type === 'conversation.item.create',
+    );
+    expect(index).toBeGreaterThanOrEqual(0);
+    expect(messages[index].item).toMatchObject({
+      type: 'message',
+      role: 'user',
+      content: [
+        { type: 'input_text', text: expect.stringContaining('只朗读') },
+      ],
+    });
+    expect(messages[index + 1].type).toBe('response.create');
+  });
+  it('does not execute tools requested while only reading a proactive reminder', async () => {
+    const { provider, callbacks } = setup('qwen-audio-3.0-realtime-plus');
+    const connected = provider.connect();
+    sockets[0].ready();
+    await connected;
+    provider.speak('需要播放它吗？');
+    receive(sockets[0], {
+      type: 'response.function_call_arguments.done',
+      name: 'start_gui_task',
+      call_id: 'unexpected',
+      arguments: '{"instruction":"play"}',
+    });
+    expect(callbacks.onToolCall).not.toHaveBeenCalled();
+    expect(callbacks.onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('只读播报') }),
+    );
+  });
+  it('queues a confirmed contextual request until cancellation finishes', async () => {
+    const { provider } = setup('qwen-audio-3.0-realtime-plus');
+    const connected = provider.connect();
+    sockets[0].ready();
+    await connected;
+    provider.cancelResponse();
+    expect(provider.submitText('请查证 Day One 的封面背景')).toBe(true);
+    expect(
+      sent(sockets[0]).some((item) => item.type === 'conversation.item.create'),
+    ).toBe(false);
+    await vi.advanceTimersByTimeAsync(401);
+    const user = sent(sockets[0]).find(
+      (item) => item.type === 'conversation.item.create',
+    );
+    expect(user.item.role).toBe('user');
+    expect(user.item.content[0].text).toContain('封面背景');
+    expect(sent(sockets[0]).at(-1).type).toBe('response.create');
+  });
+  it('cleans up a gaze reminder and accepts tools again for the next user turn', async () => {
+    const { provider, callbacks } = setup('qwen-audio-3.0-realtime-plus');
+    const connected = provider.connect();
+    sockets[0].ready();
+    await connected;
+    provider.speak('播放它，还是核实作品信息？');
+    expect(
+      sent(sockets[0]).filter((m) => m.type === 'conversation.item.create'),
+    ).toHaveLength(1);
+    receive(sockets[0], {
+      type: 'conversation.item.created',
+      item: { id: 'gaze-prompt', role: 'user' },
+    });
+    receive(sockets[0], {
+      type: 'response.done',
+      response: { status: 'completed' },
+    });
+    expect(
+      sent(sockets[0]).filter(
+        (m) =>
+          m.type === 'conversation.item.delete' && m.item_id === 'gaze-prompt',
+      ),
+    ).toHaveLength(1);
+    receive(sockets[0], { type: 'input_audio_buffer.speech_started' });
+    receive(sockets[0], {
+      type: 'response.function_call_arguments.done',
+      name: 'start_gui_task',
+      call_id: 'confirmed',
+      arguments: '{"instruction":"play the selected cover"}',
+    });
+    expect(callbacks.onToolCall).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ name: 'start_gui_task', callId: 'confirmed' }),
+    );
+  });
+
+  it('uses a partial instruction update for confirmed requests on Omni', async () => {
+    const { provider } = setup('qwen3.8-omni-flash-realtime');
+    const connected = provider.connect();
+    sockets[0].ready();
+    await connected;
+    provider.submitText('请介绍刚才确认的作品');
+    const update = sent(sockets[0]).find(
+      (item) =>
+        item.type === 'session.update' &&
+        item.session.instructions?.includes('用户已明确选择'),
+    );
+    expect(update.session.instructions).toContain('用户已明确选择');
+    expect(update.session.turn_detection).toBeUndefined();
+    expect(sent(sockets[0]).at(-1).type).toBe('response.create');
+  });
+  it('uses the flat PCM handshake for existing Token Plan configurations', async () => {
+    const { provider } = setup(
+      'qwen-audio-3.0-realtime-plus',
+      'wss://token-plan.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen-audio-3.0-realtime-plus',
+    );
+    const connecting = provider.connect();
+    sockets[0].readyState = 1;
+    receive(sockets[0], { type: 'session.created' });
+    const payload = sent(sockets[0])[0];
+    expect(payload.session.input_audio_format).toBe('pcm');
+    expect(payload.session.output_audio_format).toBe('pcm');
+    expect(payload.session.audio).toBeUndefined();
+    expect(
+      payload.session.tools.some(
+        (tool: QwenToolDefinition) =>
+          tool.function.name === 'inspect_gaze_target',
+      ),
+    ).toBe(true);
+    sockets[0].ready();
+    await connecting;
+  });
   it('uses the compatible voice field for the configured Qwen3.5 model', async () => {
     const { provider } = setup('qwen3.5-omni-plus-realtime');
     provider.setVoice('Evan');

@@ -167,6 +167,8 @@ export const runAgent = async (
   let modelVersion = getModelVersion(settings.vlmProvider);
   let modelConfig: UITarsModelConfig = {
     baseURL: settings.vlmBaseUrl,
+    // Runtime setting reference; no credential literal is stored here.
+    // secretlint-disable-next-line @secretlint/secretlint-rule-pattern
     apiKey: settings.vlmApiKey,
     model: settings.vlmModelName,
     useResponsesApi: settings.useResponsesApi,
@@ -180,6 +182,8 @@ export const runAgent = async (
     const useResponsesApi = await ProxyClient.getRemoteVLMResponseApiSupport();
     modelConfig = {
       baseURL: FREE_MODEL_BASE_URL,
+      // Authenticated remote proxy uses separate headers and an empty key.
+      // secretlint-disable-next-line @secretlint/secretlint-rule-pattern
       apiKey: '',
       model: '',
       useResponsesApi,
@@ -203,7 +207,15 @@ export const runAgent = async (
     onData: handleData,
     onError: (params) => {
       const { error } = params;
-      logger.error('[onGUIAgentError]', settings, error);
+      logger.error(
+        '[onGUIAgentError]',
+        {
+          provider: settings.vlmProvider,
+          model: settings.vlmModelName,
+          operator: settings.operator,
+        },
+        error,
+      );
       setState({
         ...getState(),
         status: StatusEnum.ERROR,
@@ -216,7 +228,12 @@ export const runAgent = async (
     },
     retry: {
       model: {
-        maxRetries: 5,
+        // One 30s request plus one retry, without exponential multi-minute sleeps.
+        maxRetries: 1,
+        minTimeoutMs: 1000,
+        maxTimeoutMs: 1000,
+        onRetry: (error, attempt) =>
+          logger.warn('[GUI model retry]', { attempt, name: error.name }),
       },
       screenshot: {
         maxRetries: 5,

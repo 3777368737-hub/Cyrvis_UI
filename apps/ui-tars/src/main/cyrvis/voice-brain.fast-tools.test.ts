@@ -25,6 +25,7 @@ import type {
   VoiceToolCallWithId,
 } from './voice/provider';
 import { VoiceBrain } from './voice-brain';
+import { parseGazeSuggestion } from './gaze/suggestions';
 import { buildVoiceToolSurface } from './voice/tool-surface';
 import { buildSearchUrl } from './navigation';
 import { buildSiteSearchUrl, resolveSite } from './site-registry';
@@ -241,6 +242,40 @@ async function setupNavigation(
 }
 
 describe('unified navigation', () => {
+  it('keeps sensitive-action confirmation ahead of a pending gaze menu', async () => {
+    const x = await setupNavigation();
+    const directory = await fs.mkdtemp(
+      path.join(os.tmpdir(), 'cyrvis-gaze-confirm-'),
+    );
+    const file = path.join(directory, 'delete-me.txt');
+    try {
+      await fs.writeFile(file, 'temporary test data');
+      x.brain.offerGazeSuggestion(
+        parseGazeSuggestion(
+          JSON.stringify({
+            kind: 'music',
+            description: '封面',
+            confidence: 'high',
+            identified: false,
+          }),
+          Date.now(),
+        )!,
+      );
+      await x.matrix.router.handleText(`删除文件 ${file}`);
+      expect(x.matrix.router.hasPendingConfirmation()).toBe(true);
+      x.provider.transcript('是的');
+      await vi.waitFor(async () => {
+        await expect(fs.access(file)).rejects.toThrow();
+      });
+      expect(x.matrix.router.hasPendingConfirmation()).toBe(false);
+      expect(x.provider.spoken.join('')).not.toContain('选择哪一项');
+      expect(x.adapter.started).toBe(false);
+    } finally {
+      x.dispose();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it('preserves app targets and audits the underlying launch', async () => {
     const x = await setupNavigation();
     try {
@@ -783,7 +818,9 @@ describe('VoiceBrain fast tool interception', () => {
 
     expect(desktop.closed).toEqual([]);
     expect(provider.toolResults).toEqual([]);
-    expect(provider.spoken.at(-1)).toBe(SENSITIVE_CONFIRMATION_PROMPT);
+    await vi.waitFor(() =>
+      expect(provider.spoken.at(-1)).toBe(SENSITIVE_CONFIRMATION_PROMPT),
+    );
     expect(provider.canceled).toBeGreaterThan(0);
 
     const confirmationPromptCount = provider.spoken.length;
@@ -862,48 +899,55 @@ describe('VoiceBrain fast tool interception', () => {
     }
   });
 
-  it('speaks confirmation for a high-risk capability invoked through the broker', async () => {
-    const adapter = new NoopGUIAdapter();
-    const controller = new CyrvisController(adapter, { stallTimeoutMs: 0 });
-    const desktop = new FakeDesktopHost();
-    const matrix = createFastToolMatrix(desktop);
-    let provider!: FakeProvider;
-    const brain = new VoiceBrain(
-      controller,
-      {},
-      (callbacks) => {
-        provider = new FakeProvider(callbacks);
-        return provider;
-      },
-      {
-        requireWakeWord: false,
-        fastToolRouter: matrix.router,
-      },
-    );
-    await brain.start();
+  // app.close is explicitly Windows-only in the capability catalog.
+  it.skipIf(process.platform !== 'win32')(
+    'speaks confirmation for a high-risk capability invoked through the broker',
+    async () => {
+      const adapter = new NoopGUIAdapter();
+      const controller = new CyrvisController(adapter, { stallTimeoutMs: 0 });
+      const desktop = new FakeDesktopHost();
+      const matrix = createFastToolMatrix(desktop);
+      let provider!: FakeProvider;
+      const brain = new VoiceBrain(
+        controller,
+        {},
+        (callbacks) => {
+          provider = new FakeProvider(callbacks);
+          return provider;
+        },
+        {
+          requireWakeWord: false,
+          fastToolRouter: matrix.router,
+        },
+      );
+      await brain.start();
 
-    provider.transcript('处理一下记事本应用');
-    provider.toolCall({
-      callId: 'broker-close-app',
-      name: 'cyrvis_capability_invoke',
-      args: {
-        toolId: 'app.close',
-        arguments: { name: 'notepad' },
-      },
-    });
-    await flush();
-    await flush();
+      provider.transcript('处理一下记事本应用');
+      provider.toolCall({
+        callId: 'broker-close-app',
+        name: 'cyrvis_capability_invoke',
+        args: {
+          toolId: 'app.close',
+          arguments: { name: 'notepad' },
+        },
+      });
+      await flush();
+      await flush();
 
-    expect(desktop.closed).toEqual([]);
-    expect(provider.spoken.at(-1)).toBe(SENSITIVE_CONFIRMATION_PROMPT);
-    expect(provider.canceled).toBeGreaterThan(0);
-    expect(matrix.router.hasPendingConfirmation()).toBe(true);
+      expect(desktop.closed).toEqual([]);
+      expect(provider.toolResults).toEqual([]);
+      await vi.waitFor(() =>
+        expect(provider.spoken.at(-1)).toBe(SENSITIVE_CONFIRMATION_PROMPT),
+      );
+      expect(provider.canceled).toBeGreaterThan(0);
+      expect(matrix.router.hasPendingConfirmation()).toBe(true);
 
-    provider.transcript('确认执行');
-    await flush();
-    await flush();
-    expect(desktop.closed).toEqual(['notepad']);
-  });
+      provider.transcript('确认执行');
+      await flush();
+      await flush();
+      expect(desktop.closed).toEqual(['notepad']);
+    },
+  );
 
   it('recovers confirmation by replaying the last actionable command when pending is lost', async () => {
     const adapter = new NoopGUIAdapter();

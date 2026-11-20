@@ -1,3 +1,4 @@
+import { desktopGazeExecutionHint } from './gaze/context';
 /*
  * Copyright (c) 2025 Bytedance, Inc. and its affiliates.
  * SPDX-License-Identifier: Apache-2.0
@@ -10,28 +11,15 @@ import { runAgent } from '@main/services/runAgent';
 import { store } from '@main/store/create';
 import type { AppState } from '@main/store/types';
 import { showCompanion } from '@main/window';
-import {
-  closeOverlay,
-  hideScreenWaterFlow,
-} from '@main/window/ScreenMarker';
+import { closeOverlay, hideScreenWaterFlow } from '@main/window/ScreenMarker';
 
 import type { GUIAdapter, GUIAdapterCallbacks } from './types';
+import { describeGUIError } from './gui-errors';
 
 const truncate = (text: string, max = 100): string =>
   text.length > max ? `${text.slice(0, max)}...` : text;
 
-const cleanError = (error: unknown): string => {
-  const raw = error instanceof Error ? error.message : String(error);
-  try {
-    const parsed = JSON.parse(raw) as { message?: string };
-    if (parsed?.message) {
-      return truncate(parsed.message);
-    }
-  } catch {
-    // Not JSON, use the raw text.
-  }
-  return truncate(raw);
-};
+const cleanError = describeGUIError;
 
 const DIRECTION_LABEL: Record<string, string> = {
   up: '上',
@@ -97,6 +85,9 @@ export class ElectronGUIAdapter implements GUIAdapter {
     instruction: string,
     callbacks: GUIAdapterCallbacks,
   ): Promise<void> {
+    const gaze = desktopGazeExecutionHint();
+    if (gaze && !instruction.includes('[已绑定注视对象]'))
+      instruction += `\n\n[眼动辅助上下文] ${gaze}`;
     if (store.getState().thinking) {
       throw new Error('GUI agent is already running');
     }
@@ -226,7 +217,9 @@ export class ElectronGUIAdapter implements GUIAdapter {
         this.emitCancelled();
         break;
       case StatusEnum.ERROR:
-        this.emitFailed(state.errorMsg || 'GUI agent error');
+        this.emitFailed(
+          state.errorMsg || state.restUserData?.error || 'GUI agent error',
+        );
         break;
       default:
         break;
@@ -313,7 +306,9 @@ export class ElectronGUIAdapter implements GUIAdapter {
         this.emitCancelled();
         break;
       case StatusEnum.ERROR:
-        this.emitFailed(state.errorMsg || 'GUI agent error');
+        this.emitFailed(
+          state.errorMsg || state.restUserData?.error || 'GUI agent error',
+        );
         break;
       default:
         this.emitFailed(

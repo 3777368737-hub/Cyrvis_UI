@@ -274,7 +274,7 @@ describe('DynamicContextStore', () => {
         snapshot.bindings.some(
           (binding) => binding.capabilityId === 'ui.inspect' && binding.active,
         ),
-      ).toBe(true);
+      ).toBe(process.platform === 'win32');
       if (process.platform === 'win32') {
         expect(matrix.surface.isVisible('ui.inspect')).toBe(true);
         expect(matrix.surface.isVisible('ui.action')).toBe(true);
@@ -350,7 +350,10 @@ describe('DynamicContextStore', () => {
 
     try {
       await matrix.registry.execute('test.open_resource', {
-        path: 'C:\\work\\notes.txt',
+        path:
+          process.platform === 'win32'
+            ? 'C:\\work\\notes.txt'
+            : '/work/notes.txt',
       });
       await matrix.registry.execute('test.open_resource', {
         url: 'https://example.com/docs',

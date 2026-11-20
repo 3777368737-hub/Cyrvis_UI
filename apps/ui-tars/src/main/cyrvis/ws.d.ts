@@ -25,6 +25,7 @@ declare module 'ws' {
   }
 
   export default class WebSocket extends EventEmitter {
+    static readonly CONNECTING: number;
     static readonly OPEN: number;
     static readonly CLOSED: number;
 

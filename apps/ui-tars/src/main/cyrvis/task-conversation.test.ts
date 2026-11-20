@@ -90,6 +90,35 @@ describe('TaskConversationCoordinator', () => {
     ]);
   });
 
+  it('announces a wait once per unchanged step and resets for a new task', () => {
+    let now = 100_000;
+    const spoken: string[] = [];
+    const coordinator = new TaskConversationCoordinator({
+      speak: (text) => spoken.push(text),
+      getStatus: () => snapshot({ step: 0 }),
+      now: () => now,
+    });
+    for (let i = 0; i < 10; i++) {
+      coordinator.onEvent({ type: 'task_stalled', taskId: 'task-1', step: 0 });
+      now += 20_000;
+    }
+    expect(spoken).toHaveLength(1);
+    expect(spoken[0]).toContain('还没有执行点击');
+    expect(spoken[0]).not.toContain('第 0 步');
+    coordinator.onEvent({ type: 'task_stalled', taskId: 'task-1', step: 1 });
+    expect(spoken).toHaveLength(2);
+    expect(coordinator.describeStatus()).toContain('等待桌面模型');
+    coordinator.onEvent({
+      type: 'task_started',
+      taskId: 'task-2',
+      instruction: '播放',
+      source: 'voice',
+    });
+    coordinator.onEvent({ type: 'task_stalled', taskId: 'task-2', step: 0 });
+    expect(spoken).toHaveLength(3);
+    coordinator.dispose();
+  });
+
   it('drops stale progress speech after a terminal status', () => {
     const spoken: string[] = [];
     const clearSpeech = vi.fn();
@@ -125,7 +154,10 @@ describe('TaskConversationCoordinator', () => {
     });
 
     expect(clearSpeech).toHaveBeenCalledTimes(1);
-    expect(spoken).toEqual(['任务还在处理，请稍等。', '任务已经完成。']);
+    expect(spoken).toEqual([
+      expect.stringContaining('任务暂时停在第 2 步'),
+      '任务已经完成。',
+    ]);
   });
 
   it('describes the latest task status for spoken queries', () => {

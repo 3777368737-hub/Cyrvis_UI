@@ -133,7 +133,9 @@ describe('FastToolRouter', () => {
   let desktop: FakeDesktopHost;
 
   beforeEach(async () => {
-    root = await fs.mkdtemp(path.join(os.tmpdir(), 'cyrvis-fast-tools-'));
+    root = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), 'cyrvis-fast-tools-')),
+    );
     desktop = new FakeDesktopHost();
   });
 
@@ -331,7 +333,11 @@ describe('FastToolRouter', () => {
 
   it('allows read-only system inspection outside configured roots', async () => {
     const { registry } = matrix();
-    const target = 'C:\\Program Files\\Tencent\\QQBrowser\\QQBrowser.exe';
+    const directory =
+      process.platform === 'win32'
+        ? 'C:\\Program Files\\Tencent'
+        : '/opt/cyrvis-test';
+    const target = path.join(directory, 'QQBrowser.exe');
 
     await expect(
       registry.prepare('condition.check', {
@@ -341,12 +347,12 @@ describe('FastToolRouter', () => {
     ).resolves.toMatchObject({ requiresConfirmation: false });
     await expect(
       registry.prepare('fs.list_directory', {
-        path: 'C:\\Program Files\\Tencent',
+        path: directory,
       }),
     ).resolves.toMatchObject({ requiresConfirmation: false });
     await expect(
       registry.prepare('fs.write_file', {
-        path: 'C:\\Program Files\\Tencent\\blocked.txt',
+        path: path.join(directory, 'blocked.txt'),
         content: 'x',
       }),
     ).resolves.toMatchObject({ requiresConfirmation: true });
@@ -409,7 +415,7 @@ describe('FastToolRouter', () => {
     expect((await router.handleText('查看系统信息')).ok).toBe(true);
     expect((await router.handleText(`磁盘空间 ${root}`)).ok).toBe(true);
     expect((await router.handleText('搜索网页 MCP server')).ok).toBe(true);
-    expect(desktop.openedUrls.at(-1)).toContain('bing.com/search');
+    expect(desktop.openedUrls.at(-1)).toContain('google.com/search');
 
     expect((await router.handleText('打开浏览器搜索网球王子')).ok).toBe(true);
     expect(decodeURIComponent(desktop.openedUrls.at(-1) || '')).toContain(

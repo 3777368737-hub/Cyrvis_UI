@@ -787,7 +787,7 @@ describe('VoiceBrain', () => {
     });
     await flush();
     provider.emitTranscript('你进行哪一步了');
-    expect(provider.spoken.at(-1)).toContain('还没有执行点击');
+    expect(provider.spoken.at(-1)).toContain('任务正在执行');
     adapter.callbacks?.onStep({
       index: 2,
       summary: '打开记事本窗口',

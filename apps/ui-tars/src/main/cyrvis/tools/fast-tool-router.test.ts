@@ -415,7 +415,9 @@ describe('FastToolRouter', () => {
     expect((await router.handleText('查看系统信息')).ok).toBe(true);
     expect((await router.handleText(`磁盘空间 ${root}`)).ok).toBe(true);
     expect((await router.handleText('搜索网页 MCP server')).ok).toBe(true);
-    expect(desktop.openedUrls.at(-1)).toContain('google.com/search');
+    expect(desktop.openedUrls.at(-1)).toContain(
+      process.platform === 'darwin' ? 'google.com/search' : 'bing.com/search',
+    );
 
     expect((await router.handleText('打开浏览器搜索网球王子')).ok).toBe(true);
     expect(decodeURIComponent(desktop.openedUrls.at(-1) || '')).toContain(

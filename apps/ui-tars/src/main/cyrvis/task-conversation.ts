@@ -92,11 +92,7 @@ export class TaskConversationCoordinator {
         ) {
           this.lastStalledAt = eventAt;
           this.lastStalledStep = event.step;
-          this.options.speak(
-            event.step === 0
-              ? '正在等待桌面模型返回第一个操作，目前还没有执行点击。有结果或失败时我会告诉你。'
-              : `任务暂时停在第 ${event.step} 步，没有新的执行进展。有进展或失败时我会告诉你。`,
-          );
+          this.options.speak('任务还在处理，请稍等。');
         }
         break;
       case 'task_needs_user':
@@ -139,8 +135,6 @@ export class TaskConversationCoordinator {
       case 'starting':
         return '任务正在启动，还没有进入第一个执行步骤。';
       case 'executing':
-        if (task.step === 0)
-          return '正在等待桌面模型返回第一个操作，目前还没有执行点击。';
         return task.lastSummary
           ? `任务正在执行，当前节点：${task.lastSummary}。`
           : '任务正在执行。';

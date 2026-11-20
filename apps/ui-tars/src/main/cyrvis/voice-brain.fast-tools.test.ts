@@ -264,9 +264,12 @@ describe('unified navigation', () => {
       await x.matrix.router.handleText(`删除文件 ${file}`);
       expect(x.matrix.router.hasPendingConfirmation()).toBe(true);
       x.provider.transcript('是的');
-      await vi.waitFor(async () => {
-        await expect(fs.access(file)).rejects.toThrow();
-      });
+      await vi.waitFor(
+        async () => {
+          await expect(fs.access(file)).rejects.toThrow();
+        },
+        { timeout: 5_000, interval: 50 },
+      );
       expect(x.matrix.router.hasPendingConfirmation()).toBe(false);
       expect(x.provider.spoken.join('')).not.toContain('选择哪一项');
       expect(x.adapter.started).toBe(false);

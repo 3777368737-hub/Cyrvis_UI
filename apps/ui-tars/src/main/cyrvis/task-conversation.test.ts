@@ -103,11 +103,10 @@ describe('TaskConversationCoordinator', () => {
       now += 20_000;
     }
     expect(spoken).toHaveLength(1);
-    expect(spoken[0]).toContain('还没有执行点击');
-    expect(spoken[0]).not.toContain('第 0 步');
+    expect(spoken[0]).toBe('任务还在处理，请稍等。');
     coordinator.onEvent({ type: 'task_stalled', taskId: 'task-1', step: 1 });
     expect(spoken).toHaveLength(2);
-    expect(coordinator.describeStatus()).toContain('等待桌面模型');
+    expect(coordinator.describeStatus()).toContain('任务正在执行');
     coordinator.onEvent({
       type: 'task_started',
       taskId: 'task-2',
@@ -154,10 +153,7 @@ describe('TaskConversationCoordinator', () => {
     });
 
     expect(clearSpeech).toHaveBeenCalledTimes(1);
-    expect(spoken).toEqual([
-      expect.stringContaining('任务暂时停在第 2 步'),
-      '任务已经完成。',
-    ]);
+    expect(spoken).toEqual(['任务还在处理，请稍等。', '任务已经完成。']);
   });
 
   it('describes the latest task status for spoken queries', () => {
